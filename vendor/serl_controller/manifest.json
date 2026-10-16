@@ -4,5 +4,5 @@
   "source_file": "infra/sim/controllers/impedance.py",
   "sha256": "a15e6de4c1631075f2a5e2cb4815dd90f3a7fe863000192a58d8a49aa9609c34",
   "license": "Apache-2.0",
-  "modifications": "Source unchanged; imported directly with pinned MuJoCo 3.3.7. No WowSkin controller wrapper or target clipping is used."
+  "modifications": "Source unchanged. blademaster_warp/impedance.py is a scipy-free port used at runtime; tests/test_impedance.py checks it against this file."
 }

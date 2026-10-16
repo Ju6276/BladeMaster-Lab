@@ -43,3 +43,24 @@ commit `c3ca5c6`；`franka_run --motion feedback --controller serl --material pa
 commit `1743d71`；`python -m blademaster_warp.paper_freefall`；8960 粒子，2 ms，1 s 仿真。
 
 wall/sim = 0.47（RTX 4060）；论文 0.33（RTX 5090）。1 s 内刀转动 65°，材料仍为一块。
+
+## 2026-10-16 香蕉连续切割（论文 Fig. 1 形式）
+
+commit `a52ec9b`；`franka_run --motion sequence --controller libfranka --stiffness 1000 --material paper-banana --sampling-seed 1 --surface --surface-embedding cuda --surface-ccd cuda --record`；`runs/fig1_sequence/`。
+
+![连续三刀](media/fig1_sequence.png)
+
+切点 x = +40、+20、0 mm，每刀后推开 12 mm。刀到达砧板（误差 ≤ 1 mm 并保持 0.1 s）后才开始推。
+
+| 时间 [s] | 事件 | 粒子分块 |
+|---|---|---|
+| 3.52 | 第 1 刀到底 | 140 / 1299 |
+| 9.16 | 第 2 刀到底 | 140 / 213 / 1086 |
+| 14.92 | 第 3 刀到底 | 140 / 213 / 274 / 812 |
+| 17.68–18.15 | 退刀后保持 | 4 块不变，刀上无材料 |
+
+峰值材料反力 7.4 N，最大跟踪误差 8.1 mm（下刀时刀被材料托住），控制力矩无饱和。
+
+18.15 s 仿真用时 32.1 s（0.56×，含逐帧记录）：材料 19.8 s（每子步约 68 μs）、观测与表面 9.6 s（其中 CPU 网格构建 3.4 s、记录 1.9 s）、机器人 2.3 s。
+
+最初的版本按纯时间表推进，刀被托住、落后目标约 7 mm 时就开始推，最后一层没切断，整根香蕉被推走 36 mm；改为按实测刀位判定下刀结束后解决。

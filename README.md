@@ -46,6 +46,17 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 .venv/bin/python -m blademaster_warp.render_franka runs/banana_02
 ```
 
+论文 Fig. 1 形式的连续切割（3 刀，每刀切到砧板后在切口内把切下的一段推开，再退刀；`paper` 版式左边粒子、右边重建表面）：
+
+```bash
+.venv/bin/python -m blademaster_warp.franka_run --motion sequence --controller libfranka --stiffness 1000 \
+  --material paper-banana --duration 30 --surface --surface-embedding cuda --surface-ccd cuda \
+  --record --output runs/fig1_sequence
+.venv/bin/python -m blademaster_warp.render_franka runs/fig1_sequence --layout paper
+```
+
+`--cuts` 指定各刀相对起始位置的 x 坐标（m，按顺序切），`--push-distance` 指定推开距离。
+
 常用选项：
 
 | 选项 | 作用 |

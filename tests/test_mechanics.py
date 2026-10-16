@@ -319,6 +319,8 @@ def test_pair_recontact_reference_exclusion_and_equal_opposite_impulse(split):
     h1 = wp.zeros_like(h0)
     out = wp.zeros(2, dtype=wp.vec3, device="cuda:0")
     err = wp.zeros(3, dtype=int, device="cuda:0")
+    used = wp.zeros(128, dtype=int, device="cuda:0")
+    count = wp.zeros(1, dtype=int, device="cuda:0")
     speed = arr([np.linalg.norm(vel, axis=1).max()], float)
     wp.launch(
         c.pairs,
@@ -343,6 +345,8 @@ def test_pair_recontact_reference_exclusion_and_equal_opposite_impulse(split):
             h0,
             keys1,
             h1,
+            used,
+            count,
             128,
             2,
             out,
@@ -372,6 +376,10 @@ def test_pair_recontact_reference_exclusion_and_equal_opposite_impulse(split):
     np.testing.assert_allclose(out.numpy(), ref, atol=1e-10)
     np.testing.assert_allclose(out.numpy().sum(0), 0, atol=1e-12)
     assert bool(np.any(out.numpy())) == split
+    filled = np.flatnonzero(keys1.numpy() != -1)
+    np.testing.assert_array_equal(np.sort(used.numpy()[: count.numpy()[0]]), filled)
+    wp.launch(c.clear_pair_slots, 4, [count, 4, used, keys1], device="cuda:0")
+    assert (keys1.numpy() == -1).all()
 
 
 def test_rigid_reaction_is_equal_opposite_with_rotated_blade():

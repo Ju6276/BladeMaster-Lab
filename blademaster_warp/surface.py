@@ -3,7 +3,6 @@
 from itertools import product
 from dataclasses import dataclass
 import numpy as np
-from scipy.optimize import lsq_linear
 from .geometry import levelset
 from .topology import compatible
 
@@ -109,6 +108,28 @@ def moving_segment_hits(a0, b0, a1, b1, edge0, edge1):
     return hit, alpha, times
 
 
+def box_lstsq(A, b, lower, upper):
+    """Exact minimiser of |A x - b| over lower <= x <= upper for three unknowns.
+
+    The optimum holds some coordinates at a bound and is the least-squares solution
+    in the others, so all 27 choices are tried. Among equal residuals (rank-deficient
+    A) the smallest |x| wins, like the minimum-norm unconstrained solve.
+    """
+    best, best_key = None, None
+    for choice in product((0, 1, 2), repeat=3):
+        choice = np.array(choice)
+        x = np.where(choice == 1, lower, upper).astype(float)
+        free = choice == 0
+        if free.any():
+            x[free] = np.linalg.lstsq(A[:, free], b - A[:, ~free] @ x[~free], rcond=None)[0]
+            if np.any(x[free] < lower[free]) or np.any(x[free] > upper[free]):
+                continue
+        key = (round(float(np.linalg.norm(A @ x - b)), 12), float(np.linalg.norm(x)))
+        if best_key is None or key < best_key:
+            best, best_key = x, key
+    return best
+
+
 @dataclass
 class Mesh:
     reference: np.ndarray
@@ -197,13 +218,28 @@ class LinkedSurface:
                 self.incident[e] = [
                     cs[i] for i in np.argsort(np.arctan2(offset[:, other[1]], offset[:, other[0]]))
                 ]
+        # Face assembly tables: the (up to four) ordered cells around each link and,
+        # per link end, that node's corner slot in each of those cells.
+        self.incident_cells = np.full((len(self.edges), 4), -1)
+        self.incident_corner = np.zeros((len(self.edges), 2, 4), int)
+        for e, cs in enumerate(self.incident):
+            for slot, ci in enumerate(cs):
+                corners = self.cells[ci]
+                self.incident_cells[e, slot] = ci
+                self.incident_corner[e, 0, slot] = np.flatnonzero(corners == self.edges[e, 0])[0]
+                self.incident_corner[e, 1, slot] = np.flatnonzero(corners == self.edges[e, 1])[0]
         self.node_cells = [[] for _ in range(len(self.reference))]
         for ci, corners in enumerate(self.cells):
             for node in corners:
                 self.node_cells[node].append(ci)
         # Local regions and QEF points per cell, valid while the cell's severed links are unchanged.
         self.cell_geometry = {}
-        self.regions = {}
+        # At most one region per corner. corner_region: region slot holding each corner, or -1.
+        self.region_valid = np.zeros((len(self.cells), 8), bool)
+        self.region_point = np.zeros((len(self.cells), 8, 3))
+        self.region_code = np.zeros((len(self.cells), 8), np.int64)
+        self.region_weights = np.zeros((len(self.cells), 8, 8))
+        self.corner_region = np.full((len(self.cells), 8), -1)
         self.dirty = set(range(len(self.cells)))
         self.updated_cells = 0
         self._mesh_cache = None
@@ -374,15 +410,18 @@ class LinkedSurface:
             cached = severed, self._cell_regions(ci)
             self.cell_geometry[ci] = cached
         powers = 3 ** np.arange(CODE_DIGITS, dtype=np.int64)
-        regions = []
-        for region, p, weights in cached[1]:
-            nodes = corners[list(region)]
-            digits = self.codes[nodes][:, None] // powers % 3
+        self.region_valid[ci] = False
+        self.corner_region[ci] = -1
+        for slot, (region, p, weights) in enumerate(cached[1]):
+            local = list(region)
+            digits = self.codes[corners[local]][:, None] // powers % 3
             # Combine compatible assigned digits in this local graph region.
             low, high = np.where(digits > 0, digits, 3).min(0), digits.max(0)
-            code = int((np.where((low == high) & (high > 0), high, 0) * powers).sum())
-            regions.append((set(int(n) for n in nodes), p, code, weights))
-        self.regions[ci] = regions
+            self.region_valid[ci, slot] = True
+            self.region_point[ci, slot] = p
+            self.region_code[ci, slot] = (np.where((low == high) & (high > 0), high, 0) * powers).sum()
+            self.region_weights[ci, slot] = weights
+            self.corner_region[ci, local] = slot
 
     def _cell_regions(self, ci):
         """Connected corner groups over intact links, each with its QEF point and trilinear weights."""
@@ -428,12 +467,7 @@ class LinkedSurface:
             upper = lower + self.h
             p = centre + offset
             if ((p < lower - 1.0e-10) | (p > upper + 1.0e-10)).any():
-                p = (
-                    centre
-                    + lsq_linear(
-                        normals, rhs, bounds=(lower - centre - 1.0e-12, upper - centre + 1.0e-12), tol=1.0e-10
-                    ).x
-                )
+                p = centre + box_lstsq(normals, rhs, lower - centre - 1.0e-12, upper - centre + 1.0e-12)
             local = (p - lower) / self.h
             regions.append((region, p, np.where(OFFSETS == 1, local, 1 - local).prod(1)))
         return regions
@@ -449,50 +483,40 @@ class LinkedSurface:
         for ci in self.dirty:
             self._update_cell(ci)
         self.dirty.clear()
-        vertices = []
-        codes = []
-        cells = []
-        weights = []
-        lookup = {}
-        for ci, regions in sorted(self.regions.items()):
-            for nodes, p, code, w in regions:
-                vi = len(vertices)
-                vertices.append(p)
-                codes.append(code)
-                cells.append(self.cells[ci])
-                weights.append(w)
-                for node in nodes:
-                    lookup[ci, node] = vi
-        faces = []
-        for e in np.flatnonzero(self.boundary | self.broken):
-            a, b = self.edges[e]
-            axis = self.axes[e]
-            cs = self.incident[e]
-            for node in (a, b):
-                if not self.inside[node]:
-                    continue
-                indices = [lookup[ci, node] for ci in cs if (ci, node) in lookup]
-                indices = list(dict.fromkeys(indices))
-                if len(indices) < 3:
-                    continue
-                # Cell centres are ordered counterclockwise in the two axes
-                # perpendicular to the primal edge. Use that topological
-                # orientation: QEF vertices can coincide at a flat cut, making
-                # their cross-product zero (or roundoff with arbitrary sign).
-                axis_orientation = -1 if axis == 1 else 1
-                sign = 1 if node == a else -1
-                if axis_orientation * sign < 0:
-                    indices = indices[::-1]
-                for j in range(1, len(indices) - 1):
-                    tri = [indices[0], indices[j], indices[j + 1]]
-                    if len(set(tri)) == 3:
-                        faces.append(tri)
+        valid = self.region_valid
+        vertex_of = np.full(valid.shape, -1)
+        vertex_of[valid] = np.arange(np.count_nonzero(valid))
+        corner_vertex = np.where(
+            self.corner_region >= 0, np.take_along_axis(vertex_of, np.maximum(self.corner_region, 0), 1), -1
+        )
+        links = np.flatnonzero(self.boundary | self.broken)
+        cells = self.incident_cells[links]
+        fans = np.full((len(links), 2, 2, 3), -1)
+        for end in (0, 1):
+            ring = np.where(
+                cells >= 0, corner_vertex[np.maximum(cells, 0), self.incident_corner[links, end]], -1
+            )
+            ring[~self.inside[self.edges[links, end]]] = -1
+            # Keep the first occurrence of each vertex, then pack the ring to the left.
+            for c in range(1, 4):
+                ring[(ring[:, c : c + 1] == ring[:, :c]).any(1), c] = -1
+            ring = np.take_along_axis(ring, np.argsort(ring < 0, axis=1, kind="stable"), 1)
+            count = np.count_nonzero(ring >= 0, axis=1)
+            # Cells are counterclockwise about the link axis; orient by axis and link end.
+            flip = np.where(self.axes[links] == 1, -1, 1) * (1 if end == 0 else -1) < 0
+            for k in (3, 4):
+                rows = flip & (count == k)
+                ring[rows, :k] = ring[rows, :k][:, ::-1]
+            fans[:, end, 0] = np.where((count >= 3)[:, None], ring[:, [0, 1, 2]], -1)
+            fans[:, end, 1] = np.where((count == 4)[:, None], ring[:, [0, 2, 3]], -1)
+        faces = fans[fans[..., 0] >= 0]
+        owner = np.nonzero(valid)[0]
         self._mesh_cache = Mesh(
-            np.asarray(vertices).reshape(-1, 3),
-            np.asarray(faces, int).reshape(-1, 3),
-            np.asarray(codes),
-            np.asarray(cells, int).reshape(-1, 8),
-            np.asarray(weights).reshape(-1, 8),
+            self.region_point[valid],
+            faces.reshape(-1, 3),
+            self.region_code[valid],
+            self.cells[owner].reshape(-1, 8),
+            self.region_weights[valid],
         )
         return self._mesh_cache
 

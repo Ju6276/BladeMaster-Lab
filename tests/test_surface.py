@@ -194,3 +194,57 @@ def test_band_labels_keep_skin_near_a_cut_on_its_own_side():
     s.broken[missed] = False
     s.sweep(below, below, normal_world=[1, 0, 0], band=(0.018, 0.006))
     assert s.broken[missed]
+
+
+def loop_mesh(s):
+    """The per-link loop assembly the vectorized LinkedSurface.mesh replaced."""
+    vertices, lookup = [], {}
+    for ci in range(len(s.cells)):
+        for slot in np.flatnonzero(s.region_valid[ci]):
+            for k in np.flatnonzero(s.corner_region[ci] == slot):
+                lookup[ci, s.cells[ci][k]] = len(vertices)
+            vertices.append(s.region_point[ci, slot])
+    faces = []
+    for e in np.flatnonzero(s.boundary | s.broken):
+        a, b = s.edges[e]
+        for node in (a, b):
+            if not s.inside[node]:
+                continue
+            ring = list(dict.fromkeys(lookup[ci, node] for ci in s.incident[e] if (ci, node) in lookup))
+            if len(ring) < 3:
+                continue
+            if (-1 if s.axes[e] == 1 else 1) * (1 if node == a else -1) < 0:
+                ring = ring[::-1]
+            faces += [[ring[0], ring[j], ring[j + 1]] for j in range(1, len(ring) - 1)]
+    return np.array(vertices), np.array(faces).reshape(-1, 3)
+
+
+def test_vectorized_mesh_matches_the_loop_assembly_after_crossing_cuts():
+    s = LinkedSurface((0.12, 0.06, 0.03), 0.003, "banana")
+    s.sweep(
+        [[0.01, -0.04, 0.04], [0.01, 0.04, 0.04]], [[0.01, -0.04, -0.01], [0.01, 0.04, -0.01]], cut_index=0
+    )
+    s.sweep([[-0.05, 0.0, 0.02], [0.05, 0.0, 0.02]], [[-0.05, 0.0, 0.008], [0.05, 0.0, 0.008]], cut_index=1)
+    mesh = s.mesh()
+    vertices, faces = loop_mesh(s)
+    np.testing.assert_array_equal(mesh.reference, vertices)
+    np.testing.assert_array_equal(mesh.triangles, faces)
+    assert len(faces) and (edge_incidence(mesh) == 2).all()
+
+
+def test_box_lstsq_matches_scipy_including_rank_deficient_normals():
+    from scipy.optimize import lsq_linear
+    from blademaster_warp.surface import box_lstsq
+
+    rng = np.random.default_rng(3)
+    for trial in range(200):
+        rows = rng.integers(2, 7)
+        A = rng.normal(size=(rows, 3))
+        if trial % 3 == 0:
+            A[:] = A[0]  # every Hermite normal equal: a flat cut
+        b = rng.normal(size=rows) * 2
+        lower, upper = -rng.uniform(0.1, 1, 3), rng.uniform(0.1, 1, 3)
+        x = box_lstsq(A, b, lower, upper)
+        ref = lsq_linear(A, b, bounds=(lower, upper), tol=1e-12).x
+        assert np.all(x >= lower) and np.all(x <= upper)
+        assert np.linalg.norm(A @ x - b) <= np.linalg.norm(A @ ref - b) + 1e-9

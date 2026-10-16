@@ -533,27 +533,26 @@ class MaterialEmbedding:
         if grid_origin is not None:
             self.grid_origin = np.asarray(grid_origin)
             self.grid_cells = np.asarray(grid_cells, int)
-            nodes = np.indices(self.grid_cells + 1).reshape(3, -1).T * spacing + self.grid_origin
+            nodes = (
+                np.array(list(product(*(range(n + 1) for n in self.grid_cells)))) * spacing + self.grid_origin
+            )
             self.material_grid = MaterialEmbedding(nodes, particle_reference, spacing)
         tree = cKDTree(self.ref)
+        self.support = []
+        self.extension_support = []
         self.extension_nodes = 0
-        self.support = self._tent_support(tree, spacing)
-        # A surface stencil can touch an empty material-grid node on one
-        # cut side. Define its one-sided affine continuation from the next
-        # reference support ring. This changes visualization only; it does
-        # not populate an MPM state or transfer force across a cut.
-        self.extension_support = self._tent_support(tree, 2 * spacing)
-
-    def _tent_support(self, tree, width):
-        """Per node: particles with nonzero trilinear tent weight of half-width `width`, and the weights."""
-        found = tree.query_ball_point(self.nodes, width * np.sqrt(3) + 1.0e-10)
-        counts = np.array([len(ids) for ids in found])
-        ids = np.concatenate([np.asarray(i, int) for i in found]) if counts.sum() else np.zeros(0, int)
-        node = np.repeat(np.arange(len(self.nodes)), counts)
-        w = np.maximum(1 - np.abs(self.ref[ids] - self.nodes[node]) / width, 0).prod(axis=1)
-        keep = w > 1.0e-12
-        bounds = np.cumsum(np.bincount(node[keep], minlength=len(self.nodes)))[:-1]
-        return list(zip(np.split(ids[keep], bounds), np.split(w[keep], bounds)))
+        for node in self.nodes:
+            ids = np.array(tree.query_ball_point(node, spacing * np.sqrt(3) + 1.0e-10), int)
+            w = np.maximum(1 - np.abs(self.ref[ids] - node) / spacing, 0).prod(axis=1)
+            ids, w = ids[w > 1.0e-12], w[w > 1.0e-12]
+            self.support.append((ids, w))
+            # A surface stencil can touch an empty material-grid node on one
+            # cut side. Define its one-sided affine continuation from the next
+            # reference support ring. This changes visualization only; it does
+            # not populate an MPM state or transfer force across a cut.
+            ids = np.array(tree.query_ball_point(node, 2 * spacing * np.sqrt(3) + 1.0e-10), int)
+            w = np.maximum(1 - np.abs(self.ref[ids] - node) / (2 * spacing), 0).prod(axis=1)
+            self.extension_support.append((ids[w > 1.0e-12], w[w > 1.0e-12]))
 
     def field(self, x, F, particle_codes, code):
         result = np.full_like(self.nodes, np.nan, dtype=float)

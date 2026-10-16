@@ -99,14 +99,62 @@ def summarize(runs, window=(0.4, 1.4), bin_s=0.02):
     return dict(window_s=list(window), bin_s=bin_s, by_spacing=out)
 
 
+def plot(studies, path):
+    """studies: [(label, summary)]. Left: mean +- std force traces; right: window force vs spacing."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, len(studies) + 1, figsize=(5.2 * (len(studies) + 1), 3.8))
+    for ax, (label, summary) in zip(axes, studies):
+        rows = summary["by_spacing"]
+        colors = plt.cm.viridis(np.linspace(0.05, 0.9, len(rows)))
+        for color, (name, row) in zip(colors, rows.items()):
+            mean, std = np.array(row["mean_trace_n"]), np.array(row["std_trace_n"])
+            t = (np.arange(len(mean)) + 0.5) * summary["bin_s"]
+            ax.plot(t, mean, color=color, lw=1.4, label=f"{name} ({row['seeds']}×)")
+            ax.fill_between(t, mean - std, mean + std, color=color, alpha=0.18, lw=0)
+        ax.axvspan(*summary["window_s"], color="0.9", zorder=-1)
+        ax.set(
+            title=label, xlabel="time (s)", ylabel="vertical blade force (N)", xlim=(0, DESCENT_S + HOLD_S)
+        )
+        ax.legend(fontsize=7, frameon=False)
+    ax = axes[-1]
+    for label, summary in studies:
+        rows = summary["by_spacing"].items()
+        h = [float(name.split()[0]) for name, _ in rows]
+        mean = [row["steady_force_n"]["mean"] for _, row in rows]
+        std = [row["steady_force_n"]["std"] for _, row in rows]
+        ax.errorbar(h, mean, yerr=std, marker="o", ms=4, capsize=3, label=label)
+    ax.set(xlabel="grid spacing (mm)", ylabel="mean force in shaded window (N)", ylim=(0, None))
+    ax.invert_xaxis()
+    ax.legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument(
+        "--plot",
+        nargs="+",
+        metavar="LABEL=DIR",
+        help="Only plot finished studies (summary.json in each DIR) to --output, a .png path",
+    )
     p.add_argument("--output", required=True)
     p.add_argument("--spacings", type=float, nargs="+", default=[0.006, 0.005, 0.004, 0.003])
     p.add_argument("--seeds", type=int, default=20, help="Sampling seeds 1..N per spacing")
     p.add_argument("--seeds-for", type=float, nargs=2, action="append", default=[], metavar=("SPACING", "N"))
     p.add_argument("--blade-contact-radius", type=float, default=0.0, help="Metres; 0: particle radius h/4")
     a = p.parse_args()
+    if a.plot:
+        studies = [
+            (s.split("=", 1)[0], json.loads(Path(s.split("=", 1)[1], "summary.json").read_text()))
+            for s in a.plot
+        ]
+        plot(studies, a.output)
+        return
     out = Path(a.output)
     out.mkdir(parents=True, exist_ok=True)
     counts = {round(s, 6): int(n) for s, n in a.seeds_for}

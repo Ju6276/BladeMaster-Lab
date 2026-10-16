@@ -21,6 +21,8 @@ class CycleSettings:
 
 class CutCycle:
     phases = ("settle", "descend", "withdraw", "verify", "done")
+    cut_index = 0
+    expected_pieces = 2
 
     def __init__(self, initial, board_z, half_height, settings=None):
         self.settings = settings or CycleSettings()
@@ -44,6 +46,10 @@ class CutCycle:
     @property
     def done(self):
         return self.phase == "done"
+
+    @property
+    def cutting(self):
+        return self.phase == "descend"
 
     def transition(self, phase, t, actual):
         self.phase = phase
@@ -112,16 +118,108 @@ class CutCycle:
         return self.initial.copy()
 
 
-def evaluate_cut(observations, cycle_done):
+def evaluate_cut(observations, cycle_done, expected_pieces=2):
     """Independent post-withdrawal check, without visual-surface shortcuts."""
     verification = [r for r in observations if r["phase"] in ("verify", "done")]
-    separated = bool(verification) and all(len(r["component_sizes"]) == 2 for r in verification)
+    separated = bool(verification) and all(len(r["component_sizes"]) == expected_pieces for r in verification)
     cleared = bool(verification) and all(r["knife_clear_of_material"] for r in verification)
     return dict(
         success=bool(cycle_done and separated and cleared),
         cycle_completed=bool(cycle_done),
-        two_components_persist_after_withdrawal=separated,
+        expected_pieces=expected_pieces,
+        pieces_persist_after_withdrawal=separated,
         knife_clear_after_withdrawal=cleared,
         verification_samples=len(verification),
-        criteria="pose-driven cycle completes; exactly two mechanical components and no material above the retracted blade edge throughout final hold",
+        criteria="cycle completes; the expected number of mechanical pieces and no material above the retracted blade edge throughout the final hold",
     )
+
+
+@dataclass(frozen=True)
+class SequenceSettings:
+    # Cut positions along the banana (x) relative to the start pose, cut in this order.
+    cut_offsets_m: tuple = (0.04, 0.02, 0.0)
+    descent_speed_m_s: float = 0.02
+    travel_speed_m_s: float = 0.04
+    # After each cut the knife, still in the cut, moves +x and pushes the released piece.
+    push_distance_m: float = 0.012
+    push_speed_m_s: float = 0.02
+    initial_hold_s: float = 0.3
+    final_hold_s: float = 0.5
+
+    def __post_init__(self):
+        if not self.cut_offsets_m or len(self.cut_offsets_m) > 18:
+            raise ValueError("Between 1 and 18 cuts")
+        speeds = [self.descent_speed_m_s, self.travel_speed_m_s, self.push_speed_m_s]
+        if min(speeds) <= 0 or self.push_distance_m < 0 or min(self.initial_hold_s, self.final_hold_s) < 0:
+            raise ValueError("Speeds must be positive, distances and holds non-negative")
+
+
+class CutSequence:
+    """Paper Fig. 1 style task: several vertical cuts, each followed by pushing the cut piece aside.
+
+    A timed waypoint schedule for the tool origin; the robot controller tracks it.
+    """
+
+    phases = ("settle", "move", "descend", "push", "withdraw", "verify", "done")
+
+    def __init__(self, initial, board_z, half_height, settings=None):
+        self.settings = s = settings or SequenceSettings()
+        self.initial = np.array(initial, dtype=float, copy=True)
+        bottom_z = board_z + half_height
+        if self.initial[2] <= bottom_z:
+            raise ValueError("Initial knife must be above the board")
+        self.expected_pieces = len(s.cut_offsets_m) + 1
+        # Segments: (phase, start, end, duration, cut index)
+        self.segments = []
+        here = self.initial.copy()
+
+        def go(phase, target, speed, cut_index):
+            nonlocal here
+            target = np.asarray(target, dtype=float)
+            duration = np.linalg.norm(target - here) / speed
+            self.segments.append((phase, here.copy(), target, duration, cut_index))
+            here = target
+
+        self.segments.append(("settle", here.copy(), here.copy(), s.initial_hold_s, 0))
+        for k, dx in enumerate(s.cut_offsets_m):
+            above = self.initial + [dx, 0.0, 0.0]
+            go("move", above, s.travel_speed_m_s, k)
+            go("descend", [above[0], above[1], bottom_z], s.descent_speed_m_s, k)
+            go("push", here + [s.push_distance_m, 0.0, 0.0], s.push_speed_m_s, k)
+            go("withdraw", [here[0], here[1], self.initial[2]], s.descent_speed_m_s, k)
+        self.segments.append(("verify", here.copy(), here.copy(), s.final_hold_s, len(s.cut_offsets_m) - 1))
+        self.duration_s = sum(segment[3] for segment in self.segments)
+        self.phase = "settle"
+        self.cut_index = 0
+        self.events = [dict(time_s=0.0, phase=self.phase, cut_index=0)]
+
+    @property
+    def done(self):
+        return self.phase == "done"
+
+    @property
+    def cutting(self):
+        return self.phase == "descend"
+
+    def update(self, t, actual, edge_points):
+        """Tool-origin target at time t (actual pose and edge points are only logged)."""
+        start = 0.0
+        for phase, a, b, duration, cut_index in self.segments:
+            if t < start + duration:
+                fraction = (t - start) / duration if duration > 0 else 1.0
+                target = (1 - fraction) * a + fraction * b
+                break
+            start += duration
+        else:
+            phase, cut_index, target = "done", self.cut_index, self.segments[-1][2].copy()
+        if phase != self.phase or cut_index != self.cut_index:
+            self.events.append(
+                dict(
+                    time_s=float(t),
+                    phase=phase,
+                    cut_index=int(cut_index),
+                    actual_tool_position_m=np.asarray(actual).tolist(),
+                )
+            )
+        self.phase, self.cut_index = phase, cut_index
+        return target

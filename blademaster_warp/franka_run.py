@@ -10,7 +10,7 @@ from .franka import Franka, HALF, BEVEL, SOURCE, BOARD_HALF_EXTENT
 from .geometry import BANANA_DEMO_SIZE_M
 from .provenance import git_revision
 from .topology import components
-from .cut_cycle import CutCycle, CycleSettings, evaluate_cut
+from .cut_cycle import CutCycle, CutSequence, CycleSettings, SequenceSettings, evaluate_cut
 
 
 # Softer libfranka stiffness (the example's 150 N/m) cannot push a blade through the banana.
@@ -192,10 +192,22 @@ class FrankaCuttingRun:
         self.phase_time = dict(robot_state=0.0, material=0.0, robot_step=0.0, observation=0.0)
         self.paused_s = 0.0
         self.cutting = False
+        self.cut_index = 0
         self._last_codes = None
         self._last_component_sizes = None
 
     def _make_cycle(self):
+        if self.args.motion == "sequence":
+            return CutSequence(
+                self.robot.position,
+                self.robot.material_origin[2],
+                HALF[2],
+                SequenceSettings(
+                    cut_offsets_m=tuple(self.args.cuts),
+                    descent_speed_m_s=self.args.descent_speed,
+                    push_distance_m=self.args.push_distance,
+                ),
+            )
         if self.args.motion != "feedback":
             return None
         return CutCycle(
@@ -253,8 +265,11 @@ class FrankaCuttingRun:
         state = self.robot.state()
         self._timed("robot_state", tick)
         tick = time.perf_counter()
-        self.cutting = not self.args.no_cutting and (self.cycle is None or self.cycle.phase == "descend")
-        reaction = self.port.advance(state, self.args.interval, cutting=self.cutting)
+        self.cutting = not self.args.no_cutting and (self.cycle is None or self.cycle.cutting)
+        self.cut_index = self.cycle.cut_index if self.cycle else 0
+        reaction = self.port.advance(
+            state, self.args.interval, cutting=self.cutting, cut_index=self.cut_index
+        )
         self._timed("material", tick)
         return np.r_[reaction.force_n, reaction.torque_nm]
 
@@ -329,6 +344,7 @@ class FrankaCuttingRun:
                     data.codes[-1],
                     robot.state(),
                     self.cutting,
+                    self.cut_index,
                 )
         if self.observer:
             self.observer.publish(
@@ -479,7 +495,9 @@ class FrankaCuttingRun:
             report.update(
                 motion_status="completed" if cycle.done else "timeout" if completed else "failed",
                 final_phase=cycle.phase,
-                task_evaluation=evaluate_cut(self.data.task_observations, cycle.done and completed),
+                task_evaluation=evaluate_cut(
+                    self.data.task_observations, cycle.done and completed, cycle.expected_pieces
+                ),
             )
         log = np.array(self.data.logs)
         if len(log):
@@ -644,10 +662,18 @@ def parser():
     p.add_argument("--duration", type=float, default=4.6)
     p.add_argument(
         "--motion",
-        choices=["timed", "feedback"],
+        choices=["timed", "feedback", "sequence"],
         default="timed",
-        help="Feedback gates phases using actual knife pose; independent robot adapter",
+        help="feedback: one cut gated on the measured knife pose; sequence: several cuts, each followed by a push",
     )
+    p.add_argument(
+        "--cuts",
+        type=float,
+        nargs="+",
+        default=[0.04, 0.02, 0.0],
+        help="Sequence: cut positions along the banana relative to the start pose, m",
+    )
+    p.add_argument("--push-distance", type=float, default=0.012, help="Sequence: push after each cut, m")
     p.add_argument("--descent-speed", type=float, default=0.02, help="Feedback task reference speed, m/s")
     p.add_argument("--withdrawal-speed", type=float, default=0.025, help="Feedback task reference speed, m/s")
     p.add_argument(

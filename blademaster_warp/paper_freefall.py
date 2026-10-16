@@ -12,7 +12,13 @@ from .topology import components
 from .provenance import git_revision
 
 
-def run(output, sharpness=0.9, dt=0.002, duration=1.0, sampling_seed=0):
+# Not given in the paper. The knife brings about 0.19 J (fall plus depth); a full cut of
+# the 100 x 80 mm section needs Gc * 0.008 m^2 * (1 - sharpness) / sharpness, so 100 J/m^2
+# separates at sharpness 0.9 (0.09 J) and stalls at 0.5 (0.8 J).
+FIG3_CUTTING_ENERGY = 100.0
+
+
+def run(output, sharpness=0.9, dt=0.002, duration=1.0, sampling_seed=1, cutting_energy=FIG3_CUTTING_ENERGY):
     cfg = Config(
         size=(0.14, 0.10, 0.08),
         grid_spacing=0.01,
@@ -24,6 +30,7 @@ def run(output, sharpness=0.9, dt=0.002, duration=1.0, sampling_seed=0):
         blade_half_size=(0.0005, 0.06, 0.02),
         free_blade=True,
         sharpness=sharpness,
+        cutting_energy=cutting_energy,
         sampling_seed=sampling_seed,
     )
     steps = round(duration / dt)
@@ -113,6 +120,7 @@ if __name__ == "__main__":
     p.add_argument("--sharpness", type=float, default=0.9)
     p.add_argument("--dt", type=float, default=0.002)
     p.add_argument("--duration", type=float, default=1.0)
-    p.add_argument("--sampling-seed", type=int, default=0)
+    p.add_argument("--sampling-seed", type=int, default=1)
+    p.add_argument("--cutting-energy", type=float, default=FIG3_CUTTING_ENERGY)
     a = p.parse_args()
-    run(a.output, a.sharpness, a.dt, a.duration, a.sampling_seed)
+    run(a.output, a.sharpness, a.dt, a.duration, a.sampling_seed, a.cutting_energy)

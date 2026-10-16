@@ -91,6 +91,7 @@ class Config:
 
 
 ALL_PAIRS_MAX_PARTICLES = 4096
+PAIR_LANES = 64
 
 
 class Solver:
@@ -275,12 +276,12 @@ class Solver:
         contact = [self.x,self.ref,self.v,self.codes,self.radius,cfg.grid_spacing,
             self.mass,cfg.dt,sn,cfg.friction_static,cfg.friction_dynamic,gk,cfg.tangent_damping]
         history = [self.pair_keys[old],self.pair_history[old],self.pair_keys[new],self.pair_history[new],
-            self.pair_capacity,self.n,self.impulses,self.errors]
+            self.pair_capacity,self.n]
         if self.all_pairs:
-            self.launch(c.pairs_all,self.n,[*contact,*history])
+            self.launch(c.pairs_all,(self.n,PAIR_LANES),[*contact,*history,PAIR_LANES,self.impulses,self.errors])
         else:
             self.pair_grid.build(self.x,2*self.radius)
-            self.launch(c.pairs,self.n,[self.pair_grid.id,*contact,self.speed,*history])
+            self.launch(c.pairs,self.n,[self.pair_grid.id,*contact,self.speed,*history,self.impulses,self.errors])
         self.material_step()
         if cfg.external_tool:
             # The external engine owns tool integration between intervals.

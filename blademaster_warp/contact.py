@@ -285,10 +285,10 @@ def pairs_all(x: wp.array(dtype=wp.vec3), ref: wp.array(dtype=wp.vec3),
               gk: float, gc: float,
               old_keys: wp.array(dtype=wp.int64), old_history: wp.array(dtype=wp.vec3),
               new_keys: wp.array(dtype=wp.int64), new_history: wp.array(dtype=wp.vec3),
-              capacity: int, n: int, impulses: wp.array(dtype=wp.vec3), errors: wp.array(dtype=int)):
-    """All-pairs search. For small n it is cheaper than building a hash grid."""
-    p = wp.tid()
-    for q in range(p+1, n):
+              capacity: int, n: int, lanes: int, impulses: wp.array(dtype=wp.vec3), errors: wp.array(dtype=int)):
+    """All-pairs search over (particle, lane) threads; lane k takes q = p+1+k, p+1+k+lanes, ..."""
+    p, k = wp.tid()
+    for q in range(p+1+k, n, lanes):
         pair_at(p, q, x, ref, v, codes, radius, spacing, mass, dt, sn, mus, mud, gk, gc,
                 old_keys, old_history, new_keys, new_history, capacity, n, impulses, errors)
 

@@ -13,6 +13,10 @@ HALF = DEMO_KNIFE_HALF_SIZE_M
 BEVEL = DEMO_KNIFE_BEVEL_HEIGHT_M
 # Cutting board half extents (x, y), centred under the material; shared with the MPM board.
 BOARD_HALF_EXTENT = (0.17, 0.16)
+# Fixed mount: a cylinder between the fingers; the fingers close onto it.
+MOUNT_RADIUS = 0.008
+# Upstream actuator8: ctrl 0..255 maps to 0..0.04 m opening per finger.
+FINGER_CTRL_PER_M = 255 / 0.04
 
 
 def quat_wxyz(matrix):
@@ -85,7 +89,7 @@ def make_model(interval=0.001, blade_mass=0.1, attachment="fixed"):
             name="tool_mount",
             type="cylinder",
             pos="0 0 .1",
-            size=".008 .04",
+            size=f"{MOUNT_RADIUS} .04",
             mass=".03",
             rgba=".16 .18 .2 1",
             group="2",
@@ -171,9 +175,12 @@ class Franka:
         self.impedance = None
         self.data = mj.MjData(self.model)
         self.data.qpos[:9] = HOME  # Initialization only; never written during control.
-        if attachment == "grasp":
+        if attachment == "fixed":
+            self.data.qpos[7:9] = MOUNT_RADIUS
+            self.data.ctrl[7] = MOUNT_RADIUS * FINGER_CTRL_PER_M
+        else:
             self.data.qpos[7:9] = 0.0075
-        self.data.ctrl[7] = 0.035 / 0.04 * 255 if attachment == "fixed" else -2 * self.grip_force_per_finger
+            self.data.ctrl[7] = -2 * self.grip_force_per_finger
         self.control_site = self.model.site("control_tcp").id
         if controller == "serl":
             self.impedance = ImpedanceController(self.model, self.control_site, np.arange(7))

@@ -206,6 +206,7 @@ class FrankaCuttingRun:
                     cut_offsets_m=tuple(self.args.cuts),
                     descent_speed_m_s=self.args.descent_speed,
                     push_distance_m=self.args.push_distance,
+                    position_tolerance_m=self.args.goal_tolerance,
                 ),
             )
         if self.args.motion != "feedback":

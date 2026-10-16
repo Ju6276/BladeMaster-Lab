@@ -6,8 +6,10 @@ def test_sequence_cuts_each_offset_to_the_board_then_pushes():
     settings = SequenceSettings(cut_offsets_m=(0.03, 0.0))
     sequence = CutSequence([0.0, 0.0, 0.06], 0.0, 0.02, settings)
     bottoms = {}
+    actual = np.array([0.0, 0.0, 0.06])
     for t in np.arange(0.0, sequence.duration_s + 0.1, 0.001):
-        target = sequence.update(t, [0, 0, 0], np.zeros((2, 3)))
+        target = sequence.update(t, actual, np.zeros((2, 3)))
+        actual = target
         if sequence.cutting:
             bottoms[sequence.cut_index] = target
     assert sequence.done
@@ -23,3 +25,11 @@ def test_evaluation_counts_expected_pieces():
     observations = [dict(phase="verify", component_sizes=[1, 2, 3], knife_clear_of_material=True)]
     assert evaluate_cut(observations, True, 3)["success"]
     assert not evaluate_cut(observations, True, 2)["success"]
+
+
+def test_push_waits_for_the_knife_to_reach_the_board():
+    sequence = CutSequence([0.0, 0.0, 0.06], 0.0, 0.02, SequenceSettings(cut_offsets_m=(0.0,)))
+    stuck = np.array([0.0, 0.0, 0.025])
+    for t in np.arange(0.0, 3 * sequence.duration_s, 0.001):
+        sequence.update(t, stuck, np.zeros((2, 3)))
+    assert sequence.phase == "descend"

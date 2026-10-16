@@ -143,6 +143,9 @@ class SequenceSettings:
     # After each cut the knife, still in the cut, moves +x and pushes the released piece.
     push_distance_m: float = 0.012
     push_speed_m_s: float = 0.02
+    # The push starts only after the measured knife reaches the board and stays there.
+    position_tolerance_m: float = 0.001
+    bottom_hold_s: float = 0.1
     initial_hold_s: float = 0.3
     final_hold_s: float = 0.5
 
@@ -157,7 +160,8 @@ class SequenceSettings:
 class CutSequence:
     """Paper Fig. 1 style task: several vertical cuts, each followed by pushing the cut piece aside.
 
-    A timed waypoint schedule for the tool origin; the robot controller tracks it.
+    A waypoint schedule for the tool origin. Each segment is timed, except that a descent
+    ends only once the measured knife has reached the board, so no cut is left unfinished.
     """
 
     phases = ("settle", "move", "descend", "push", "withdraw", "verify", "done")
@@ -188,7 +192,11 @@ class CutSequence:
             go("push", here + [s.push_distance_m, 0.0, 0.0], s.push_speed_m_s, k)
             go("withdraw", [here[0], here[1], self.initial[2]], s.descent_speed_m_s, k)
         self.segments.append(("verify", here.copy(), here.copy(), s.final_hold_s, len(s.cut_offsets_m) - 1))
+        # Lower bound: descents can last longer while the knife is held up by the material.
         self.duration_s = sum(segment[3] for segment in self.segments)
+        self.index = 0
+        self.segment_start = 0.0
+        self.arrived_since = None
         self.phase = "settle"
         self.cut_index = 0
         self.events = [dict(time_s=0.0, phase=self.phase, cut_index=0)]
@@ -202,14 +210,28 @@ class CutSequence:
         return self.phase == "descend"
 
     def update(self, t, actual, edge_points):
-        """Tool-origin target at time t (actual pose and edge points are only logged)."""
-        start = 0.0
-        for phase, a, b, duration, cut_index in self.segments:
-            if t < start + duration:
-                fraction = (t - start) / duration if duration > 0 else 1.0
-                target = (1 - fraction) * a + fraction * b
+        """Tool-origin target at time t, given the measured tool origin."""
+        s = self.settings
+        actual = np.asarray(actual, dtype=float)
+        while self.index < len(self.segments):
+            phase, a, b, duration, cut_index = self.segments[self.index]
+            elapsed = t - self.segment_start
+            if elapsed < duration:
+                target = a + (elapsed / duration) * (b - a)
                 break
-            start += duration
+            target = b
+            if phase == "descend":
+                if np.linalg.norm(actual - b) > s.position_tolerance_m:
+                    self.arrived_since = None
+                    break
+                self.arrived_since = t if self.arrived_since is None else self.arrived_since
+                if t - self.arrived_since < s.bottom_hold_s:
+                    break
+                self.arrived_since = None
+                self.segment_start = t
+            else:
+                self.segment_start += duration
+            self.index += 1
         else:
             phase, cut_index, target = "done", self.cut_index, self.segments[-1][2].copy()
         if phase != self.phase or cut_index != self.cut_index:

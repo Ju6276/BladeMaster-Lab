@@ -12,7 +12,7 @@ from .topology import components
 from .provenance import git_revision
 
 
-def run(output, sharpness=0.9, dt=0.002, duration=1.0):
+def run(output, sharpness=0.9, dt=0.002, duration=1.0, sampling_seed=0):
     cfg = Config(
         size=(0.14, 0.10, 0.08),
         grid_spacing=0.01,
@@ -24,6 +24,7 @@ def run(output, sharpness=0.9, dt=0.002, duration=1.0):
         blade_half_size=(0.0005, 0.06, 0.02),
         free_blade=True,
         sharpness=sharpness,
+        sampling_seed=sampling_seed,
     )
     steps = round(duration / dt)
     if steps < 1 or not np.isclose(steps * dt, duration):
@@ -99,6 +100,7 @@ def run(output, sharpness=0.9, dt=0.002, duration=1.0):
         "wall_s": meta["wall_s_excluding_jit"],
         "orientation_change_deg": float(np.rad2deg(turn)),
         "horizontal_displacement_m": saved["blade_position"][-1][0, :2].tolist(),
+        "final_blade_height_m": float(saved["blade_position"][-1][0, 2]),
         "minimum_det_f_sampled": minimum,
     }
     write(out / "result.json", result)
@@ -111,5 +113,6 @@ if __name__ == "__main__":
     p.add_argument("--sharpness", type=float, default=0.9)
     p.add_argument("--dt", type=float, default=0.002)
     p.add_argument("--duration", type=float, default=1.0)
+    p.add_argument("--sampling-seed", type=int, default=0)
     a = p.parse_args()
-    run(a.output, a.sharpness, a.dt, a.duration)
+    run(a.output, a.sharpness, a.dt, a.duration, a.sampling_seed)

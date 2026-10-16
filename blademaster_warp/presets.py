@@ -1,5 +1,6 @@
 """Shared material and blade configurations."""
 
+import math
 from dataclasses import replace
 from .geometry import BANANA_DEMO_SIZE_M, DEMO_KNIFE_HALF_SIZE_M, DEMO_KNIFE_BEVEL_HEIGHT_M
 from .solver import Config
@@ -36,3 +37,16 @@ def banana_config(*, paper_material=True):
         dt=0.0000625,
         contact_reference_dt=0.000025,
     )
+
+
+def banana_dt(cfg, spacing, robot_step=0.001):
+    """Material step for a grid spacing: at most 62.5 us and half the grid CFL limit.
+
+    At 3 mm, 62.5 us (CFL 0.77) leaves kinetic energy growing after the cut while
+    41.7 us decays; see docs/RESULTS.md. The step divides the robot step exactly.
+    """
+    nu = cfg.poisson_ratio
+    p_modulus = cfg.young_modulus * (1 - nu) / ((1 + nu) * (1 - 2 * nu))
+    wave_speed = math.sqrt(p_modulus / cfg.density)
+    limit = min(0.0000625, 0.5 * spacing / wave_speed)
+    return robot_step / math.ceil(robot_step / limit - 1e-9)

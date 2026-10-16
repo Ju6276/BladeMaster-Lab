@@ -33,10 +33,27 @@ def test_explicit_material_overrides_do_not_change_other_parameters():
     )
     changed = asdict(
         material_config(
-            SimpleNamespace(material="paper-banana", dt=0.0000125, spacing=0.003, cutting_energy=750.0)
+            SimpleNamespace(
+                material="paper-banana", dt=0.0000125, spacing=0.003, cutting_energy=750.0, interval=0.001
+            )
         )
     )
     assert {k for k in base if base[k] != changed[k]} == {"dt", "grid_spacing", "cutting_energy"}
+
+
+def test_banana_step_follows_grid_spacing_unless_given():
+    from types import SimpleNamespace
+    from blademaster_warp.franka_run import material_config
+
+    def dt(spacing, given=None):
+        args = SimpleNamespace(
+            material="paper-banana", dt=given, spacing=spacing, cutting_energy=None, interval=0.001
+        )
+        return material_config(args).dt
+
+    assert dt(None) == dt(0.006) == pytest.approx(62.5e-6)
+    assert dt(0.003) == pytest.approx(40e-6)
+    assert dt(0.003, given=31.25e-6) == 31.25e-6
 
 
 def test_jacobian_finite_difference():

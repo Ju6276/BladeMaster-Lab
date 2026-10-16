@@ -24,7 +24,7 @@ def target_at(t, initial):
 
 def material_config(args):
     from .solver import Config
-    from .presets import banana_config
+    from .presets import banana_config, banana_dt
 
     # Shared banana material and assets. Only the rigid-body integration owner
     # changes; material/contact kernels and their numerical settings do not.
@@ -49,6 +49,8 @@ def material_config(args):
     }
     if args.spacing is not None:
         overrides["grid_spacing"] = args.spacing
+        if args.material == "paper-banana" and args.dt is None:
+            overrides["dt"] = banana_dt(cfg, args.spacing, args.interval)
     if getattr(args, "sampling_seed", None) is not None:
         overrides["sampling_seed"] = args.sampling_seed
     if getattr(args, "contact_scaling", "physical") == "per-step":
@@ -638,7 +640,10 @@ def parser():
         help="paper-banana: paper §IV-C material on the 120 mm synthetic banana",
     )
     p.add_argument(
-        "--dt", type=float, default=None, help="Defaults: elastic block 250 us; paper banana 62.5 us"
+        "--dt",
+        type=float,
+        default=None,
+        help="Defaults: elastic block 250 us; paper banana min(62.5 us, half the grid CFL limit), 40 us at 3 mm",
     )
     p.add_argument(
         "--contact-scaling",

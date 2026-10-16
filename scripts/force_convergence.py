@@ -25,7 +25,7 @@ DESCENT_S, HOLD_S, SPEED = 1.8, 0.2, 0.02
 START_EDGE = DESCENT_S * SPEED
 
 
-def cut_trace(spacing, seed):
+def cut_trace(spacing, seed, blade_contact_radius=0.0):
     base = banana_config()
     cfg = replace(
         base,
@@ -35,6 +35,7 @@ def cut_trace(spacing, seed):
         external_tool=True,
         grid_storage="compact",
         cache_topology=True,
+        blade_contact_radius=blade_contact_radius,
     )
     s = Solver(cfg)
     port = ExternalToolPort(s)
@@ -104,6 +105,7 @@ def main():
     p.add_argument("--spacings", type=float, nargs="+", default=[0.006, 0.005, 0.004, 0.003])
     p.add_argument("--seeds", type=int, default=20, help="Sampling seeds 1..N per spacing")
     p.add_argument("--seeds-for", type=float, nargs=2, action="append", default=[], metavar=("SPACING", "N"))
+    p.add_argument("--blade-contact-radius", type=float, default=0.0, help="Metres; 0: particle radius h/4")
     a = p.parse_args()
     out = Path(a.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -115,7 +117,7 @@ def main():
             if path.exists():
                 run = json.loads(path.read_text())
             else:
-                run = cut_trace(spacing, seed)
+                run = cut_trace(spacing, seed, a.blade_contact_radius)
                 path.write_text(json.dumps(run))
             runs.append(run)
             print(

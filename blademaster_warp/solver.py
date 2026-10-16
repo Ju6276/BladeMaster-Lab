@@ -31,6 +31,8 @@ class Config:
     contact_reference_dt: float = 0.0
     cutting_energy: float = 0.5
     sharpness: float = 0.9
+    # Particle-to-knife contact distance in metres; 0 uses the particle radius h/4.
+    blade_contact_radius: float = 0.0
     blade_mass: float = 0.2
     blade_half_size: tuple = (0.0005, 0.025, 0.02)
     drive_stiffness: float = 250.0
@@ -139,6 +141,7 @@ class Solver:
         self.volume = (cfg.grid_spacing / 2) ** 3
         self.mass = cfg.density * self.volume
         self.radius = cfg.grid_spacing / 4
+        self.blade_offset = cfg.blade_contact_radius or self.radius
         self.mu = cfg.young_modulus / (2 * (1 + cfg.poisson_ratio))
         self.lam = (
             cfg.young_modulus * cfg.poisson_ratio / ((1 + cfg.poisson_ratio) * (1 - 2 * cfg.poisson_ratio))
@@ -445,6 +448,7 @@ class Solver:
                 self.half,
                 cfg.blade_bevel_height,
                 self.radius,
+                self.blade_offset,
                 cfg.grid_spacing,
                 self.mass,
                 cfg.blade_mass,

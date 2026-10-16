@@ -237,6 +237,7 @@ def rigid_at(
     half: wp.vec3,
     bevel: float,
     radius: float,
+    blade_offset: float,
     spacing: float,
     mass: float,
     blade_mass: float,
@@ -284,7 +285,7 @@ def rigid_at(
     # Bounding-sphere test: the particle cannot reach the blade within this step.
     blade_radius = wp.length(half)
     max_closing = wp.length(v[p]) + wp.length(tool_vel[0]) + wp.length(tool_omega[0]) * blade_radius
-    if wp.length(xp - origin) - blade_radius - radius > dt * max_closing:
+    if wp.length(xp - origin) - blade_radius - blade_offset > dt * max_closing:
         histories[1, p] = wp.vec3(0.0)
         impulse[p] = total
         return
@@ -292,13 +293,13 @@ def rigid_at(
     lever = wp.quat_rotate(q, closest_local)
     n = wp.quat_rotate(q, normal_local)
     relative = v[p] - tool_vel[0] - wp.cross(tool_omega[0], lever)
-    if distance - radius + dt * wp.min(wp.dot(relative, n), 0.0) >= 0.0:
+    if distance - blade_offset + dt * wp.min(wp.dot(relative, n), 0.0) >= 0.0:
         histories[1, p] = wp.vec3(0.0)
         impulse[p] = total
         return
     me = blade_effective_mass(mass, lever, n, q, blade_mass, inertia_inv, mobility, tool_model)
     j_blade, h_blade = penalty_impulse(
-        distance - radius, relative, n, me, histories[1, p], dt, sn, mus, mud, gk, gc
+        distance - blade_offset, relative, n, me, histories[1, p], dt, sn, mus, mud, gk, gc
     )
     histories[1, p] = h_blade
     if wp.length_sq(j_blade) > 0.0:
@@ -313,7 +314,7 @@ def rigid_at(
                 q,
                 tool_omega[0],
                 half,
-                radius,
+                blade_offset,
                 spacing,
                 damage,
                 threshold,
@@ -337,6 +338,7 @@ def rigid_and_speed(
     half: wp.vec3,
     bevel: float,
     radius: float,
+    blade_offset: float,
     spacing: float,
     mass: float,
     blade_mass: float,
@@ -374,6 +376,7 @@ def rigid_and_speed(
         half,
         bevel,
         radius,
+        blade_offset,
         spacing,
         mass,
         blade_mass,

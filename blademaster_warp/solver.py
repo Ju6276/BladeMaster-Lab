@@ -158,6 +158,8 @@ class Solver:
         self.v = zeros(self.n, wp.vec3)
         self.F = array(np.tile(np.eye(3), (self.n, 1, 1)), wp.mat33)
         self.Fp = array(np.tile(np.eye(3), (self.n, 1, 1)), wp.mat33)
+        # First Piola stress of the current F, Fp; written by every material step.
+        self.stress = zeros(self.n, wp.mat33)
         self.codes, self.damage = zeros(self.n, int), zeros(self.n, float)
         self.nodes = array(nodes, int)
         self.weights = array(weights, float)
@@ -217,6 +219,11 @@ class Solver:
         self.cut_index = 0
         self._batches = {}
         self.graph_build_s = 0.0
+        self.refresh_stress()
+
+    def refresh_stress(self):
+        """Recompute the stored stress; needed after writing F or Fp from the host."""
+        self.launch(m.compute_stress, self.n, [self.F, self.Fp, self.mu, self.lam, self.stress, self.errors])
 
     def launch(self, kernel, dim, args):
         wp.launch(kernel, dim, args, device=self.device)
@@ -250,21 +257,17 @@ class Solver:
             self.n,
             [
                 self.v,
-                self.F,
-                self.Fp,
+                self.stress,
                 self.impulses,
                 self.slots,
                 self.weights,
                 self.gradients,
                 self.mass,
                 self.volume,
-                self.mu,
-                self.lam,
                 cfg.dt,
                 self.grid_mass,
                 self.momentum,
                 self.grid_impulse,
-                self.errors,
             ],
         )
         self._material_transfers()
@@ -375,7 +378,9 @@ class Solver:
                 self.coupled_remapped,
                 cfg.dt,
                 self.mu,
+                self.lam,
                 cfg.yield_stress,
+                self.stress,
                 self.errors,
             ],
         )
@@ -489,7 +494,7 @@ class Solver:
             self.launch(
                 c.pairs_all,
                 (self.n, PAIR_LANES),
-                [*contact, *history, PAIR_LANES, self.impulses, self.errors],
+                [*contact, *history, PAIR_LANES, self.speed, self.impulses, self.errors],
             )
         else:
             self.pair_grid.build(self.x, 2 * self.radius)

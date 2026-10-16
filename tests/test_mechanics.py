@@ -158,6 +158,7 @@ def test_material_step_fp64_and_momentum(viscosity):
     impulse = rng.normal(scale=1e-8, size=(s.n, 3)).astype(np.float32)
     s.v.assign(vel)
     s.F.assign(F)
+    s.refresh_stress()
     s.codes.assign(codes)
     s.impulses.assign(impulse)
     x = s.x.numpy().astype(float)

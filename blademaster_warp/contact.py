@@ -281,10 +281,21 @@ def rigid_at(
     # Blade: closest point on the (beveled) box, relative velocity at that point.
     q = tool_rot[0]
     origin = tool_pos[0]
+    # Bounding-sphere test: the particle cannot reach the blade within this step.
+    blade_radius = wp.length(half)
+    max_closing = wp.length(v[p]) + wp.length(tool_vel[0]) + wp.length(tool_omega[0]) * blade_radius
+    if wp.length(xp - origin) - blade_radius - radius > dt * max_closing:
+        histories[1, p] = wp.vec3(0.0)
+        impulse[p] = total
+        return
     closest_local, normal_local, distance = blade_query(wp.quat_rotate_inv(q, xp - origin), half, bevel)
     lever = wp.quat_rotate(q, closest_local)
     n = wp.quat_rotate(q, normal_local)
     relative = v[p] - tool_vel[0] - wp.cross(tool_omega[0], lever)
+    if distance - radius + dt * wp.min(wp.dot(relative, n), 0.0) >= 0.0:
+        histories[1, p] = wp.vec3(0.0)
+        impulse[p] = total
+        return
     me = blade_effective_mass(mass, lever, n, q, blade_mass, inertia_inv, mobility, tool_model)
     j_blade, h_blade = penalty_impulse(
         distance - radius, relative, n, me, histories[1, p], dt, sn, mus, mud, gk, gc
@@ -538,12 +549,21 @@ def pairs_all(
     capacity: int,
     n: int,
     lanes: int,
+    speed: wp.array(dtype=float),
     impulses: wp.array(dtype=wp.vec3),
     errors: wp.array(dtype=int),
 ):
-    """All-pairs search over (particle, lane) threads; lane k takes q = p+1+k, p+1+k+lanes, ..."""
+    """All-pairs search over (particle, lane) threads; lane k takes q = p+1+k, p+1+k+lanes, ...
+
+    Pairs farther apart than 2 radius + 2 dt max_speed cannot touch this step
+    and are rejected before the exact test in pair_at.
+    """
     p, k = wp.tid()
+    xp = x[p]
+    reach = 2.0 * radius + 2.0 * dt * speed[0]
     for q in range(p + 1 + k, n, lanes):
+        if wp.length_sq(x[q] - xp) >= reach * reach:
+            continue
         pair_at(
             p,
             q,

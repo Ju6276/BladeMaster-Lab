@@ -74,44 +74,79 @@ def node_lists(
         links[s] = wp.atomic_exch(heads, node, s)
 
 
+@wp.func
+def corotated_stress(
+    U: wp.mat33, sigma: wp.vec3, V: wp.mat33, plastic_inverse: wp.mat33, mu: float, lam: float
+):
+    """First Piola stress of fixed corotated elasticity, from the SVD f = U diag(sigma) V^T
+    of the elastic deformation f = F Fp^-1:
+
+        P = (2 mu (f - R) + lam (J - 1) J f^-T) Fp^-T,  R = U V^T, J = det f.
+    """
+    J = sigma[0] * sigma[1] * sigma[2]
+    diagonal = wp.vec3(0.0)
+    for i in range(3):
+        diagonal[i] = 2.0 * mu * (sigma[i] - 1.0) + lam * (J - 1.0) * J / sigma[i]
+    return U * wp.diag(diagonal) * wp.transpose(V) * wp.transpose(plastic_inverse)
+
+
+@wp.func
+def stress_at(
+    p: int,
+    F: wp.array(dtype=wp.mat33),
+    Fp: wp.array(dtype=wp.mat33),
+    mu: float,
+    lam: float,
+    stress: wp.array(dtype=wp.mat33),
+    errors: wp.array(dtype=int),
+):
+    plastic_inverse = wp.inverse(Fp[p])
+    f = F[p] * plastic_inverse
+    J = wp.determinant(f)
+    if J <= 0.0 or not wp.isfinite(J):
+        wp.atomic_add(errors, 1, 1)
+        stress[p] = wp.mat33(0.0)
+        return
+    U, sigma, V = wp.svd3(f)
+    stress[p] = corotated_stress(U, sigma, V, plastic_inverse, mu, lam)
+
+
+@wp.kernel
+def compute_stress(
+    F: wp.array(dtype=wp.mat33),
+    Fp: wp.array(dtype=wp.mat33),
+    mu: float,
+    lam: float,
+    stress: wp.array(dtype=wp.mat33),
+    errors: wp.array(dtype=int),
+):
+    stress_at(wp.tid(), F, Fp, mu, lam, stress, errors)
+
+
 @wp.kernel
 def p2g(
     v: wp.array(dtype=wp.vec3),
-    F: wp.array(dtype=wp.mat33),
-    Fp: wp.array(dtype=wp.mat33),
+    stress: wp.array(dtype=wp.mat33),
     impulses: wp.array(dtype=wp.vec3),
     slots: wp.array2d(dtype=int),
     weights: wp.array2d(dtype=float),
     gradients: wp.array2d(dtype=wp.vec3),
     mass: float,
     volume: float,
-    mu: float,
-    lam: float,
     dt: float,
     grid_mass: wp.array(dtype=float),
     momentum: wp.array(dtype=wp.vec3),
     grid_impulse: wp.array(dtype=wp.vec3),
-    errors: wp.array(dtype=int),
 ):
+    """Scatter mass, momentum and stress plus contact impulse to the grid (stress from the previous update)."""
     p = wp.tid()
-    plastic_inverse = wp.inverse(Fp[p])
-    f = F[p] * plastic_inverse
-    J = wp.determinant(f)
-    if J <= 0.0 or not wp.isfinite(J):
-        wp.atomic_add(errors, 1, 1)
-        return
-    U, sigma, V = wp.svd3(f)
-    R = U * wp.transpose(V)
-    stress = (2.0 * mu * (f - R) + lam * (J - 1.0) * J * wp.transpose(wp.inverse(f))) * wp.transpose(
-        plastic_inverse
-    )
     for a in range(8):
         s = slots[p, a]
         if s >= 0:
             w = weights[p, a]
             wp.atomic_add(grid_mass, s, mass * w)
             wp.atomic_add(momentum, s, mass * w * v[p])
-            wp.atomic_add(grid_impulse, s, w * impulses[p] - dt * volume * stress * gradients[p, a])
+            wp.atomic_add(grid_impulse, s, w * impulses[p] - dt * volume * stress[p] * gradients[p, a])
 
 
 @wp.func
@@ -330,20 +365,6 @@ def g2p_at(
 
 
 @wp.kernel
-def g2p(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    slots: wp.array2d(dtype=int),
-    weights: wp.array2d(dtype=float),
-    old_v: wp.array(dtype=wp.vec3),
-    new_v: wp.array(dtype=wp.vec3),
-    dt: float,
-    flip: float,
-):
-    g2p_at(wp.tid(), x, v, slots, weights, old_v, new_v, dt, flip)
-
-
-@wp.kernel
 def g2p_remap(
     x: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
@@ -363,37 +384,6 @@ def g2p_remap(
         wp.atomic_add(out, slots[p, a], mass * weights[p, a] * v[p])
 
 
-@wp.kernel
-def remap(
-    v: wp.array(dtype=wp.vec3),
-    slots: wp.array2d(dtype=int),
-    weights: wp.array2d(dtype=float),
-    mass: float,
-    out: wp.array(dtype=wp.vec3),
-):
-    p = wp.tid()
-    for a in range(8):
-        wp.atomic_add(out, slots[p, a], mass * weights[p, a] * v[p])
-
-
-@wp.kernel
-def update_F(
-    F: wp.array(dtype=wp.mat33),
-    slots: wp.array2d(dtype=int),
-    gradients: wp.array2d(dtype=wp.vec3),
-    grid_mass: wp.array(dtype=float),
-    momentum: wp.array(dtype=wp.vec3),
-    dt: float,
-):
-    p = wp.tid()
-    rate = wp.mat33(0.0)
-    for a in range(8):
-        s = slots[p, a]
-        if grid_mass[s] > 0.0:
-            rate += wp.outer(momentum[s] / grid_mass[s], gradients[p, a])
-    F[p] += dt * rate
-
-
 @wp.func
 def plastic_at(
     p: int,
@@ -403,19 +393,25 @@ def plastic_at(
     yield_stress: float,
     errors: wp.array(dtype=int),
 ):
-    """Hencky-strain von Mises return map."""
+    """Hencky-strain von Mises return map.
+
+    Returns the SVD (U, sigma, V) of the elastic deformation after projection,
+    and False if the material is inverted.
+    """
     U, s, V = wp.svd3(F[p] * wp.inverse(Fp[p]))
     if wp.min(s) <= 0.0:
         wp.atomic_add(errors, 1, 1)
-        return
+        return U, s, V, False
     e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
     dev = e - wp.vec3((e[0] + e[1] + e[2]) / 3.0)
     norm = wp.length(dev)
     limit = yield_stress / (2.0 * mu) * wp.sqrt(2.0 / 3.0)
     if norm > limit:
         ep = e - (1.0 - limit / norm) * dev
-        next_f = U * wp.diag(wp.vec3(wp.exp(ep[0]), wp.exp(ep[1]), wp.exp(ep[2]))) * wp.transpose(V)
+        s = wp.vec3(wp.exp(ep[0]), wp.exp(ep[1]), wp.exp(ep[2]))
+        next_f = U * wp.diag(s) * wp.transpose(V)
         Fp[p] = wp.inverse(next_f) * F[p]
+    return U, s, V, True
 
 
 @wp.kernel
@@ -426,7 +422,7 @@ def plastic_project(
     yield_stress: float,
     errors: wp.array(dtype=int),
 ):
-    plastic_at(wp.tid(), F, Fp, mu, yield_stress, errors)
+    U, s, V, valid = plastic_at(wp.tid(), F, Fp, mu, yield_stress, errors)
 
 
 @wp.kernel
@@ -439,9 +435,12 @@ def update_F_plastic(
     momentum: wp.array(dtype=wp.vec3),
     dt: float,
     mu: float,
+    lam: float,
     yield_stress: float,
+    stress: wp.array(dtype=wp.mat33),
     errors: wp.array(dtype=int),
 ):
+    """MUSL deformation update, plastic projection, and the stress for the next step."""
     p = wp.tid()
     rate = wp.mat33(0.0)
     for a in range(8):
@@ -450,7 +449,13 @@ def update_F_plastic(
             rate += wp.outer(momentum[s] / grid_mass[s], gradients[p, a])
     F[p] += dt * rate
     if yield_stress > 0.0:
-        plastic_at(p, F, Fp, mu, yield_stress, errors)
+        U, sigma, V, valid = plastic_at(p, F, Fp, mu, yield_stress, errors)
+        if valid:
+            stress[p] = corotated_stress(U, sigma, V, wp.inverse(Fp[p]), mu, lam)
+        else:
+            stress[p] = wp.mat33(0.0)
+    else:
+        stress_at(p, F, Fp, mu, lam, stress, errors)
 
 
 @wp.kernel

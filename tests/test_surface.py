@@ -248,3 +248,12 @@ def test_box_lstsq_matches_scipy_including_rank_deficient_normals():
         ref = lsq_linear(A, b, bounds=(lower, upper), tol=1e-12).x
         assert np.all(x >= lower) and np.all(x <= upper)
         assert np.linalg.norm(A @ x - b) <= np.linalg.norm(A @ ref - b) + 1e-9
+
+
+def test_cut_pieces_match_the_analytic_pieces_and_stay_closed():
+    from scripts.surface_accuracy import CUTS, accuracy
+
+    for cuts in CUTS.values():
+        result = accuracy(0.003, cuts)
+        assert result["open_edges"] == 0
+        assert result["mean_error_cells"] < 0.05 and result["max_error_cells"] < 0.5

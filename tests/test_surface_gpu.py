@@ -58,6 +58,26 @@ def test_cuda_embedding_separates_both_cut_faces_like_cpu(embeddings):
         np.testing.assert_allclose(actual[select, 0], mesh.reference[select, 0] + shift, atol=1.0e-12)
 
 
+def test_cuda_vertices_match_cpu_after_two_crossing_cuts(embeddings):
+    surface, ref, cpu, gpu = embeddings
+    surface.sweep([[0, -0.04, 0.04], [0, 0.04, 0.04]], [[0, -0.04, -0.01], [0, 0.04, -0.01]])
+    surface.sweep(
+        [[-0.04, 0.002, 0.04], [0.04, 0.002, 0.04]],
+        [[-0.04, 0.002, -0.01], [0.04, 0.002, -0.01]],
+        cut_index=1,
+        normal_world=[0, 1, 0],
+    )
+    mesh = surface.mesh()
+    assert len(np.unique(mesh.codes)) == 4
+    rng = np.random.default_rng(7)
+    codes = np.where(ref[:, 0] < 0, 1, 2) + 3 * np.where(ref[:, 1] < 0.002, 1, 2)
+    x = ref + rng.normal(0, 0.001, ref.shape)
+    F = np.tile(np.eye(3), (len(ref), 1, 1)) + rng.normal(0, 0.03, (len(ref), 3, 3))
+    cpu.material_grid.extension_nodes = gpu.material_grid.extension_nodes = 0
+    np.testing.assert_allclose(gpu.vertices(mesh, x, F, codes), cpu.vertices(mesh, x, F, codes), atol=1.0e-12)
+    assert gpu.material_grid.extension_nodes == cpu.material_grid.extension_nodes
+
+
 def test_cuda_empty_support_stays_invalid_instead_of_freezing_or_zeroing(embeddings):
     surface, ref, cpu, gpu = embeddings
     x = ref.copy()

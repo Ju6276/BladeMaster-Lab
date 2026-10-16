@@ -534,6 +534,7 @@ class MaterialEmbedding:
 
     def field(self, x, F, particle_codes, code):
         result = np.full_like(self.nodes, np.nan, dtype=float)
+        self.extended = np.zeros(len(self.nodes), bool)
         for i, (ids, w) in enumerate(self.support):
             valid = np.array([compatible(code, c) for c in particle_codes[ids]], dtype=bool)
             ids, w = ids[valid], w[valid]
@@ -544,6 +545,7 @@ class MaterialEmbedding:
                 if not len(ids):
                     continue
                 self.extension_nodes += 1
+                self.extended[i] = True
             extrapolated = x[ids] + np.einsum("nij,nj->ni", F[ids], self.nodes[i] - self.ref[ids])
             result[i] = (extrapolated * w[:, None]).sum(0) / w.sum()
         return result
@@ -575,10 +577,13 @@ class MaterialEmbedding:
             weights = np.where(OFFSETS[None, :, :] == 1, local[:, None, :], 1 - local[:, None, :]).prod(2)
             embedded = Mesh(mesh.reference, mesh.triangles, mesh.codes, ids, weights)
             return self.material_grid.vertices(embedded, x, F, particle_codes)
+        # extension_nodes here counts vertex corner lookups that needed the extension ring.
         result = np.empty_like(mesh.reference)
+        extended_corners = self.extension_nodes
         for code in np.unique(mesh.codes):
             field = self.field(x, F, particle_codes, int(code))
             ids = np.flatnonzero(mesh.codes == code)
+            extended_corners += int(self.extended[mesh.cells[ids]].sum())
             values = field[mesh.cells[ids]]
             weights = mesh.weights[ids]
             if not np.isfinite(values[weights > 1.0e-9]).all():
@@ -586,4 +591,5 @@ class MaterialEmbedding:
                     "Surface region has no compatible material support; refine reference grid/support"
                 )
             result[ids] = np.nansum(values * weights[..., None], axis=1)
+        self.extension_nodes = extended_corners
         return result

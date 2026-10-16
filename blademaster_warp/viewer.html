@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPU 切割 · 在线粒子预览</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#192a35;background:#eaf0f1}*{box-sizing:border-box}body{margin:0}header{padding:18px 24px;background:#fff;border-bottom:1px solid #cdd7db;display:flex;justify-content:space-between;align-items:center}h1{font-size:18px;margin:0}small{color:#5d707b}main{display:grid;grid-template-columns:minmax(0,1fr) 260px;height:calc(100vh - 72px)}canvas{width:100%;height:100%;touch-action:none}aside{padding:22px;background:#f8fbfb;border-left:1px solid #cdd7db}dl{margin:16px 0}dt{font-size:12px;color:#627982;margin-top:18px}dd{margin:5px 0;font:15px ui-monospace,monospace;white-space:pre-line}p{font-size:13px;line-height:1.6}.dot{color:#18745e}#connection{font-size:13px}button{border:1px solid #b4c3c9;background:white;border-radius:5px;padding:8px;cursor:pointer}@media(max-width:700px){main{grid-template-columns:1fr;height:auto}canvas{height:65vh}aside{border:0}dl{display:grid;grid-template-columns:1fr 1fr}}
+</style>
+<header><div><h1>GPU 切割 · 在线粒子预览</h1><small>GPU 实际状态 / 固定世界坐标控制</small></div><span id="connection">等待仿真…</span></header>
+<main><canvas id="scene" aria-label="香蕉粒子和刀具三维预览"></canvas><aside>
+<button id="reset">重置观看角度</button>
+<dl><dt>仿真时间</dt><dd id="clock">—</dd><dt>材料配置</dt><dd id="preset">—</dd><dt>刀具材料反力</dt><dd id="force">—</dd><dt>目标刃口 · mm</dt><dd id="target">—</dd><dt>当前切割</dt><dd id="cut">—</dd><dt>预览性能</dt><dd id="performance">—</dd></dl>
+<p>拖动：旋转视角<br>滚轮：缩放<br>视角不会改变遥操作轴。</p>
+<p>SpaceMouse：推前 +X，右推 −Y，上提 +Z。左键开始新一刀，右键结束切割，双键停止增加目标运动。</p>
+<p>这里是独立刀具与材料台。显示的是求解后的粒子；没有预切装饰网格，也没有机器人或触觉传感器。</p>
+</aside></main>
+<script>
+const canvas=document.querySelector('#scene'),ctx=canvas.getContext('2d');let state=null,yaw=-1.05,elevation=.63,zoom=1,drag=null,lastT=-1,lastDraw=0,frames=0,fps=0,fpsAt=performance.now(),rtt=0;
+const text=(id,value)=>document.getElementById(id).textContent=value;
+function rotate(q,v){const [x,y,z,w]=q,[a,b,c]=v,tx=2*(y*c-z*b),ty=2*(z*a-x*c),tz=2*(x*b-y*a);return [a+w*tx+y*tz-z*ty,b+w*ty+z*tx-x*tz,c+w*tz+x*ty-y*tx];}
+function project(p){const [x,y,z]=p,c=Math.cos(yaw),s=Math.sin(yaw),h=c*x+s*y;return [canvas.width/2+(-s*x+c*y)*scale,canvas.height*.59+(Math.sin(elevation)*h-Math.cos(elevation)*(z-.012))*scale,Math.cos(elevation)*h+Math.sin(elevation)*z];}
+let scale=1;
+function polygon(points,color,stroke='#44515b'){ctx.beginPath();points.forEach((p,i)=>{const v=project(p);i?ctx.lineTo(v[0],v[1]):ctx.moveTo(v[0],v[1]);});ctx.closePath();ctx.fillStyle=color;ctx.fill();ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.stroke();}
+function draw(){if(!state?.particles_m)return;const start=performance.now();const dpr=window.devicePixelRatio||1,w=canvas.clientWidth*dpr,h=canvas.clientHeight*dpr;if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}scale=Math.min(w/.23,h/.18)*zoom;ctx.fillStyle='#eaf0f1';ctx.fillRect(0,0,w,h);
+polygon([[-.085,-.0525,0],[.085,-.0525,0],[.085,.0525,0],[-.085,.0525,0]],'#bb976f','#8f7459');
+const items=state.particles_m.map((p,i)=>({depth:project(p)[2],p,index:i}));
+const half=state.blade_half_size||[.0005,.04,.02],b=state.blade_bevel_height||0,q=state.blade_xyzw,pos=state.blade_position_m;
+const outline=[[0,-half[2]],[half[0],-half[2]+b],[half[0],half[2]],[-half[0],half[2]],[-half[0],-half[2]+b]],vertices=[];
+for(const y of [-half[1],half[1]])for(const [x,z]of outline)vertices.push(rotate(q,[x,y,z]).map((v,i)=>v+pos[i]));
+const faces=[[4,3,2,1,0],[5,6,7,8,9],...[0,1,2,3,4].map(i=>[i,(i+1)%5,(i+1)%5+5,i+5])];
+faces.forEach((f,i)=>{const p=f.map(j=>vertices[j]);items.push({depth:p.reduce((s,p)=>s+project(p)[2],0)/p.length,face:p,color:i<2?'#697d8e':'#9badb9'});});
+items.sort((a,b)=>a.depth-b.depth);for(const item of items){if(item.face){polygon(item.face,item.color);continue;}const p=project(item.p),radius=(state.particle_radius_m||.0015)*scale,u=state.reference_u?.[item.index]??.5;ctx.beginPath();ctx.arc(p[0],p[1],Math.max(1,radius),0,Math.PI*2);ctx.fillStyle=`rgb(${255*(.15+.75*u)},${255*(.65-.12*u)},${255*(.8-.65*u)})`;ctx.fill();}
+for(const [end,label,color]of [[[.025,0,0],'+X','#a64f43'],[[0,.025,0],'+Y','#3f755b'],[[0,0,.025],'+Z','#426a99']]){const origin=[-.07,-.04,.001],a=project(origin),b=project(end.map((v,i)=>v+origin[i]));ctx.strokeStyle=color;ctx.lineWidth=2*dpr;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();ctx.fillStyle=color;ctx.font=`${12*dpr}px system-ui`;ctx.fillText(label,b[0]+4*dpr,b[1]);}
+lastDraw=performance.now()-start;frames++;if(start-fpsAt>1000){fps=frames*1000/(start-fpsAt);frames=0;fpsAt=start;}text('performance',`${fps.toFixed(0)} FPS · draw ${lastDraw.toFixed(1)} ms\n服务器状态流 · 30 Hz`);window.previewMetrics={fps,drawMs:lastDraw,rttMs:rtt,time:state.time_s};}
+function updateState(next){state=next;if(!state.particles_m)return;text('connection',state.stale_input?'输入超时 / 保持目标':'● 仿真在线');text('clock',`${state.time_s.toFixed(2)} s`);text('preset',state.preset||'—');text('force',(state.blade_reaction_n||[]).map(v=>v.toFixed(3)).join(', ')+' N');text('target',(state.target_edge_m||[]).map(v=>(v*1000).toFixed(1)).join(', '));text('cut',`${state.cut_index+1} / ${state.cutting?'切割开启':'切割结束'}`);if(state.time_s!==lastT){draw();lastT=state.time_s;}}
+const events=new EventSource('/events');events.onmessage=e=>updateState(JSON.parse(e.data));events.onerror=()=>text('connection','连接已结束；保留最后一帧');
+canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId)};canvas.onpointerup=()=>drag=null;canvas.onpointermove=e=>{if(drag){yaw+=(e.clientX-drag[0])*.006;elevation=Math.max(.1,Math.min(1.4,elevation+(e.clientY-drag[1])*.006));drag=[e.clientX,e.clientY];draw()}};canvas.onwheel=e=>{e.preventDefault();zoom=Math.max(.4,Math.min(3,zoom*Math.exp(-e.deltaY*.001)));draw()};document.querySelector('#reset').onclick=()=>{yaw=-1.05;elevation=.63;zoom=1;draw()};window.onresize=draw;
+</script></html>

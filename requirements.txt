@@ -1,0 +1,12 @@
+warp-lang==1.18.0
+numpy==2.5.4
+scipy==1.18.1
+# For the independent FP64 reference checks:
+numba==0.68.0
+pytest==9.1.1
+# Articulated robot integration and replay (same environment):
+mujoco==3.3.7
+imageio==2.37.2
+imageio-ffmpeg==0.6.0
+# Read-only surface / whole-arm replay; system ffmpeg is also required.
+vtk==9.6.0

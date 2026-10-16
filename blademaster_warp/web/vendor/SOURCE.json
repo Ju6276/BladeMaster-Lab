@@ -1,0 +1,1 @@
+{"project":"three.js","revision":"r169","source":"https://github.com/mrdoob/three.js/tree/r169","files":["build/three.module.min.js","examples/jsm/controls/OrbitControls.js"],"license":"MIT; see THREE_LICENSE.txt","purpose":"Browser WebGL renderer only; no effect on simulation physics"}

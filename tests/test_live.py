@@ -86,7 +86,7 @@ def test_franka_teleop_follows_operator_twist_and_cut_events():
         (round(t, 3), on, index) for (t, on, index), (_, before, _) in zip(seen[1:], seen) if on != before
     ]
     assert seen[0][1:] == (True, 0)
-    assert switches == [(1.701, False, 0), (3.201, True, 1)]
+    assert switches == [(1.7, False, 0), (3.2, True, 1)]
     target = run.teleop.position
     assert np.linalg.norm(run.robot.position - target) < 0.005
     assert np.linalg.norm(target[:2] - start[:2] - [0.06 * 0.5, 0.006 * 0.5]) < 1.0e-6

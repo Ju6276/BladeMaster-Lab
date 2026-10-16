@@ -135,30 +135,17 @@ def render(directory, output=None, preview=False, layout="overview"):
             if layout != "paper":
                 draw.text((658, 420), "Particles | cut-history codes", font=small, fill=ink)
                 draw.line((640, 408, 1280, 408), fill=(255, 255, 255), width=3)
-            # Raw history codes are not connected-component IDs: code 0 can
-            # occur on both separated ends. Preserve the original coloring,
-            # and explain it rather than recoloring particles as fake pieces.
+            # Colors are cut-history codes (one ternary digit per cut), not connected components.
             legend_x = 18 if layout == "paper" else 658
-            draw.rectangle((legend_x - 6, 716, legend_x + 492, 763), fill=(241, 244, 246))
-            draw.text(
-                (legend_x, 719), "Colors show history codes, not separate pieces.", font=small, fill=ink
-            )
-            draw.text(
-                (legend_x, 742),
-                "Single cut: yellow = unmarked; blue/orange = cut sides.",
-                font=small,
-                fill=ink,
-            )
+            draw.rectangle((legend_x - 6, 739, legend_x + 300, 763), fill=(241, 244, 246))
+            draw.text((legend_x, 742), "Colors: cut-history codes", font=small, fill=ink)
             draw.line((640, 48, 640, 768), fill=(255, 255, 255), width=3)
             force = z["log"][np.argmin(abs(z["log"][:, 0] - now)), 7:10]
             draw.text(
                 (20, 777),
-                f"Material reaction: {np.linalg.norm(force):.3f} N  |  Recorded simulation time",
+                f"Material reaction: {np.linalg.norm(force):.3f} N",
                 font=small,
                 fill=ink,
-            )
-            draw.text(
-                (805, 777), "Independent implementation | synthetic assets", font=small, fill=(80, 90, 98)
             )
             if fi in (0, len(frames) // 2, len(frames) - 1):
                 frame.save(output.with_name(f"{output.stem}_{fi:04d}.png"))

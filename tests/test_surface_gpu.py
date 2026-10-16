@@ -86,4 +86,4 @@ def test_cuda_empty_support_stays_invalid_instead_of_freezing_or_zeroing(embeddi
     codes = np.full(len(ref), 2)
     assert np.isnan(gpu.field(x, F, codes, 1)).all()
     with pytest.raises(ValueError):
-        gpu.field(x, F, codes, 3**20)
+        gpu.field(x, F, codes, -1)

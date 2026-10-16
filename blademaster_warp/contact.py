@@ -401,7 +401,7 @@ def rigid_and_speed(
 
 @wp.func
 def find_key(keys: wp.array(dtype=wp.int64), key: wp.int64, capacity: int):
-    slot = int((key * wp.int64(2654435761)) % wp.int64(capacity))
+    slot = int((wp.uint64(key) * wp.uint64(2654435761)) % wp.uint64(capacity))
     result = int(-1)
     for probe in range(capacity):
         if keys[slot] == wp.int64(-1):

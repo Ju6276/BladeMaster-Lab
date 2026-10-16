@@ -310,7 +310,7 @@ def test_pair_recontact_reference_exclusion_and_equal_opposite_impulse(split):
     dt = 0.00025
     xd = arr(x, wp.vec3)
     vd = arr(vel, wp.vec3)
-    cd = arr(codes, int)
+    cd = arr(codes, wp.int64)
     grid = wp.HashGrid(16, 16, 16, device="cuda:0")
     grid.build(xd, 2 * radius)
     keys0 = wp.full(128, -1, dtype=wp.int64, device="cuda:0")

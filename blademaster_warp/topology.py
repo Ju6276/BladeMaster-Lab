@@ -1,4 +1,4 @@
-"""Mechanical connectivity from Eq. 8, independent of a display mesh."""
+"""Mechanical connected components from the reference grid and cut codes."""
 import numpy as np
 
 

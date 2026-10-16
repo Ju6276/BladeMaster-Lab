@@ -1,4 +1,4 @@
-"""Record GPU cutting states. Synthetic baseline and paper material parameters are distinct presets."""
+"""Standalone guided-blade runs (DexLab cut-push trajectory)."""
 import argparse
 from dataclasses import asdict, replace
 import hashlib
@@ -47,13 +47,10 @@ def run(out, name=DEFAULT_BANANA_PRESET, duration=8., push=True, cutting=True, d
     s=Solver(cfg);s.bx.assign([[-.03,0.,.036+cfg.blade_half_size[2]]])
     initial=s.state()
     source=Path(__file__).parent
-    manifest={'status':'running','implementation':'independent BladeMaster-equation Warp GPU implementation; not author code',
+    manifest={'status':'running',
         'preset':name,'config':asdict(cfg),'device':str(s.device),'device_name':s.device.name,'warp_version':wp.__version__,
         'particles':s.n,'simulation_duration_s':duration,'precision':'float32','push':push,'cutting':cutting,
         'revision':git_revision(),
-        'geometry_source':'DexLab synthetic curved fruit, not author mesh',
-        'trajectory_source':'DexLab cut-push, guided PD with explicit 10 N drive limit',
-        'surface':'this runner records particles only; shared linked-volume reconstruction is available through surface_runtime in franka_run and scenarios',
         'parameter_provenance':'DexLab synthetic baseline' if name=='dexlab-baseline' else
             'paper E,nu,rho,yield,blade mass,friction,Gc,sharpness; independent step size, geometry, contact scales, return map and drive',
         'sampling_hz':100.,'max_cut_index':18,'grid_hash_capacity':s.capacity,'pair_history_capacity':s.pair_capacity,

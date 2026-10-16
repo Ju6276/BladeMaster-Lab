@@ -1,4 +1,4 @@
-"""Incremental surface observation; consumes only current/past simulation state."""
+"""Incremental surface updates from the current simulation state."""
 from pathlib import Path
 import json
 import time
@@ -41,7 +41,6 @@ class SurfaceRecorder:
         self.timing_s=dict(node_embedding=0.,link_sweep=0.,mesh_construction=0.,vertex_embedding=0.,recording=0.)
         method={
             'method':'reference-grid linked volume, Hermite intersections, local-region dual contouring',
-            'implementation':'independent reference, not author code',
             'embedding_backend':embedding_backend,
             'ccd_backend':ccd_backend,
             'gpu_scope':(['compatible nodal position/deformation fields'] if embedding_backend=='cuda' else [])
@@ -49,16 +48,11 @@ class SurfaceRecorder:
             'cpu_scope':(['link CCD'] if ccd_backend=='cpu' else [])
                 +['Hermite updates','local regions and bounded QEF','triangle construction','final trilinear interpolation','recording'],
             'topology_cache':'reference mesh reused only while no cut-dependent cell is dirty; world-space vertex deformation still recomputed every observation',
-            'physics_effect':'none; surface never enters material or rigid contact',
             'surface_spacing_m':surface_spacing,
             'material_grid_spacing_m':cfg.grid_spacing,
-            'resolution_source':'explicit numerical choice; default half the MPM grid spacing, not an author-supplied setting',
             'embedding':'fixed trilinear weights on original MPM grid, compatible affine-extrapolated position fields',
-            'empty_node_extension':'one reference-grid support ring, same compatible cut side, affine exact; visualization only, independently chosen since paper does not specify empty-node handling',
-            'sampling':'continuous segment/segment detection with linearly interpolated actual blade AND material-link endpoints; interval recorded per frame',
-            'limitations':['linear material/blade motion between observations; needs interval convergence',
-                'reconstruction is not fully on GPU; surface resolution needs geometry convergence',
-                'independent embedding choice, not validated against author surface implementation']}
+            'empty_node_extension':'one reference-grid support ring, same compatible cut side, affine',
+            'sampling':'continuous segment/segment detection with linearly interpolated actual blade AND material-link endpoints; interval recorded per frame'}
         if self.directory is not None:
             (self.directory/'method.json').write_text(json.dumps(method,indent=2))
 

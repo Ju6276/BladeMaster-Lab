@@ -1,4 +1,4 @@
-"""Shared material/asset configuration, independent of who drives the knife."""
+"""Shared material and blade configurations."""
 from dataclasses import replace
 from .geometry import BANANA_DEMO_SIZE_M, DEMO_KNIFE_HALF_SIZE_M, DEMO_KNIFE_BEVEL_HEIGHT_M
 from .solver import Config
@@ -7,11 +7,7 @@ DEFAULT_BANANA_PRESET = 'paper-material'
 
 
 def banana_config(*, paper_material=True):
-    """Published material values on the original synthetic demo geometry.
-
-    Contact discretization, step size and synthetic assets are declared
-    numerical/test choices, not author data. Drivers only choose external_tool.
-    """
+    """Paper §IV-C banana material on the synthetic banana geometry."""
     cfg=Config(size=BANANA_DEMO_SIZE_M,grid_spacing=.006,dt=.00025,
                blade_half_size=DEMO_KNIFE_HALF_SIZE_M,
                blade_bevel_height=DEMO_KNIFE_BEVEL_HEIGHT_M,shape='banana')

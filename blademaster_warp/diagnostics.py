@@ -1,4 +1,4 @@
-"""State energy diagnostics, without modifying forces or filtering motion."""
+"""Kinetic, elastic and gravitational energy of the material state."""
 import warp as wp
 import numpy as np
 

@@ -1,9 +1,4 @@
-"""Fig. 3 mechanism test: 0.1 kg knife, 25 degrees, gravity and reaction only.
-
-Published: material E/nu/rho, knife mass/tilt, Table I particle count/timestep.
-Not published: block dimensions, blade dimensions/inertia, exact sharpness,
-Gc and contact coefficients. These remain declared independent test choices.
-"""
+"""Paper Fig. 3: 0.1 kg knife released at 25 degrees, gravity and material reaction only."""
 import argparse
 from dataclasses import asdict
 from pathlib import Path
@@ -29,8 +24,8 @@ def run(output,sharpness=.9,dt=.002,duration=1.):
     q=np.array([0.,np.sin(angle/2),0.,np.cos(angle/2)])
     height=.08+.015+cfg.blade_half_size[2]*np.cos(angle)+cfg.blade_half_size[0]*np.sin(angle)
     s.bq.assign([q]);s.bx.assign([[0.,0.,height]])
-    meta={'status':'running','experiment':'Fig3_freefall_mechanism_diagnostic',
-          'preset':'paper-freefall-declared-geometry','config':asdict(cfg),'device':s.device.name,
+    meta={'status':'running','experiment':'fig3_freefall',
+          'config':asdict(cfg),'device':s.device.name,
           'published_values':['E=6kPa','nu=0.4','rho=1100kg/m3','knife_mass=0.1kg','tilt=25deg',
                               'Table I: 8960 particles, dt=2ms'],
           'independent_choices':['block size 140x100x80mm','grid spacing 10mm','blade geometry/inertia',
@@ -62,8 +57,7 @@ def run(output,sharpness=.9,dt=.002,duration=1.):
     result={'status':'complete','component_sizes':counts.tolist(),'wall_s':meta['wall_s_excluding_jit'],
             'orientation_change_deg':float(np.rad2deg(turn)),
             'horizontal_displacement_m':saved['blade_position'][-1][0,:2].tolist(),
-            'minimum_det_f_sampled':minimum,
-            'note':'Mechanism test using published scalars and declared independent geometry, not an exact author scene.'}
+            'minimum_det_f_sampled':minimum}
     write(out/'result.json',result);print(result,flush=True)
 
 

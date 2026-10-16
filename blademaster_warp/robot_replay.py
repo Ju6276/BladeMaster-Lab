@@ -1,9 +1,4 @@
-"""Render the recorded MuJoCo visuals in the material replay's mm coordinates.
-
-Only forward kinematics is evaluated. No physics steps or authored robot motion.
-Compiled mesh vertices already include MuJoCo's mesh centering; geom_xmat/xpos
-provide the matching transforms. Collision proxies are not drawn twice.
-"""
+"""Recorded MuJoCo visuals for offline rendering."""
 import xml.etree.ElementTree as ET
 import numpy as np
 import mujoco as mj

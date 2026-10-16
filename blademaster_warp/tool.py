@@ -1,9 +1,4 @@
-"""Six-DOF rigid tool servo and unilateral convex-tool/plane contact.
-
-This is a documented local control/interface, not an author-supplied robot.
-Material reactions remain equal-and-opposite impulses. The table uses normal
-velocity constraints and Coulomb friction; there is no target-height clipping.
-"""
+"""Six-DOF tool servo, tool/board contact and external-tool step finalization."""
 import warp as wp
 
 

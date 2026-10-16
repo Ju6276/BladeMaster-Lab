@@ -1,9 +1,4 @@
-"""Paper-material diagnostics with explicit provenance, not author experiments.
-
-One prescribed vertical cut removes the DexLab PD actuator as a confounder.
-The banana geometry and trajectory are independently specified, not measured
-author assets. No result from this runner alone establishes reproduction.
-"""
+"""Prescribed vertical cut through the banana; used by the convergence sweep."""
 import argparse
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -63,8 +58,6 @@ def single_cut(output,dt=.000025,interval=.002,duration=3.8,graph=True,cache_top
           'independent_choices':['synthetic DexLab banana geometry','knife geometry','particle sampling',
                                  'material timestep','coupling interval','20 mm/s diagnostic motion',
                                  'PIC/FLIP fraction','contact scales','Hencky plasticity return map'],
-          'surface':'not recorded by this diagnostic; linked-volume reconstruction is a separate pipeline',
-          'acceptance':'a diagnostic, not reproduction of the author force curve',
           'revision':git_revision()}
     write(out/'manifest.json',meta)
     saved={k:[v] for k,v in s.state().items()}; traces=[]; minimum=1.
@@ -109,8 +102,7 @@ def single_cut(output,dt=.000025,interval=.002,duration=3.8,graph=True,cache_top
             'final_mean_det_f':float(np.linalg.det(saved['deformation'][-1]).mean()),
             'wall_s':meta['wall_s_excluding_jit'],'realtime_factor':duration/meta['wall_s_excluding_jit'],
             'maximum_interval_force_n':float(np.linalg.norm([v['blade_reaction_n'] for v in traces],axis=1).max()),
-            'minimum_det_f_sampled':minimum,'graph_build_s':s.graph_build_s,
-            'note':'Controlled driver diagnostic; not a robot, author trajectory, or force-curve validation.'}
+            'minimum_det_f_sampled':minimum,'graph_build_s':s.graph_build_s}
     write(out/'result.json',result);print(result,flush=True)
 
 

@@ -1,1 +1,1 @@
-"""Independent, equation-audited GPU cutting experiments; not author code."""
+"""BladeMaster TLMPM cutting on Warp/CUDA."""

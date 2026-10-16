@@ -1,10 +1,4 @@
-"""Reproducible numerical-sensitivity audit, without changing material parameters.
-
-The prescribed path isolates the material solver from robot tracking errors.
-This is not a comparison against measured forces, nor an author benchmark.
-Raw interval forces are retained. Common-time bins integrate impulses exactly;
-they do not filter forces inside the simulation or replace raw peak reporting.
-"""
+"""Time-step, coupling-interval and resolution sweep on a prescribed vertical cut."""
 import argparse
 import json
 from pathlib import Path

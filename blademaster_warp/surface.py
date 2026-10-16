@@ -1,14 +1,4 @@
-"""CPU reference linked-volume / Hermite / local dual-contouring surface.
-
-Implements the construction described in BladeMaster III-F independently.
-Only actual finite edge sweeps sever links. No future path or mechanical
-component mesh is used. This is one-way visualization, never collision input.
-
-Two explicit implementation choices, unspecified in the paper:
-* bounded least-squares QEF per local region;
-* affine-exact P2G position extrapolation followed by fixed trilinear weights
-  in compatible material fields. This is not a copied author embedding kernel.
-"""
+"""Linked-volume / Hermite / local dual-contouring surface (paper III-F), CPU reference."""
 from itertools import product
 from dataclasses import dataclass
 import numpy as np

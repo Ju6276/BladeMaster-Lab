@@ -1,4 +1,4 @@
-"""Read-only surface checks: closure alone does not establish cut separation."""
+"""Check recorded surfaces for closure and cut separation."""
 import argparse
 import json
 from pathlib import Path

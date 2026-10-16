@@ -1,11 +1,4 @@
-"""FP64 CUDA finite-edge / moving-material-link CCD for the reference surface.
-
-Same linear-motion and finite-segment model as surface.moving_segment_hits.
-Cubic roots use derivative partitions and bracketed bisection in the observed
-time interval, avoiding cancellation when the cubic is nearly quadratic.
-Coplanar motion includes endpoint-crossing roots and intervening intervals.
-There is no CPU fallback, future knife path, or change to physical contact.
-"""
+"""CUDA moving-segment CCD for the linked-volume surface."""
 import numpy as np
 import warp as wp
 

@@ -1,11 +1,4 @@
-"""Torque-driven MuJoCo Panda and the BladeMaster external-tool port.
-
-Upstream inertias, armature, damping, joint limits and meshes are preserved.
-The added blade/fixture and their attachment are explicitly experimental,
-not assets supplied by the BladeMaster authors. No grasp or position teleport
-is used in grasp mode: a free knife is held by the original finger contacts.
-Fixed-mount mode remains an explicitly separate coupling diagnostic.
-"""
+"""Torque-driven MuJoCo Panda with a fixed-mount or grasped knife."""
 from pathlib import Path
 from functools import lru_cache
 import hashlib
@@ -78,7 +71,7 @@ def make_model(interval=.001, blade_mass=.1, attachment="fixed"):
             pos='0 0 .1', size='.008 .04', mass='.03', rgba='.16 .18 .2 1', group='2')
         knife = ET.SubElement(hand_node, 'body', name='knife', pos='0 0 .16', quat=numbers(mounting_q))
     else:
-        # Explicit test handle, not an author CAD. No weld/equality involving
+        # Free knife with a handle. No weld/equality involving
         # this free body and no artificial attraction to the fingers.
         knife = ET.SubElement(root.find('worldbody'), 'body', name='knife', pos=numbers(tool_origin))
         ET.SubElement(knife, 'freejoint', name='knife_free')
@@ -129,6 +122,8 @@ class Franka:
         mj.mj_forward(self.model, self.data)
         self.initial_position = self.control_position.copy()
         self.initial_rotation = self.control_rotation.copy()
+        x, y, z, w = Rotation.from_matrix(self.initial_rotation).as_quat()
+        self.initial_quat_wxyz = np.array([w, x, y, z])
 
     @property
     def position(self):
@@ -203,16 +198,22 @@ class Franka:
         if target.shape != (3,) or wrench.shape != (6,) or not np.isfinite([*target, *wrench]).all():
             raise ValueError('Invalid robot command/wrench')
         rotation = self.initial_rotation if target_rotation is None else np.asarray(target_rotation)
-        qr = Rotation.from_matrix(self.control_rotation.T @ rotation).as_quat()
-        if qr[3] < 0:
-            qr = -qr
-        error = np.r_[self.control_position-target, -self.control_rotation @ qr[:3]]
-        j = self.control_jacobian()
         if self.controller == 'libfranka':
+            qr = Rotation.from_matrix(self.control_rotation.T @ rotation).as_quat()
+            if qr[3] < 0:
+                qr = -qr
+            error = np.r_[self.control_position-target, -self.control_rotation @ qr[:3]]
+            j = self.control_jacobian()
             requested = (j.T @ (-self.k*error-self.damping*(j @ self.data.qvel)) + self.data.qfrc_bias)[:7]
         else:
+            # Same conversion as the controller's mat_to_quat (wxyz), done once per target.
+            if target_rotation is None:
+                quat = self.initial_quat_wxyz
+            else:
+                x, y, z, w = Rotation.from_matrix(rotation).as_quat()
+                quat = np.array([w, x, y, z])
             requested = serl_controller()(self.model,self.data,self.control_site,
-                np.arange(7),pos=target,ori=rotation,joint=HOME[:7])
+                np.arange(7),pos=target,ori=quat,joint=HOME[:7])
         limits = self.model.actuator_ctrlrange[:7]
         self.data.ctrl[:7] = np.clip(requested, limits[:, 0], limits[:, 1])
         self.data.qfrc_applied[:] = 0

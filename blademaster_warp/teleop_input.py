@@ -1,8 +1,4 @@
-"""Device-independent velocity packets and fixed-world pose integration.
-
-No camera transform, workspace clipping or target-leading clamp. A documented
-timeout stops adding motion; it does not freeze material physics or erase data.
-"""
+"""Velocity command packets and pose integration for teleoperation."""
 from dataclasses import dataclass
 import threading
 import time

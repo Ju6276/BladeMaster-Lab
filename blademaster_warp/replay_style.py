@@ -1,8 +1,4 @@
-"""Light-wood presentation, adapted from DexLab cutting_showcase (Apache-2.0).
-
-Only palette, procedural texture and lighting are adapted; no geometry or motion.
-See NOTICE.md. Vertex normals affect lighting, never the recorded vertex positions.
-"""
+"""Light-wood scene style for offline rendering (adapted from DexLab cutting_showcase, Apache-2.0)."""
 import numpy as np
 import vtk
 from vtk.util.numpy_support import numpy_to_vtk, vtk_to_numpy

@@ -1,4 +1,4 @@
-"""BladeMaster Eqs. 3--7, 10--16 in Warp. Persistent history, no force rescaling."""
+"""Tool and material contact, cutting resistance and side labels (paper Eqs. 3-6, 10-16)."""
 import warp as wp
 from .material import compatible, insert_key
 

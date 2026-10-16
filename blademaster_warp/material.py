@@ -1,8 +1,4 @@
-"""BladeMaster Eqs. 1, 2, 7--9: sparse topology-aware TLMPM, Warp GPU.
-
-Independent implementation. DexLab b955d85 is a numerical comparison oracle,
-not the implementation backend. All per-step mechanics execute on the device.
-"""
+"""Topology-aware TLMPM transfers and constitutive update (paper Eqs. 1, 2, 7-9)."""
 import warp as wp
 
 

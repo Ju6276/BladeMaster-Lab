@@ -1,7 +1,4 @@
-"""Read-only whole-arm + surface/particle replay, styled after BladeMaster Fig. 1.
-
-Reuses saved geometry and joint poses. No physics stepping, smoothing or retiming.
-"""
+"""Offline whole-arm + surface video from a recorded Franka run."""
 import argparse
 import hashlib
 import json

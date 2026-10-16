@@ -1,4 +1,4 @@
-"""Headless online GPU knife teleoperation. HTTP commands can cross an SSH tunnel."""
+"""Standalone knife teleoperation over HTTP (pose servo, no robot)."""
 import argparse
 from dataclasses import asdict,replace
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer

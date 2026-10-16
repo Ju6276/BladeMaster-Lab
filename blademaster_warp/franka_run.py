@@ -257,10 +257,10 @@ def render(out):
     z = np.load(out/'trajectory.npz')
     report = json.loads((out/'report.json').read_text())
     outcome = report.get('task_evaluation', {}).get('success')
-    result_label = 'diagnostic only' if outcome is None else 'cycle complete' if outcome else 'cycle incomplete'
+    result_label = 'timed' if outcome is None else 'cycle complete' if outcome else 'cycle incomplete'
     audit_path = out/'material_geometry_validation.json'
     folded = audit_path.exists() and json.loads(audit_path.read_text())['status']=='sampled_material_map_folded'
-    quality = 'MATERIAL GEOMETRY FOLDED (final audit)' if folded else 'Physics not validated'
+    quality = 'MATERIAL GEOMETRY FOLDED' if folded else ''
     root = ET.parse(out/'scene.xml').getroot()
     root.find('compiler').set('meshdir',str(SOURCE.parent/'assets'))
     m = mj.MjModel.from_xml_string(ET.tostring(root,encoding='unicode'))
@@ -300,7 +300,7 @@ def render(out):
                 idx=np.argmin(abs(z['cycle_trace'][:,0]-time_s))
                 phase=' | '+CutCycle.phases[int(z['cycle_trace'][idx,1])]
             draw.text((14,8),f'Franka torque dynamics + GPU TLMPM | t={time_s:.2f}s{phase} | final: {result_label}',fill='white')
-            draw.text((14,23),f'{quality} | Actual particles; colors = side codes, not piece count.',fill=(255,150,130) if folded else 'white')
+            draw.text((14,23),f'{quality} Particle colors = cut-side codes',fill=(255,150,130) if folded else 'white')
             writer.append_data(np.asarray(frame))
             if i in (0,len(z['qpos'])//2,len(z['qpos'])-1):
                 frame.save(out/f'frame_{i:03d}.png')
@@ -316,7 +316,7 @@ def parser():
     p.add_argument('--grid-storage',choices=['compact','hash'],default='compact',help='Dense active grid with unchanged-topology cache, or original hash baseline')
     p.add_argument('--interval',type=float,default=.001)
     p.add_argument('--material',choices=['elastic-block','paper-banana'],default='elastic-block',
-                   help='paper-banana selects published material values, with the original 120 mm synthetic demo geometry; not author assets/controller')
+                   help='paper-banana: paper §IV-C material on the 120 mm synthetic banana')
     p.add_argument('--dt',type=float,default=None,help='Defaults: elastic block 250 us; paper banana 25 us')
     p.add_argument('--contact-scaling',choices=['physical','per-step'],default='physical',
                    help='physical: contact stiffness fixed at the preset dt; per-step: fixed s_n, gamma_k (stiffness ~ 1/dt^2)')
@@ -332,7 +332,7 @@ def parser():
     p.add_argument('--stiffness',type=float,default=150.)
     p.add_argument('--controller',choices=['libfranka','serl'],default='libfranka')
     p.add_argument('--attachment',choices=['fixed','grasp'],default='fixed')
-    p.add_argument('--grip-force-per-finger',type=float,default=10.,help='Grasp test actuator command in N per finger, not a measured contact force')
+    p.add_argument('--grip-force-per-finger',type=float,default=10.,help='Grasp actuator command, N per finger')
     p.add_argument('--cutting-energy',type=float,default=None)
     p.add_argument('--no-material',action='store_true')
     p.add_argument('--no-cutting',action='store_true')

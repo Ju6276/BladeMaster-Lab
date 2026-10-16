@@ -1,11 +1,8 @@
-"""BladeMaster III-G external rigid-tool interface.
+"""External rigid-tool interface (paper III-G).
 
-The external engine owns tool dynamics. A tool pose/twist is held constant
-through an interval of TLMPM substeps, and equal/opposite contact impulses are
-returned. Optional spatial mobility J M^-1 J.T supplies articulated effective
-mass in contact; omitting it selects the prescribed-tool case (w_B=0).
-All quantities are SI and expressed in the material solver's world frame.
-"""
+The tool state is set at the start of each coupling interval; contact impulses
+are accumulated over its substeps and returned as an interval-average wrench.
+All quantities are SI in the material frame."""
 from dataclasses import dataclass
 import numpy as np
 import warp as wp

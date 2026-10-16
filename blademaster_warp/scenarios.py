@@ -1,8 +1,4 @@
-"""Cut-history validation scenarios inspired by BladeMaster Figs. 4/7/8.
-
-Prescribed rigid tool isolates material mechanics. These paths are explicit
-experiment inputs, not preset cut surfaces and not claimed author trajectories.
-"""
+"""Cut-history scenarios after paper Figs. 4, 7, 8 with a prescribed tool."""
 import argparse
 from dataclasses import asdict
 import json

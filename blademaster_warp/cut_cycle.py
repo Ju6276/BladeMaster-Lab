@@ -1,10 +1,4 @@
-"""Measured-pose sequencing around the paper's two-way physics interface.
-
-BladeMaster does not publish a robot phase controller. These exposed task
-settings are an independent adapter, NOT paper parameters. Only robot/tool
-pose drives transitions; material topology is an evaluator, never a command.
-There is no teleport, force override, added workspace box or material anchor.
-"""
+"""Descend / withdraw sequencing from the measured knife pose."""
 from dataclasses import dataclass, asdict
 import numpy as np
 
@@ -120,4 +114,4 @@ def evaluate_cut(observations, cycle_done):
                 two_components_persist_after_withdrawal=separated,
                 knife_clear_after_withdrawal=cleared,
                 verification_samples=len(verification),
-                criteria='pose-driven cycle completes; exactly two mechanical components and no material above the retracted blade edge throughout final hold; simulation diagnostic, not an author benchmark')
+                criteria='pose-driven cycle completes; exactly two mechanical components and no material above the retracted blade edge throughout final hold')

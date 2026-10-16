@@ -1,7 +1,4 @@
-"""Render recorded particle positions only, without a pre-cut decorative mesh.
-
-Uses VTK (offscreen EGL) and ffmpeg. This is replay, not a live physics engine.
-"""
+"""Offline VTK particle rendering of recorded runs."""
 import argparse
 import json
 from pathlib import Path

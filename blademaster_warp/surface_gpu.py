@@ -1,11 +1,4 @@
-"""CUDA nodal embedding for the existing linked-volume surface.
-
-Only the compatible material-position/deformation field evaluation is moved
-to CUDA here. Link CCD, Hermite data, region extraction, bounded QEF solves,
-triangle construction and final trilinear interpolation remain the CPU reference.
-No mechanics, support radius, cut rule or geometry resolution is changed.
-FP64 matches the CPU reference; float32 material states are promoted on upload.
-"""
+"""CUDA nodal embedding for the linked-volume surface."""
 import numpy as np
 import warp as wp
 from .material import compatible
@@ -62,7 +55,7 @@ class CudaMaterialEmbedding(MaterialEmbedding):
         self.__dict__.update(reference.__dict__)
         self.device = wp.get_device(device)
         if not self.device.is_cuda:
-            raise ValueError('CUDA surface embedding requires a CUDA device; no silent fallback')
+            raise ValueError('CUDA surface embedding requires a CUDA device')
         if reference.material_grid is not None:
             self.material_grid = cls.from_reference(reference.material_grid, self.device)
         def upload(data, dtype):

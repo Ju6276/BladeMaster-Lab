@@ -1,11 +1,4 @@
-"""Read-only material-position audit; independent of stored F and display mesh.
-
-Fixed tetrahedra connect nearest reference-lattice samples. They are diagnostic
-probes, NOT FEM elements used by the solver. Probes spanning different cut codes
-are excluded. Negative signed-volume ratios expose a folded sampled material
-map; positive ratios alone do not validate a continuum solution or its forces.
-No simulation state, control command, or existing run report is modified.
-"""
+"""Check recorded particle positions for folded material (tetrahedra on the reference lattice)."""
 import argparse
 from itertools import permutations
 import json
@@ -77,8 +70,7 @@ def check(directory):
                   reference_source=reference_source, probe_definition=__doc__,
                   first_fold_time_s=affected[0]['time_s'] if affected else None,
                   max_inverted_probes=max(r['inverted_probes'] for r in rows),
-                  final=rows[-1], observations=rows,
-                  limitations='Finite point-sample diagnostic, not a full self-intersection or force-convergence test. Identical codes are a conservative subset of compatible material; cut fronts require separate review.')
+                  final=rows[-1], observations=rows)
     (directory/'material_geometry_validation.json').write_text(json.dumps(result, indent=2))
     return {k: v for k, v in result.items() if k != 'observations'}
 

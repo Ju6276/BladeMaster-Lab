@@ -1,21 +1,16 @@
-"""Reference sampling/stencil adapted from DexLab b955d85 (Apache-2.0).
-
-Synthetic banana, NOT the BladeMaster author's scan or calibration asset.
-See vendor/DexLab-LICENSE and NOTICE.md.
-"""
+"""Reference particle sampling and trilinear stencils (adapted from DexLab b955d85, Apache-2.0)."""
 from itertools import product
 import numpy as np
 
 # Original DexLab banana demo domain and length, shared by both runners.
-# This is a synthetic asset, not a measured or author-supplied banana mesh.
 BANANA_DEMO_SIZE_M = (.12, .06, .03)
-# The original DexLab banana demo's synthetic wedge, not an author knife CAD.
+# DexLab banana demo wedge.
 DEMO_KNIFE_HALF_SIZE_M = (.0005, .04, .02)
 DEMO_KNIFE_BEVEL_HEIGHT_M = .005
 
 
 def levelset(x, size, shape):
-    """Analytic original boundary, not a cut mesh. Negative inside."""
+    """Analytic boundary, negative inside."""
     x=np.asarray(x);size=np.asarray(size)
     if shape == 'block':
         q=np.abs(x-[0,0,size[2]/2])-size/2

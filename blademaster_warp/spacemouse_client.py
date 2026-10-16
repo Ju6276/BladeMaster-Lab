@@ -1,8 +1,4 @@
-"""Send current SpaceMouse input from the Mac to the GPU simulation over SSH/HTTP.
-
-Reuses WowSkin's HID device reader, including exclusive macOS open. Does not
-import its robot controller, workspace boundaries, IK or camera-frame mapping.
-"""
+"""Stream SpaceMouse input from the Mac to the simulation over HTTP."""
 import argparse
 import http.client
 import json

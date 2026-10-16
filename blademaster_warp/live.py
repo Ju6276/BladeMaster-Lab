@@ -1,8 +1,6 @@
-"""Live state transport, not a video player. Physics remains in franka_run.
+"""Live browser display: serves the current robot, surface and particle state over HTTP.
 
-Bind localhost; use an SSH tunnel for remote access. Latest-state display can
-skip display frames on a slow network, but never skips physics substeps.
-"""
+Binds localhost; use an SSH tunnel for remote access."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Event, Lock, Thread

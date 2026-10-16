@@ -1,9 +1,4 @@
-"""Compare CPU/CUDA surface stages on the same recorded Franka cut.
-
-Reconstructs sequentially from recorded current/past states. No future trajectory
-is passed to the surface code. Measures reconstruction plus recording, excludes
-physics/rendering and one-time setup/JIT; never labels this full-pipeline speed.
-"""
+"""Compare CPU and CUDA surface reconstruction on a recorded Franka run."""
 import argparse
 import hashlib
 import json

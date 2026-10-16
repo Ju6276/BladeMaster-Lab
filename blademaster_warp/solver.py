@@ -1,4 +1,4 @@
-"""Single-body TLMPM and single rigid blade on Warp/CUDA, all mechanics on GPU."""
+"""TLMPM material solver with a rigid blade, all per-step work on the GPU."""
 from dataclasses import dataclass, asdict
 import time
 import numpy as np
@@ -99,15 +99,14 @@ class Solver:
         self.config = config
         self.device = wp.get_device(device)
         if not self.device.is_cuda:
-            raise ValueError('This runner requires CUDA; no silent CPU fallback')
+            raise ValueError('CUDA device required')
         cfg = config
         self.reference, self.origin, cells = points(cfg.size, cfg.grid_spacing, cfg.shape)
         self.n = len(self.reference)
         nodes, weights, gradients = stencil(self.reference, self.origin, cfg.grid_spacing, cells)
         self.node_count = int(np.prod(cells+1))
         self.node_numpy, self.weight_numpy = nodes, weights
-        # Local hash-table sizing choice, NOT a paper parameter. There are at
-        # most 8*n distinct (reference node, cut code) keys. Reserving the next
+        # At most 8*n distinct (reference node, cut code) keys. Reserving the next
         # power of two >=16*n keeps open-addressing occupancy below one half.
         # The compact backend uses this only for key lookup on topology changes;
         # physical fields have dense active indices and device-side loop bounds.

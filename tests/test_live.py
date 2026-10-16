@@ -63,9 +63,10 @@ def test_live_input_stream_feeds_teleop_source():
 
 
 def test_franka_teleop_follows_operator_twist_and_cut_events():
+    from scipy.spatial.transform import Rotation
     from blademaster_warp.franka_run import parser, FrankaCuttingRun
 
-    args = parser().parse_args(["--no-material", "--motion", "teleop", "--duration", "3.0"])
+    args = parser().parse_args(["--no-material", "--motion", "teleop", "--duration", "4.0"])
     run = FrankaCuttingRun(args)
     start = run.robot.position.copy()
     start_rotation = run.robot.rotation.copy()
@@ -79,22 +80,24 @@ def test_franka_teleop_follows_operator_twist_and_cut_events():
 
     run._exchange_wrench = exchange
     report = run.execute()
-    assert report["status"] == "completed" and report["teleop"]["cut_strokes"] == 1
-    # Mock input: begin_cut at 0 s, down 0.4-1.3 s, end_cut and up at 1.7 s, then a twist from 2.3 s.
-    cutting = [t for t, on, _ in seen if on]
-    assert cutting[0] < 0.01 and 1.69 < cutting[-1] < 1.71
+    assert report["status"] == "completed" and report["teleop"]["cut_strokes"] == 2
+    # Mock input: begin_cut at 0 s, end_cut at 1.7 s, a twist over 2.3-3.2 s, begin_cut at 3.2 s.
+    switches = [
+        (round(t, 3), on, index) for (t, on, index), (_, before, _) in zip(seen[1:], seen) if on != before
+    ]
+    assert seen[0][1:] == (True, 0)
+    assert switches == [(1.701, False, 0), (3.201, True, 1)]
     target = run.teleop.position
     assert np.linalg.norm(run.robot.position - target) < 0.005
     assert np.linalg.norm(target[:2] - start[:2] - [0.06 * 0.5, 0.006 * 0.5]) < 1.0e-6
-    from scipy.spatial.transform import Rotation
 
     def angle(a, b):
         return np.degrees(np.arccos(np.clip((np.trace(a.T @ b) - 1) / 2, -1, 1)))
 
+    # The libfranka example's rotational gains (10 Nm/rad, damping 2 sqrt(k)) settle in about 0.6 s.
     commanded = Rotation.from_quat(run.teleop.orientation).as_matrix()
-    # The libfranka example's 10 Nm/rad rotational stiffness lags, but follows the twist.
     assert angle(start_rotation, commanded) > 5.0
-    assert angle(run.robot.rotation, commanded) < 0.75 * angle(start_rotation, commanded)
+    assert angle(run.robot.rotation, commanded) < 0.5 * angle(start_rotation, commanded)
 
 
 def test_recording_is_opt_in(tmp_path):

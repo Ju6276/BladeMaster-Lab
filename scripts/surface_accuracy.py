@@ -12,11 +12,12 @@ import numpy as np
 from blademaster_warp.geometry import BANANA_DEMO_SIZE_M, levelset
 from blademaster_warp.surface import LinkedSurface
 
-# (point on the cut plane, unit normal). Two vertical cuts, an oblique cut and three thin slices.
+# (point on the cut plane, unit normal). Two vertical cuts, an oblique cut, 6 mm and 3 mm slices.
 CUTS = {
     "vertical": [((-0.03, 0, 0.012), (1, 0, 0)), ((0.0, 0, 0.012), (1, 0, 0))],
     "oblique": [((-0.03, 0, 0.012), (np.cos(0.5), 0, np.sin(0.5)))],
     "thin slices": [((x, 0, 0.012), (1, 0, 0)) for x in (0.02, 0.026, 0.032)],
+    "3 mm slices": [((x, 0, 0.012), (1, 0, 0)) for x in (0.02, 0.023, 0.026, 0.029)],
 }
 
 

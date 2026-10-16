@@ -90,7 +90,7 @@ class Config:
         return self.normal_scale*ratio, self.tangent_stiffness*ratio
 
 
-ALL_PAIRS_MAX_PARTICLES = 4096
+ALL_PAIRS_MAX_PARTICLES = 2048
 PAIR_LANES = 64
 
 

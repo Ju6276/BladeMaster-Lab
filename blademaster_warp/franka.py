@@ -147,12 +147,17 @@ class Franka:
     def __init__(
         self,
         interval=0.001,
-        translation_stiffness=150.0,
-        rotation_stiffness=10.0,
+        translation_stiffness=None,
+        rotation_stiffness=None,
         controller="libfranka",
         attachment="fixed",
         grip_force_per_finger=10.0,
     ):
+        """translation/rotation_stiffness: libfranka Cartesian gains (default 150 N/m, 10 Nm/rad)."""
+        if controller == "serl" and (translation_stiffness is not None or rotation_stiffness is not None):
+            raise ValueError("SERL mode uses its upstream gains, not libfranka stiffness arguments")
+        translation_stiffness = 150.0 if translation_stiffness is None else translation_stiffness
+        rotation_stiffness = 10.0 if rotation_stiffness is None else rotation_stiffness
         if interval <= 0 or min(translation_stiffness, rotation_stiffness) <= 0:
             raise ValueError("Positive integration interval and stiffness required")
         self.model, self.material_origin, self.xml = make_model(interval, attachment=attachment)
@@ -162,8 +167,6 @@ class Franka:
             raise ValueError("Grip force must fit the upstream tendon actuator range (0, 50] N per finger")
         if controller not in ("libfranka", "serl"):
             raise ValueError("Unknown torque controller")
-        if controller == "serl" and (translation_stiffness != 150.0 or rotation_stiffness != 10.0):
-            raise ValueError("SERL mode uses its upstream gains, not libfranka stiffness arguments")
         self.controller = controller
         self.impedance = None
         self.data = mj.MjData(self.model)

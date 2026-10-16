@@ -16,6 +16,9 @@ def banana_config(*, paper_material=True):
         blade_half_size=DEMO_KNIFE_HALF_SIZE_M,
         blade_bevel_height=DEMO_KNIFE_BEVEL_HEIGHT_M,
         shape="banana",
+        # A regular lattice puts the cut plane between two particle columns, so the
+        # blade wedges them apart and the cutting-work resistance never engages.
+        sampling_seed=1,
     )
     if not paper_material:
         return replace(cfg, contact_reference_dt=cfg.dt)

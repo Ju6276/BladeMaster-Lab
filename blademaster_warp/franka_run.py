@@ -13,6 +13,10 @@ from .topology import components
 from .cut_cycle import CutCycle, CycleSettings, evaluate_cut
 
 
+# Softer libfranka stiffness (the example's 150 N/m) cannot push a blade through the banana.
+CUTTING_STIFFNESS = 1000.0
+
+
 def target_at(t, initial):
     z = np.interp(t, [0, 0.3, 2.3, 2.6, 4.6], [0, 0, -0.04, -0.04, 0.01])
     return initial + np.array([0.0, 0.0, z])
@@ -45,7 +49,7 @@ def material_config(args):
     }
     if args.spacing is not None:
         overrides["grid_spacing"] = args.spacing
-    if getattr(args, "sampling_seed", 0):
+    if getattr(args, "sampling_seed", None) is not None:
         overrides["sampling_seed"] = args.sampling_seed
     if getattr(args, "contact_scaling", "physical") == "per-step":
         overrides["contact_reference_dt"] = 0.0
@@ -159,7 +163,7 @@ class FrankaCuttingRun:
 
         self.robot = Franka(
             args.interval,
-            args.stiffness,
+            args.stiffness if args.controller == "libfranka" else None,
             controller=args.controller,
             attachment=args.attachment,
             grip_force_per_finger=args.grip_force_per_finger,
@@ -634,8 +638,8 @@ def parser():
     p.add_argument(
         "--sampling-seed",
         type=int,
-        default=0,
-        help="Jitter particles inside their sub-cells (0: regular lattice)",
+        default=None,
+        help="Jitter particles inside their sub-cells (0: regular lattice); default from the material preset",
     )
     p.add_argument("--duration", type=float, default=4.6)
     p.add_argument(
@@ -652,7 +656,12 @@ def parser():
         default=0.0005,
         help="Feedback endpoint tolerance, m; applies to both blade-edge ends",
     )
-    p.add_argument("--stiffness", type=float, default=150.0)
+    p.add_argument(
+        "--stiffness",
+        type=float,
+        default=CUTTING_STIFFNESS,
+        help="libfranka Cartesian translational stiffness, N/m (SERL uses its own gains)",
+    )
     p.add_argument("--controller", choices=["libfranka", "serl"], default="libfranka")
     p.add_argument("--attachment", choices=["fixed", "grasp"], default="fixed")
     p.add_argument(

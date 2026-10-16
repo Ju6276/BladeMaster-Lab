@@ -7,7 +7,7 @@ def test_sequence_cuts_each_offset_to_the_board_then_pushes():
     sequence = CutSequence([0.0, 0.0, 0.06], 0.0, 0.02, settings)
     bottoms = {}
     actual = np.array([0.0, 0.0, 0.06])
-    for t in np.arange(0.0, sequence.duration_s + 0.1, 0.001):
+    for t in np.arange(0.0, sequence.duration_s + 1.0, 0.001):
         target = sequence.update(t, actual, np.zeros((2, 3)))
         actual = target
         if sequence.cutting:

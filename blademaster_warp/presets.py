@@ -20,6 +20,9 @@ def banana_config(*, paper_material=True):
         # A regular lattice puts the cut plane between two particle columns, so the
         # blade wedges them apart and the cutting-work resistance never engages.
         sampling_seed=1,
+        # Fixed knife contact distance: with the particle radius h/4 the effective
+        # blade thickness, and the steady cutting force, grow linearly with h.
+        blade_contact_radius=0.0005,
     )
     if not paper_material:
         return replace(cfg, contact_reference_dt=cfg.dt)

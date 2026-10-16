@@ -6,6 +6,7 @@ All quantities are SI in the material frame."""
 from dataclasses import dataclass
 import numpy as np
 import warp as wp
+from . import tool
 from .material import validate_interval
 
 
@@ -67,6 +68,8 @@ class ExternalToolPort:
         if not solver.config.external_tool:
             raise ValueError('ExternalToolPort requires Config(external_tool=True)')
         self.solver = solver
+        self.packed = wp.zeros(49, dtype=float, device=solver.device)
+        self.result = wp.zeros(9, dtype=float, device=solver.device)
 
     def advance(self, state, duration_s, *, cutting=True, cut_index=0, graph=True):
         state = state.checked()
@@ -79,13 +82,10 @@ class ExternalToolPort:
         # Validate before mutating state. No interpolation, trajectory limits,
         # local PD controller, or table clamp is applied to the external tool.
         s._set_cut(cut_index)
-        s.bx.assign([state.position])
-        s.bq.assign([state.orientation_xyzw])
-        s.bv.assign([state.linear_velocity])
-        s.bw.assign([state.angular_velocity])
-        s.tool_mobility.assign(state.mobility.astype(np.float32))
-        s.interval_impulse.zero_()
-        s.interval_angular_impulse.zero_()
+        self.packed.assign(np.concatenate([state.position, state.orientation_xyzw, state.linear_velocity,
+                                           state.angular_velocity, state.mobility.ravel()]).astype(np.float32))
+        s.launch(tool.load_external_state, 1, [self.packed, s.bx, s.bq, s.bv, s.bw, s.tool_mobility,
+                                               s.interval_impulse, s.interval_angular_impulse])
         if graph:
             unused_targets = np.zeros((steps, 3), dtype=np.float32)
             _, _, captured = s.prepare(unused_targets, cutting, cut_index)
@@ -95,10 +95,10 @@ class ExternalToolPort:
             for _ in range(steps):
                 s._step_kernels((0., 0., 0.), cutting, cut_index)
         s.launch(validate_interval,s.n,[s.x,s.v,s.F,s.errors])
-        impulse = s.interval_impulse.numpy()[0].astype(np.float64)
-        angular = s.interval_angular_impulse.numpy()[0].astype(np.float64)
+        s.launch(tool.store_interval,1,[s.interval_impulse,s.interval_angular_impulse,s.errors,self.result])
+        out = self.result.numpy().astype(np.float64)
+        impulse, angular, errors = out[:3], out[3:6], out[6:]
         angular -= np.cross(state.position, impulse)
-        errors = s.errors.numpy()
         if errors.any() or not np.isfinite([impulse, angular]).all():
-            raise RuntimeError(f'Invalid material coupling interval: GPU errors {errors.tolist()}')
+            raise RuntimeError(f'Invalid material coupling interval: GPU errors {errors.astype(int).tolist()}')
         return Reaction(float(duration_s), impulse, angular, state.position.copy())

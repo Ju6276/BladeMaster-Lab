@@ -14,6 +14,34 @@ def accumulate_reaction(reaction: wp.array(dtype=wp.vec3),
 
 
 @wp.kernel
+def load_external_state(packed: wp.array(dtype=float),
+                        bx: wp.array(dtype=wp.vec3), bq: wp.array(dtype=wp.quat),
+                        bv: wp.array(dtype=wp.vec3), bw: wp.array(dtype=wp.vec3),
+                        mobility: wp.array2d(dtype=float),
+                        linear: wp.array(dtype=wp.vec3), angular: wp.array(dtype=wp.vec3)):
+    """packed = [position 3, quaternion xyzw 4, velocity 3, angular velocity 3, mobility 36]."""
+    bx[0] = wp.vec3(packed[0], packed[1], packed[2])
+    bq[0] = wp.quat(packed[3], packed[4], packed[5], packed[6])
+    bv[0] = wp.vec3(packed[7], packed[8], packed[9])
+    bw[0] = wp.vec3(packed[10], packed[11], packed[12])
+    for i in range(6):
+        for j in range(6):
+            mobility[i, j] = packed[13 + 6*i + j]
+    linear[0] = wp.vec3(0.0)
+    angular[0] = wp.vec3(0.0)
+
+
+@wp.kernel
+def store_interval(linear: wp.array(dtype=wp.vec3), angular: wp.array(dtype=wp.vec3),
+                   errors: wp.array(dtype=int), out: wp.array(dtype=float)):
+    """out = [impulse 3, angular impulse about the world origin 3, error flags 3]."""
+    for i in range(3):
+        out[i] = linear[0][i]
+        out[3 + i] = angular[0][i]
+        out[6 + i] = float(errors[i])
+
+
+@wp.kernel
 def finish_external_step(reaction: wp.array(dtype=wp.vec3),
                          torque: wp.array(dtype=wp.vec3),
                          board: wp.array(dtype=wp.vec3),

@@ -35,7 +35,7 @@ def probe(spacing, dt, pair_search, intervals=200, interval=.001):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--spacing', type=float, nargs='+', default=[.006])
-    p.add_argument('--dt', type=float, nargs='+', default=[2.5e-5])
+    p.add_argument('--dt', type=float, nargs='+', default=[6.25e-5])
     p.add_argument('--pair-search', nargs='+', default=['auto'])
     args = p.parse_args()
     wp.config.quiet = True

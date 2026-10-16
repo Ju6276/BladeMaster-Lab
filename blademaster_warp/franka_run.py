@@ -317,7 +317,7 @@ def parser():
     p.add_argument('--interval',type=float,default=.001)
     p.add_argument('--material',choices=['elastic-block','paper-banana'],default='elastic-block',
                    help='paper-banana: paper §IV-C material on the 120 mm synthetic banana')
-    p.add_argument('--dt',type=float,default=None,help='Defaults: elastic block 250 us; paper banana 25 us')
+    p.add_argument('--dt',type=float,default=None,help='Defaults: elastic block 250 us; paper banana 62.5 us')
     p.add_argument('--contact-scaling',choices=['physical','per-step'],default='physical',
                    help='physical: contact stiffness fixed at the preset dt; per-step: fixed s_n, gamma_k (stiffness ~ 1/dt^2)')
     p.add_argument('--pair-search',choices=['auto','hash','all'],default='auto')

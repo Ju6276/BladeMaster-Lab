@@ -367,6 +367,20 @@ def g2p_at(
 
 
 @wp.kernel
+def g2p(
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    slots: wp.array2d(dtype=int),
+    weights: wp.array2d(dtype=float),
+    old_v: wp.array(dtype=wp.vec3),
+    new_v: wp.array(dtype=wp.vec3),
+    dt: float,
+    flip: float,
+):
+    g2p_at(wp.tid(), x, v, slots, weights, old_v, new_v, dt, flip)
+
+
+@wp.kernel
 def g2p_remap(
     x: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),

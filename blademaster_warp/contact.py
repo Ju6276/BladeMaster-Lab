@@ -362,7 +362,11 @@ def rigid_and_speed(
 ):
     """Rigid contacts for every particle, and the maximum particle speed for the pair search."""
     p = wp.tid()
-    wp.atomic_max(speed, 0, wp.length(v[p]))
+    s = wp.length(v[p])
+    # The plain read only skips particles that cannot raise the maximum; it avoids
+    # every thread queueing on one address.
+    if s > speed[0]:
+        wp.atomic_max(speed, 0, s)
     rigid_at(
         p,
         x,

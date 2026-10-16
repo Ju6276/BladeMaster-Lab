@@ -25,7 +25,7 @@ DESCENT_S, HOLD_S, SPEED = 1.8, 0.2, 0.02
 START_EDGE = DESCENT_S * SPEED
 
 
-def cut_trace(spacing, seed, blade_contact_radius=0.0):
+def cut_trace(spacing, seed, blade_contact_radius=None):
     base = banana_config()
     cfg = replace(
         base,
@@ -35,8 +35,9 @@ def cut_trace(spacing, seed, blade_contact_radius=0.0):
         external_tool=True,
         grid_storage="compact",
         cache_topology=True,
-        blade_contact_radius=blade_contact_radius,
     )
+    if blade_contact_radius is not None:
+        cfg = replace(cfg, blade_contact_radius=blade_contact_radius)
     s = Solver(cfg)
     port = ExternalToolPort(s)
     half = cfg.blade_half_size[2]
@@ -57,6 +58,7 @@ def cut_trace(spacing, seed, blade_contact_radius=0.0):
         spacing=spacing,
         seed=seed,
         dt=cfg.dt,
+        blade_contact_radius=cfg.blade_contact_radius,
         particles=s.n,
         force_n=force.tolist(),
         pieces=pieces.tolist(),
@@ -146,7 +148,12 @@ def main():
     p.add_argument("--spacings", type=float, nargs="+", default=[0.006, 0.005, 0.004, 0.003])
     p.add_argument("--seeds", type=int, default=20, help="Sampling seeds 1..N per spacing")
     p.add_argument("--seeds-for", type=float, nargs=2, action="append", default=[], metavar=("SPACING", "N"))
-    p.add_argument("--blade-contact-radius", type=float, default=0.0, help="Metres; 0: particle radius h/4")
+    p.add_argument(
+        "--blade-contact-radius",
+        type=float,
+        default=None,
+        help="Metres; 0: particle radius h/4; default: preset",
+    )
     a = p.parse_args()
     if a.plot:
         studies = [

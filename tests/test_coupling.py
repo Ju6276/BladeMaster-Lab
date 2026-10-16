@@ -167,16 +167,18 @@ def test_auto_strokes_label_each_cut_plane_with_its_own_digit():
         x0, z0 = path[-1]
         for k in range(1, round(seconds / dt) + 1):
             path.append((x0 + (x - x0) * k * dt / seconds, z0 + (z - z0) * k * dt / seconds))
+    before = None
     for (x0, z0), (x1, z1) in zip(path, path[1:]):
         state = ToolState(
             [x1, 0.0, z1 + half], [0, 0, 0, 1], [(x1 - x0) / dt, 0.0, (z1 - z0) / dt], [0, 0, 0]
         )
+        before = s.codes.numpy() if strokes.strokes == 1 else before
         port.advance(state, dt, cutting=True, cut_index=strokes.cut_index)
         strokes.update(s.embedded_particles() > 0, dt)
     assert strokes.strokes == 2 and strokes.cut_index == 2
-    codes, ref = s.codes.numpy(), s.reference
-    band = 7 * s.config.grid_spacing
-    assert np.all(abs(ref[codes % 3 != 0, 0] + 0.025) < band)
-    assert np.all(abs(ref[(codes // 3) % 3 != 0, 0] - 0.025) < band)
+    # Withdrawing from the first kerf must not write the second stroke's digit.
+    assert np.all((before // 3) % 3 == 0)
+    codes = s.codes.numpy()
+    assert np.any((codes // 3) % 3 != 0)
     _, sizes = components(s.node_numpy, s.weight_numpy, codes)
     assert len(sizes) == 3

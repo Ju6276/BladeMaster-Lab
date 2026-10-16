@@ -441,39 +441,6 @@ def plastic_project(
     U, s, V, valid = plastic_at(wp.tid(), F, Fp, mu, yield_stress, errors)
 
 
-@wp.func
-def update_F_at(
-    p: int,
-    F: wp.array(dtype=wp.mat33),
-    Fp: wp.array(dtype=wp.mat33),
-    slots: wp.array2d(dtype=int),
-    gradients: wp.array2d(dtype=wp.vec3),
-    grid_mass: wp.array(dtype=float),
-    momentum: wp.array(dtype=wp.vec3),
-    dt: float,
-    mu: float,
-    lam: float,
-    yield_stress: float,
-    stress: wp.array(dtype=wp.mat33),
-    errors: wp.array(dtype=int),
-):
-    """MUSL deformation update, plastic projection, and the stress for the next step."""
-    rate = wp.mat33(0.0)
-    for a in range(8):
-        s = slots[p, a]
-        if grid_mass[s] > 0.0:
-            rate += wp.outer(momentum[s] / grid_mass[s], gradients[p, a])
-    F[p] += dt * rate
-    if yield_stress > 0.0:
-        U, sigma, V, valid = plastic_at(p, F, Fp, mu, yield_stress, errors)
-        if valid:
-            stress[p] = corotated_stress(U, sigma, V, wp.inverse(Fp[p]), mu, lam)
-        else:
-            stress[p] = wp.mat33(0.0)
-    else:
-        stress_at(p, F, Fp, mu, lam, stress, errors)
-
-
 @wp.kernel
 def update_F_plastic(
     F: wp.array(dtype=wp.mat33),
@@ -489,9 +456,22 @@ def update_F_plastic(
     stress: wp.array(dtype=wp.mat33),
     errors: wp.array(dtype=int),
 ):
-    update_F_at(
-        wp.tid(), F, Fp, slots, gradients, grid_mass, momentum, dt, mu, lam, yield_stress, stress, errors
-    )
+    """MUSL deformation update, plastic projection, and the stress for the next step."""
+    p = wp.tid()
+    rate = wp.mat33(0.0)
+    for a in range(8):
+        s = slots[p, a]
+        if grid_mass[s] > 0.0:
+            rate += wp.outer(momentum[s] / grid_mass[s], gradients[p, a])
+    F[p] += dt * rate
+    if yield_stress > 0.0:
+        U, sigma, V, valid = plastic_at(p, F, Fp, mu, yield_stress, errors)
+        if valid:
+            stress[p] = corotated_stress(U, sigma, V, wp.inverse(Fp[p]), mu, lam)
+        else:
+            stress[p] = wp.mat33(0.0)
+    else:
+        stress_at(p, F, Fp, mu, lam, stress, errors)
 
 
 @wp.kernel
@@ -529,23 +509,6 @@ def compact_node_lists(
         links[a] = wp.atomic_exch(heads, node, a)
 
 
-@wp.func
-def clear_grid_slots(
-    first: int,
-    count: wp.array(dtype=int),
-    threads: int,
-    grid_mass: wp.array(dtype=float),
-    momentum: wp.array(dtype=wp.vec3),
-    impulse: wp.array(dtype=wp.vec3),
-    remapped: wp.array(dtype=wp.vec3),
-):
-    for a in range(first, count[0], threads):
-        grid_mass[a] = 0.0
-        momentum[a] = wp.vec3(0.0)
-        impulse[a] = wp.vec3(0.0)
-        remapped[a] = wp.vec3(0.0)
-
-
 @wp.kernel
 def clear_compact_grid(
     count: wp.array(dtype=int),
@@ -555,4 +518,8 @@ def clear_compact_grid(
     impulse: wp.array(dtype=wp.vec3),
     remapped: wp.array(dtype=wp.vec3),
 ):
-    clear_grid_slots(wp.tid(), count, threads, grid_mass, momentum, impulse, remapped)
+    for a in range(wp.tid(), count[0], threads):
+        grid_mass[a] = 0.0
+        momentum[a] = wp.vec3(0.0)
+        impulse[a] = wp.vec3(0.0)
+        remapped[a] = wp.vec3(0.0)

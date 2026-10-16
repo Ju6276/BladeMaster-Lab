@@ -53,6 +53,10 @@ def render(directory, output=None, preview=False, layout="overview"):
     times = z["control_tcp"][:, 0]
     frame_times = np.array([f["time_s"] for f in frames])
     fps = float(1 / np.median(np.diff(frame_times)))
+    # Runs that end on --duration also save the last step, usually less than one
+    # frame interval after the previous frame; a fixed-rate video leaves it out.
+    if len(frame_times) > 2 and frame_times[-1] - frame_times[-2] < 1 / fps - 1.0e-8:
+        frames, frame_times = frames[:-1], frame_times[:-1]
     if not np.allclose(np.diff(frame_times), 1 / fps, atol=1.0e-8):
         raise ValueError("Irregular sample times: require explicit variable-frame-rate encoding")
     geom = ET.parse(directory / "scene.xml").find(".//geom[@name='board']")

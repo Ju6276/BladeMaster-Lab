@@ -29,13 +29,13 @@ class ToolState:
     def checked(self):
         position = vector(self.position, 3, "position")
         q = vector(self.orientation_xyzw, 4, "orientation_xyzw")
-        if not np.isclose(np.linalg.norm(q), 1.0, rtol=0.0, atol=1.0e-5):
+        if abs(np.linalg.norm(q) - 1.0) > 1.0e-5:
             raise ValueError("Tool orientation must be a unit xyzw quaternion")
         mobility = np.zeros((6, 6)) if self.mobility is None else np.asarray(self.mobility, dtype=float)
         if (
             mobility.shape != (6, 6)
             or not np.isfinite(mobility).all()
-            or not np.allclose(mobility, mobility.T, atol=1.0e-10)
+            or np.abs(mobility - mobility.T).max() > 1.0e-10
             or np.linalg.eigvalsh(mobility).min() < -1.0e-10
         ):
             raise ValueError("Mobility must be a finite symmetric positive-semidefinite 6x6 matrix")

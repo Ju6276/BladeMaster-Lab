@@ -430,9 +430,9 @@ class Solver:
         """Gravity plus board and blade contact impulses on every particle."""
         self.launch(c.rigid_and_speed, self.n, self._rigid_args(cutting))
 
-    def _begin_substep(self, cutting, pair_keys):
-        """Rigid contacts, compact-grid clear and pair-table clear in one launch."""
-        threads = max(self.n, self.grid_threads, pair_keys.shape[0])
+    def _begin_substep(self, cutting):
+        """Rigid contacts and the compact-grid clear in one launch."""
+        threads = max(self.n, self.grid_threads)
         grid = [
             self.active_count,
             self.grid_threads,
@@ -441,7 +441,7 @@ class Solver:
             self.grid_impulse,
             self.remapped,
         ]
-        self.launch(fused.begin_substep, threads, [self.n, *self._rigid_args(cutting), *grid, pair_keys])
+        self.launch(fused.begin_substep, threads, [self.n, *self._rigid_args(cutting), *grid])
 
     def _rigid_args(self, cutting):
         cfg = self.config
@@ -480,12 +480,11 @@ class Solver:
             self.work,
         ]
 
-    def particle_contacts(self, clear_keys=True):
+    def particle_contacts(self):
         """Contacts between particles on incompatible sides of a cut, with friction history."""
         cfg = self.config
         old, new = self.step_count % 2, (self.step_count + 1) % 2
-        if clear_keys:
-            self.pair_keys[new].fill_(-1)
+        self.pair_keys[new].fill_(-1)
         contact = [
             self.x,
             self.ref,
@@ -655,10 +654,10 @@ class Solver:
         fuse_begin = self.compact
         fuse_end = cfg.external_tool and cfg.tool_substep == "hold"
         if fuse_begin:
-            self._begin_substep(cutting, self.pair_keys[(self.step_count + 1) % 2])
+            self._begin_substep(cutting)
         else:
             self.rigid_contacts(cutting)
-        self.particle_contacts(clear_keys=not fuse_begin)
+        self.particle_contacts()
         self.material_step(clear_grid=not fuse_begin, assign=(cut_index, cutting) if fuse_end else None)
         if cfg.external_tool:
             self._finish_external_tool()

@@ -50,9 +50,8 @@ def begin_substep(
     momentum: wp.array(dtype=wp.vec3),
     grid_impulse: wp.array(dtype=wp.vec3),
     remapped: wp.array(dtype=wp.vec3),
-    pair_keys: wp.array(dtype=wp.int64),
 ):
-    """Rigid contacts and maximum speed (per particle), cleared compact grid and next pair table."""
+    """Rigid contacts and maximum speed (per particle), and the cleared compact grid."""
     tid = wp.tid()
     if tid < n:
         wp.atomic_max(speed, 0, wp.length(v[tid]))
@@ -92,8 +91,6 @@ def begin_substep(
         )
     if tid < grid_threads:
         clear_grid_slots(tid, active_count, grid_threads, grid_mass, momentum, grid_impulse, remapped)
-    if tid < pair_keys.shape[0]:
-        pair_keys[tid] = wp.int64(-1)
 
 
 @wp.kernel

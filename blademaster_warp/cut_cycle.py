@@ -150,8 +150,8 @@ class SequenceSettings:
     final_hold_s: float = 0.5
 
     def __post_init__(self):
-        if not self.cut_offsets_m or len(self.cut_offsets_m) > 18:
-            raise ValueError("Between 1 and 18 cuts")
+        if not self.cut_offsets_m:
+            raise ValueError("At least one cut")
         speeds = [self.descent_speed_m_s, self.travel_speed_m_s, self.push_speed_m_s]
         if min(speeds) <= 0 or self.push_distance_m < 0 or min(self.initial_hold_s, self.final_hold_s) < 0:
             raise ValueError("Speeds must be positive, distances and holds non-negative")

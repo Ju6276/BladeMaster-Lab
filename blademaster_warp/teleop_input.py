@@ -118,8 +118,6 @@ class PoseTarget:
     def integrate(self, command, events, dt, substeps):
         for _, event in events:
             if event == "begin_cut":
-                if self.cut_index >= 18:
-                    raise RuntimeError("int32 cut-label capacity exhausted (19 cuts)")
                 self.cut_index += 1
                 self.cutting = True
             elif event == "end_cut":

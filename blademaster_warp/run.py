@@ -88,7 +88,7 @@ def run(
             else "paper E,nu,rho,yield,blade mass,friction,Gc,sharpness; independent step size, geometry, contact scales, return map and drive"
         ),
         "sampling_hz": 100.0,
-        "max_cut_index": 18,
+        "max_cut_index": s.max_cut_index,
         "grid_hash_capacity": s.capacity,
         "pair_history_capacity": s.pair_capacity,
         "cuda_graph": graph,

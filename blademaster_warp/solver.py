@@ -123,6 +123,10 @@ class Solver:
         self.n = len(self.reference)
         nodes, weights, gradients = stencil(self.reference, self.origin, cfg.grid_spacing, cells)
         self.node_count = int(np.prod(cells + 1))
+        # Ternary side codes, one digit per cut, in int64 hash keys code * node_count + node.
+        self.max_cut_index = 0
+        while 3 ** (self.max_cut_index + 2) * self.node_count <= 2**63 - 1:
+            self.max_cut_index += 1
         self.node_numpy, self.weight_numpy = nodes, weights
         # At most 8*n distinct (reference node, cut code) keys. Reserving the next
         # power of two >=16*n keeps open-addressing occupancy below one half.
@@ -161,7 +165,7 @@ class Solver:
         self.Fp = array(np.tile(np.eye(3), (self.n, 1, 1)), wp.mat33)
         # First Piola stress of the current F, Fp; written by every material step.
         self.stress = zeros(self.n, wp.mat33)
-        self.codes, self.damage = zeros(self.n, int), zeros(self.n, float)
+        self.codes, self.damage = zeros(self.n, wp.int64), zeros(self.n, float)
         self.nodes = array(nodes, int)
         self.weights = array(weights, float)
         self.gradients = array(gradients, wp.vec3)
@@ -411,8 +415,8 @@ class Solver:
         self._step_kernels(target_edge, cutting, cut_index, orientation=orientation)
 
     def _set_cut(self, cut_index):
-        if cut_index < self.cut_index or cut_index > 18:
-            raise ValueError("Persistent ternary int32 codes require monotonic cut indices in [0,18]")
+        if cut_index < self.cut_index or cut_index > self.max_cut_index:
+            raise ValueError(f"Cut indices must be monotonic and within [0, {self.max_cut_index}]")
         if cut_index != self.cut_index:
             self.damage.zero_()
             self.cut_index = cut_index

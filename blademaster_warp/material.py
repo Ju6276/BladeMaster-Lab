@@ -21,15 +21,16 @@ def validate_interval(
 
 
 @wp.func
-def compatible(a: int, b: int):
+def compatible(a: wp.int64, b: wp.int64):
+    zero, three = wp.int64(0), wp.int64(3)
     result = bool(True)
-    while a != 0 or b != 0:
-        x = a % 3
-        y = b % 3
-        if x != 0 and y != 0 and x != y:
+    while a != zero or b != zero:
+        x = a % three
+        y = b % three
+        if x != zero and y != zero and x != y:
             result = False
-        a = a // 3
-        b = b // 3
+        a = a // three
+        b = b // three
     return result
 
 
@@ -49,7 +50,7 @@ def insert_key(keys: wp.array(dtype=wp.int64), key: wp.int64, capacity: int):
 @wp.kernel
 def register(
     nodes: wp.array2d(dtype=int),
-    codes: wp.array(dtype=int),
+    codes: wp.array(dtype=wp.int64),
     keys: wp.array(dtype=wp.int64),
     slots: wp.array2d(dtype=int),
     node_count: int,
@@ -57,7 +58,7 @@ def register(
     errors: wp.array(dtype=int),
 ):
     p, a = wp.tid()
-    key = wp.int64(codes[p]) * wp.int64(node_count) + wp.int64(nodes[p, a])
+    key = codes[p] * wp.int64(node_count) + wp.int64(nodes[p, a])
     s = insert_key(keys, key, capacity)
     slots[p, a] = s
     if s < 0:
@@ -165,13 +166,13 @@ def couple_at(
     if keys[a] < wp.int64(0) or grid_mass[a] <= 0.0:
         return
     node = int(keys[a] % wp.int64(node_count))
-    code_a = int(keys[a] // wp.int64(node_count))
+    code_a = keys[a] // wp.int64(node_count)
     b = heads[node]
     total = float(0.0)
     exchange = wp.vec3(0.0)
     while b >= 0:
         total += grid_mass[b]
-        code_b = int(keys[b] // wp.int64(node_count))
+        code_b = keys[b] // wp.int64(node_count)
         if b != a and compatible(code_a, code_b):
             exchange += grid_mass[a] * state[b] - grid_mass[b] * state[a]
         b = links[b]
@@ -265,14 +266,14 @@ def couple_and_velocity_at(
     if keys[a] < wp.int64(0) or grid_mass[a] <= 0.0:
         return
     node = int(keys[a] % wp.int64(node_count))
-    code_a = int(keys[a] // wp.int64(node_count))
+    code_a = keys[a] // wp.int64(node_count)
     total = float(0.0)
     dm = wp.vec3(0.0)
     di = wp.vec3(0.0)
     b = heads[node]
     while b >= 0:
         total += grid_mass[b]
-        code_b = int(keys[b] // wp.int64(node_count))
+        code_b = keys[b] // wp.int64(node_count)
         if b != a and compatible(code_a, code_b):
             dm += grid_mass[a] * momentum[b] - grid_mass[b] * momentum[a]
             di += grid_mass[a] * impulse[b] - grid_mass[b] * impulse[a]

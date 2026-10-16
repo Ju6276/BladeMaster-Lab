@@ -126,3 +126,20 @@ def test_mobility_rejects_invalid_mass_response():
     for invalid in [np.eye(5), -np.eye(6), np.full((6, 6), np.nan), np.triu(np.ones((6, 6)))]:
         with pytest.raises(ValueError, match="Mobility"):
             ToolState([0, 0, 0], [0, 0, 0, 1], [0, 0, 0], [0, 0, 0], invalid).checked()
+
+
+def test_cut_index_beyond_int32_digits_still_severs():
+    from blademaster_warp.presets import banana_config
+    from blademaster_warp.topology import components
+
+    s = Solver(replace(banana_config(), external_tool=True))
+    assert s.max_cut_index >= 29
+    port, half, cut = ExternalToolPort(s), s.config.blade_half_size[2], 25
+    for i in range(1900):
+        edge = max(0.0, 0.036 - 0.02 * i * 0.001)
+        state = ToolState([0.0, 0.0, edge + half], [0, 0, 0, 1], [0.0, 0.0, -0.02], [0, 0, 0])
+        port.advance(state, 0.001, cutting=True, cut_index=cut)
+    codes = s.codes.numpy()
+    assert set(np.unique(codes // 3**cut)) == {0, 1, 2}
+    _, sizes = components(s.node_numpy, s.weight_numpy, codes)
+    assert len(sizes) == 2 and sizes.min() > 0.3 * s.n

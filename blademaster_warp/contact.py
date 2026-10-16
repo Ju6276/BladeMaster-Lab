@@ -420,7 +420,7 @@ def pair_at(
     x: wp.array(dtype=wp.vec3),
     ref: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
-    codes: wp.array(dtype=int),
+    codes: wp.array(dtype=wp.int64),
     radius: float,
     spacing: float,
     mass: float,
@@ -491,7 +491,7 @@ def pairs(
     x: wp.array(dtype=wp.vec3),
     ref: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
-    codes: wp.array(dtype=int),
+    codes: wp.array(dtype=wp.int64),
     radius: float,
     spacing: float,
     mass: float,
@@ -551,7 +551,7 @@ def pairs_all(
     x: wp.array(dtype=wp.vec3),
     ref: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
-    codes: wp.array(dtype=int),
+    codes: wp.array(dtype=wp.int64),
     radius: float,
     spacing: float,
     mass: float,
@@ -618,7 +618,7 @@ def pairs_all(
 def assign(
     x: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
-    codes: wp.array(dtype=int),
+    codes: wp.array(dtype=wp.int64),
     tool_pos: wp.array(dtype=wp.vec3),
     tool_vel: wp.array(dtype=wp.vec3),
     tool_rot: wp.array(dtype=wp.quat),
@@ -626,12 +626,12 @@ def assign(
     half: wp.vec3,
     spacing: float,
     dt: float,
-    digit: int,
+    digit: wp.int64,
     cutting: int,
     topology_dirty: wp.array(dtype=int),
 ):
     p = wp.tid()
-    if cutting == 0 or (codes[p] // digit) % 3 != 0:
+    if cutting == 0 or (codes[p] // digit) % wp.int64(3) != wp.int64(0):
         return
     edge = tool_pos[0] + wp.quat_rotate(tool_rot[0], wp.vec3(0.0, 0.0, -half[2]))
     local = wp.quat_rotate_inv(tool_rot[0], x[p] - edge)
@@ -644,7 +644,7 @@ def assign(
         side = int(2)
         if local[0] < 0.0:
             side = 1
-        codes[p] += digit * side
+        codes[p] += digit * wp.int64(side)
         wp.atomic_max(topology_dirty, 0, 1)
 
 

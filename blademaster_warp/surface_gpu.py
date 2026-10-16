@@ -9,7 +9,7 @@ from .surface import MaterialEmbedding, OFFSETS
 @wp.func
 def node_field(
     i: int,
-    code: int,
+    code: wp.int64,
     extend: int,
     nodes: wp.array(dtype=wp.vec3d),
     reference: wp.array(dtype=wp.vec3d),
@@ -21,7 +21,7 @@ def node_field(
     extra_weights: wp.array(dtype=wp.float64),
     x: wp.array(dtype=wp.vec3d),
     deformation: wp.array(dtype=wp.mat33d),
-    particle_codes: wp.array(dtype=int),
+    particle_codes: wp.array(dtype=wp.int64),
 ):
     """Weighted sums of compatible affine-extrapolated positions and F at node i.
 
@@ -64,9 +64,9 @@ def evaluate_nodes(
     extra_weights: wp.array(dtype=wp.float64),
     x: wp.array(dtype=wp.vec3d),
     deformation: wp.array(dtype=wp.mat33d),
-    particle_codes: wp.array(dtype=int),
-    node_codes: wp.array(dtype=int),
-    uniform_code: int,
+    particle_codes: wp.array(dtype=wp.int64),
+    node_codes: wp.array(dtype=wp.int64),
+    uniform_code: wp.int64,
     per_node_codes: int,
     extend: int,
     positions: wp.array(dtype=wp.vec3d),
@@ -106,7 +106,7 @@ def evaluate_nodes(
 
 @wp.kernel
 def embed_vertices(
-    vertex_codes: wp.array(dtype=int),
+    vertex_codes: wp.array(dtype=wp.int64),
     corner_nodes: wp.array2d(dtype=int),
     corner_weights: wp.array2d(dtype=wp.float64),
     nodes: wp.array(dtype=wp.vec3d),
@@ -119,7 +119,7 @@ def embed_vertices(
     extra_weights: wp.array(dtype=wp.float64),
     x: wp.array(dtype=wp.vec3d),
     deformation: wp.array(dtype=wp.mat33d),
-    particle_codes: wp.array(dtype=int),
+    particle_codes: wp.array(dtype=wp.int64),
     vertices: wp.array(dtype=wp.vec3d),
     extensions: wp.array(dtype=int),
     unsupported: wp.array(dtype=int),
@@ -179,8 +179,8 @@ class CudaMaterialEmbedding(MaterialEmbedding):
         self.g_extra = support_arrays(self.extension_support)
         self.g_x = wp.empty(len(self.ref), dtype=wp.vec3d, device=self.device)
         self.g_f = wp.empty(len(self.ref), dtype=wp.mat33d, device=self.device)
-        self.g_codes = wp.empty(len(self.ref), dtype=int, device=self.device)
-        self.g_node_codes = wp.empty(len(self.nodes), dtype=int, device=self.device)
+        self.g_codes = wp.empty(len(self.ref), dtype=wp.int64, device=self.device)
+        self.g_node_codes = wp.empty(len(self.nodes), dtype=wp.int64, device=self.device)
         self.g_positions = wp.empty(len(self.nodes), dtype=wp.vec3d, device=self.device)
         self.g_gradients = wp.empty(len(self.nodes), dtype=wp.mat33d, device=self.device)
         self.g_extensions = wp.zeros(1, dtype=int, device=self.device)
@@ -190,14 +190,9 @@ class CudaMaterialEmbedding(MaterialEmbedding):
     @staticmethod
     def _codes(values, count):
         a = np.asarray(values)
-        if (
-            a.shape != (count,)
-            or not np.issubdtype(a.dtype, np.integer)
-            or np.any(a < 0)
-            or np.any(a > np.iinfo(np.int32).max)
-        ):
-            raise ValueError("Cut codes must be nonnegative int32-representable integers")
-        return np.ascontiguousarray(a, dtype=np.int32)
+        if a.shape != (count,) or not np.issubdtype(a.dtype, np.integer) or np.any(a < 0):
+            raise ValueError("Cut codes must be nonnegative int64 integers")
+        return np.ascontiguousarray(a, dtype=np.int64)
 
     def _upload_particles(self, x, F, particle_codes):
         x = np.ascontiguousarray(x, dtype=np.float64)
@@ -227,7 +222,7 @@ class CudaMaterialEmbedding(MaterialEmbedding):
             [
                 *self._support_inputs(),
                 self.g_node_codes,
-                int(code),
+                wp.int64(int(code)),
                 int(node_codes is not None),
                 int(extend),
                 self.g_positions,
@@ -272,7 +267,7 @@ class CudaMaterialEmbedding(MaterialEmbedding):
             embed_vertices,
             len(mesh.reference),
             [
-                wp.array(self._codes(mesh.codes, len(mesh.codes)), dtype=int, device=device),
+                wp.array(self._codes(mesh.codes, len(mesh.codes)), dtype=wp.int64, device=device),
                 wp.array(corners.astype(np.int32), dtype=int, device=device),
                 wp.array(weights, dtype=wp.float64, device=device),
                 *grid._support_inputs(),

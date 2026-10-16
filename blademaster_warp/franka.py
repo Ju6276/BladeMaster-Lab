@@ -51,6 +51,14 @@ def make_model(interval=0.001, blade_mass=0.1, attachment="fixed"):
     material_origin = tool_origin - np.array([0.0, 0.0, HALF[2] + 0.04])
     mounting_q = quat_wxyz(hand_r.T)
     root.find("option").set("timestep", str(interval))
+    if attachment == "grasp":
+        # MuJoCo's default soft pyramidal friction lets the held knife creep about
+        # 6 mm in 2 s under its own weight; elliptic cones, impratio and noslip
+        # iterations cut that to about 1 mm (see docs/RESULTS.md).
+        option = root.find("option")
+        option.set("cone", "elliptic")
+        option.set("impratio", "10")
+        option.set("noslip_iterations", "5")
     root.remove(root.find("keyframe"))  # Its ctrl is a position target, not torque.
     actuator = root.find("actuator")
     for index, node in enumerate(list(actuator)[:7]):
@@ -155,7 +163,7 @@ class Franka:
         rotation_stiffness=None,
         controller="libfranka",
         attachment="fixed",
-        grip_force_per_finger=10.0,
+        grip_force_per_finger=30.0,
     ):
         """translation/rotation_stiffness: libfranka Cartesian gains (default 150 N/m, 10 Nm/rad)."""
         if controller == "serl" and (translation_stiffness is not None or rotation_stiffness is not None):

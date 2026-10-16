@@ -697,7 +697,7 @@ def parser():
     p.add_argument("--controller", choices=["libfranka", "serl"], default="libfranka")
     p.add_argument("--attachment", choices=["fixed", "grasp"], default="fixed")
     p.add_argument(
-        "--grip-force-per-finger", type=float, default=10.0, help="Grasp actuator command, N per finger"
+        "--grip-force-per-finger", type=float, default=30.0, help="Grasp actuator command, N per finger"
     )
     p.add_argument("--cutting-energy", type=float, default=None)
     p.add_argument("--no-material", action="store_true")

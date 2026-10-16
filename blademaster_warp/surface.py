@@ -297,6 +297,7 @@ class LinkedSurface:
         changed = set(self.edges[hits].ravel()) if hits else set()
         if band is not None and normal_world is not None:
             changed |= self._assign_band(x, edge_before, edge_after, normal_world, cut_index, band)
+            changed |= self._sever_opposite(x, edge_after, normal_world, cut_index, node_deformation)
         # A node's new code changes every incident region using that node, not
         # just cells adjacent to the severed edge.
         for node in changed:
@@ -330,6 +331,35 @@ class LinkedSurface:
         )
         self.codes[nodes] += np.where(lateral[nodes] < 0, 1, 2) * 3**cut_index
         return set(nodes.tolist())
+
+    def _sever_opposite(self, x, edge, normal, cut_index, node_deformation):
+        """Sever intact links whose ends lie on opposite sides of this cut.
+
+        Opposite sides never exchange momentum in the material, so such a link must not
+        join one surface region. Without this, a link the swept-edge test just misses
+        gives a region both side digits, and its vertex follows both pieces.
+        """
+        digit = self.codes // 3**cut_index % 3
+        a, b = self.edges[:, 0], self.edges[:, 1]
+        crossing = np.flatnonzero(~self.broken & self.inside[a] & self.inside[b] & (digit[a] * digit[b] == 2))
+        if not len(crossing):
+            return set()
+        n = np.asarray(normal, float) / np.linalg.norm(normal)
+        point = np.asarray(edge, float).mean(0)
+        sa, sb = (x[a[crossing]] - point) @ n, (x[b[crossing]] - point) @ n
+        alphas = np.clip(sa / np.where(sa != sb, sa - sb, 1.0), 0.0, 1.0)
+        for e, alpha in zip(crossing, alphas):
+            i, j = self.edges[e]
+            nref = n.copy()
+            if node_deformation is not None:
+                f = (1 - alpha) * node_deformation[i] + alpha * node_deformation[j]
+                if np.isfinite(f).all():
+                    nref = f.T @ n
+                    nref /= np.linalg.norm(nref)
+            self.hermite[int(e)] = ((1 - alpha) * self.reference[i] + alpha * self.reference[j], nref)
+            self.broken[e] = True
+            self.dirty.update(self.incident[e])
+        return set(self.edges[crossing].ravel().tolist())
 
     def _update_cell(self, ci):
         corners = self.cells[ci]

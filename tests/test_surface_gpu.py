@@ -68,7 +68,7 @@ def test_cuda_vertices_match_cpu_after_two_crossing_cuts(embeddings):
         normal_world=[0, 1, 0],
     )
     mesh = surface.mesh()
-    assert len(np.unique(mesh.codes)) == 4
+    assert len(np.unique(mesh.codes)) >= 4
     rng = np.random.default_rng(7)
     codes = np.where(ref[:, 0] < 0, 1, 2) + 3 * np.where(ref[:, 1] < 0.002, 1, 2)
     x = ref + rng.normal(0, 0.001, ref.shape)

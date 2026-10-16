@@ -143,3 +143,40 @@ def test_cut_index_beyond_int32_digits_still_severs():
     assert set(np.unique(codes // 3**cut)) == {0, 1, 2}
     _, sizes = components(s.node_numpy, s.weight_numpy, codes)
     assert len(sizes) == 2 and sizes.min() > 0.3 * s.n
+
+
+def test_auto_strokes_label_each_cut_plane_with_its_own_digit():
+    from blademaster_warp.presets import banana_config
+    from blademaster_warp.teleop_input import ContactStrokes
+    from blademaster_warp.topology import components
+
+    s = Solver(replace(banana_config(), external_tool=True))
+    port, half, strokes, dt = ExternalToolPort(s), s.config.blade_half_size[2], ContactStrokes(), 0.001
+    # Edge path: down through x=-25 mm, back out, over, down through x=+25 mm, out.
+    legs = [
+        (-0.025, 0.0, 0.9),
+        (-0.025, 0.0, 0.1),
+        (-0.025, 0.04, 0.6),
+        (0.025, 0.04, 0.8),
+        (0.025, 0.0, 1.0),
+        (0.025, 0.0, 0.1),
+        (0.025, 0.04, 0.6),
+    ]
+    path = [(-0.025, 0.036)]
+    for x, z, seconds in legs:
+        x0, z0 = path[-1]
+        for k in range(1, round(seconds / dt) + 1):
+            path.append((x0 + (x - x0) * k * dt / seconds, z0 + (z - z0) * k * dt / seconds))
+    for (x0, z0), (x1, z1) in zip(path, path[1:]):
+        state = ToolState(
+            [x1, 0.0, z1 + half], [0, 0, 0, 1], [(x1 - x0) / dt, 0.0, (z1 - z0) / dt], [0, 0, 0]
+        )
+        port.advance(state, dt, cutting=True, cut_index=strokes.cut_index)
+        strokes.update(s.embedded_particles() > 0, dt)
+    assert strokes.strokes == 2 and strokes.cut_index == 2
+    codes, ref = s.codes.numpy(), s.reference
+    band = 7 * s.config.grid_spacing
+    assert np.all(abs(ref[codes % 3 != 0, 0] + 0.025) < band)
+    assert np.all(abs(ref[(codes // 3) % 3 != 0, 0] - 0.025) < band)
+    _, sizes = components(s.node_numpy, s.weight_numpy, codes)
+    assert len(sizes) == 3

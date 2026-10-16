@@ -139,22 +139,25 @@ class PoseTarget:
 
 
 class ContactStrokes:
-    """Cut strokes from blade-material contact history instead of operator events.
+    """Cut strokes from the blade's history in the material instead of operator events.
 
-    A stroke ends once the blade has been out of contact for `clear_s`. The index
-    advances at that moment, not at the next touch, because the side labels of the
-    first contact interval are written with the index already passed to the solver.
+    `in_material` must mean the blade is embedded (particles beside its body), not
+    that it carries contact force: the kerf behind a sharp blade is often open, so
+    the force drops to zero while the blade is still inside. A stroke ends once the
+    blade has been out for `clear_s`. The index advances at that moment, not at the
+    next touch, because the first interval's side labels use the index already
+    passed to the solver.
     """
 
-    def __init__(self, clear_s=0.05):
+    def __init__(self, clear_s=0.02):
         self.clear_s = clear_s
         self.cut_index = 0
         self.strokes = 0
         self.touched = False
         self.clear_for = 0.0
 
-    def update(self, in_contact, dt):
-        if in_contact:
+    def update(self, in_material, dt):
+        if in_material:
             self.strokes += not self.touched
             self.touched = True
             self.clear_for = 0.0

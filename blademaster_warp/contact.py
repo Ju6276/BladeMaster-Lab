@@ -648,6 +648,22 @@ def assign(
         wp.atomic_max(topology_dirty, 0, 1)
 
 
+@wp.kernel
+def count_embedded(
+    x: wp.array(dtype=wp.vec3),
+    tool_pos: wp.array(dtype=wp.vec3),
+    tool_rot: wp.array(dtype=wp.quat),
+    half: wp.vec3,
+    spacing: float,
+    count: wp.array(dtype=int),
+):
+    """Particles beside the blade body (above the edge) inside the side-labelling band."""
+    p = wp.tid()
+    local = wp.quat_rotate_inv(tool_rot[0], x[p] - tool_pos[0])
+    if wp.abs(local[0]) <= 6.0 * spacing and wp.abs(local[1]) <= half[1] and wp.abs(local[2]) <= half[2]:
+        wp.atomic_add(count, 0, 1)
+
+
 @wp.func
 def integrate_blade(
     tool_pos: wp.array(dtype=wp.vec3),

@@ -640,6 +640,16 @@ class Solver:
             ],
         )
 
+    def embedded_particles(self):
+        """Number of particles beside the blade body; zero once the blade has left the material."""
+        count = wp.zeros(1, dtype=int, device=self.device)
+        self.launch(
+            c.count_embedded,
+            self.n,
+            [self.x, self.tool_pos, self.tool_rot, self.half, self.config.grid_spacing, count],
+        )
+        return int(count.numpy()[0])
+
     def _step_kernels(
         self, target_edge, cutting, cut_index, buffer=None, index=0, rotations=None, orientation=None
     ):

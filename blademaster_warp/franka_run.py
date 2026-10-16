@@ -314,10 +314,7 @@ class FrankaCuttingRun:
         )
         self._timed("material", tick)
         if self.strokes is not None:
-            self.strokes.update(
-                np.any(reaction.impulse_ns != 0) or np.any(reaction.angular_impulse_nms != 0),
-                self.args.interval,
-            )
+            self.strokes.update(self.solver.embedded_particles() > 0, self.args.interval)
         return np.r_[reaction.force_n, reaction.torque_nm]
 
     def _log_step(self, target, tool_target, wrench, requested, applied):
@@ -736,8 +733,8 @@ def parser():
         default="manual",
         help=(
             "teleop only. manual: strokes start/stop with begin_cut/end_cut; auto: cutting stays on and a new "
-            "stroke starts at the first blade contact after 50 ms without contact (use manual for pushing pieces "
-            "with the blade flat, which auto would label as cutting)"
+            "stroke starts each time the blade enters the material after having left it (use manual for pushing "
+            "pieces with the blade flat, which auto would label as cutting)"
         ),
     )
     p.add_argument(

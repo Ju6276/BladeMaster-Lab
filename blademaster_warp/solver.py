@@ -99,9 +99,8 @@ class Config:
             raise ValueError("Invalid blade geometry")
         if sum((self.free_blade, self.pose_servo, self.external_tool)) > 1:
             raise ValueError("Choose free, pose-servo, or externally prescribed tool")
-        cells = np.asarray(self.size) / self.grid_spacing
-        if min(cells) < 2 or not np.allclose(cells, np.rint(cells)):
-            raise ValueError("Size must contain integer cells, at least two per axis")
+        if self.grid_spacing <= 0 or min(np.asarray(self.size) / self.grid_spacing) < 2:
+            raise ValueError("Grid spacing must be positive with at least two cells per axis")
 
     def contact_scales(self):
         """Effective (s_n, gamma_k) used by the kernels at this dt."""

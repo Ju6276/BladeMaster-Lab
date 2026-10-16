@@ -86,8 +86,15 @@ def test_franka_teleop_follows_operator_twist_and_cut_events():
     target = run.teleop.position
     assert np.linalg.norm(run.robot.position - target) < 0.005
     assert np.linalg.norm(target[:2] - start[:2] - [0.06 * 0.5, 0.006 * 0.5]) < 1.0e-6
-    angle = np.degrees(np.arccos(np.clip((np.trace(start_rotation.T @ run.robot.rotation) - 1) / 2, -1, 1)))
-    assert angle > 3.0
+    from scipy.spatial.transform import Rotation
+
+    def angle(a, b):
+        return np.degrees(np.arccos(np.clip((np.trace(a.T @ b) - 1) / 2, -1, 1)))
+
+    commanded = Rotation.from_quat(run.teleop.orientation).as_matrix()
+    # The libfranka example's 10 Nm/rad rotational stiffness lags, but follows the twist.
+    assert angle(start_rotation, commanded) > 5.0
+    assert angle(run.robot.rotation, commanded) < 0.75 * angle(start_rotation, commanded)
 
 
 def test_recording_is_opt_in(tmp_path):

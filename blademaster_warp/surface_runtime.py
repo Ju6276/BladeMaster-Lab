@@ -5,6 +5,7 @@ import json
 import time
 import numpy as np
 from scipy.spatial.transform import Rotation
+from .geometry import grid_cells
 from .surface import LinkedSurface, MaterialEmbedding, moving_segment_hits
 
 
@@ -36,7 +37,7 @@ class SurfaceRecorder:
             solver.reference,
             cfg.grid_spacing,
             solver.origin,
-            np.rint(np.asarray(cfg.size) / cfg.grid_spacing).astype(int),
+            grid_cells(cfg.size, cfg.grid_spacing),
         )
         if embedding_backend == "cuda":
             from .surface_gpu import CudaMaterialEmbedding

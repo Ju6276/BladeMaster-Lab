@@ -44,12 +44,17 @@ def check_domain(size, shape):
             )
 
 
+def grid_cells(size, spacing):
+    """Cells per axis covering the whole domain; any spacing is allowed."""
+    return np.ceil(np.asarray(size) / spacing - 1.0e-9).astype(int)
+
+
 def points(size, spacing, shape, seed=0):
     """Two particles per cell and axis, at sub-cell centres (seed 0) or
     uniformly jittered inside their sub-cells (seed > 0)."""
     size = np.asarray(size)
     check_domain(size, shape)
-    cells = np.rint(size / spacing).astype(int)
+    cells = grid_cells(size, spacing)
     origin = -np.array([size[0] / 2, size[1] / 2, 0.0])
     coords = [origin[i] + (np.arange(2 * cells[i]) + 0.5) * spacing / 2 for i in range(3)]
     x = np.array(list(product(*coords)))
@@ -57,7 +62,10 @@ def points(size, spacing, shape, seed=0):
         x += np.random.default_rng(seed).uniform(-spacing / 4, spacing / 4, size=x.shape)
     if shape in ("banana", "cylinder"):
         x = x[levelset(x, size, shape) <= 0]
-    elif shape != "block":
+    elif shape == "block":
+        # A spacing that does not divide the size leaves partial cells at the far faces.
+        x = x[np.all(x - origin <= size, axis=1)]
+    else:
         raise ValueError(shape)
     return x, origin, cells
 

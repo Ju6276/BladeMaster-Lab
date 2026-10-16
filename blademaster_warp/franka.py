@@ -8,7 +8,6 @@ import json
 import xml.etree.ElementTree as ET
 import numpy as np
 import mujoco as mj
-from scipy.spatial.transform import Rotation
 from .geometry import DEMO_KNIFE_HALF_SIZE_M, DEMO_KNIFE_BEVEL_HEIGHT_M
 
 SOURCE = Path(__file__).resolve().parents[1] / "vendor/mujoco_menagerie/franka_emika_panda/panda.xml"
@@ -32,6 +31,18 @@ def serl_controller():
     return module.impedance_control
 
 
+def quat_wxyz(matrix):
+    """Unit quaternion (w, x, y, z) of a 3x3 rotation matrix."""
+    result = np.empty(4)
+    mj.mju_mat2Quat(result, np.ascontiguousarray(matrix, dtype=np.float64).ravel())
+    return result
+
+
+def quat_xyzw(matrix):
+    w, x, y, z = quat_wxyz(matrix)
+    return np.array([x, y, z, w])
+
+
 def numbers(x):
     return " ".join(format(float(v), ".14g") for v in np.asarray(x).ravel())
 
@@ -50,7 +61,7 @@ def make_model(interval=0.001, blade_mass=0.1, attachment="fixed"):
     hand_r = initial.xmat[hand].reshape(3, 3)
     tool_origin = initial.xpos[hand] + hand_r @ np.array([0.0, 0.0, 0.16])
     material_origin = tool_origin - np.array([0.0, 0.0, HALF[2] + 0.04])
-    mounting_q = Rotation.from_matrix(hand_r.T).as_quat(scalar_first=True)
+    mounting_q = quat_wxyz(hand_r.T)
     root.find("option").set("timestep", str(interval))
     root.remove(root.find("keyframe"))  # Its ctrl is a position target, not torque.
     actuator = root.find("actuator")
@@ -182,8 +193,7 @@ class Franka:
         mj.mj_forward(self.model, self.data)
         self.initial_position = self.control_position.copy()
         self.initial_rotation = self.control_rotation.copy()
-        x, y, z, w = Rotation.from_matrix(self.initial_rotation).as_quat()
-        self.initial_quat_wxyz = np.array([w, x, y, z])
+        self.initial_quat_wxyz = quat_wxyz(self.initial_rotation)
 
     @property
     def position(self):
@@ -243,10 +253,13 @@ class Franka:
 
         j = self.jacobian()
         twist = j @ self.data.qvel
-        mobility = j @ np.linalg.solve(self.mass(), j.T)
+        # J M^-1 J^T with the mass matrix factorization from the last forward pass.
+        inverse_mass_jt = np.empty_like(j)
+        mj.mj_solveM(self.model, self.data, inverse_mass_jt, j)
+        mobility = j @ inverse_mass_jt.T
         return ToolState(
             self.position - self.material_origin,
-            Rotation.from_matrix(self.rotation).as_quat(),
+            quat_xyzw(self.rotation),
             twist[:3],
             twist[3:],
             mobility,
@@ -265,7 +278,7 @@ class Franka:
             raise ValueError("Invalid robot command/wrench")
         rotation = self.initial_rotation if target_rotation is None else np.asarray(target_rotation)
         if self.controller == "libfranka":
-            qr = Rotation.from_matrix(self.control_rotation.T @ rotation).as_quat()
+            qr = quat_xyzw(self.control_rotation.T @ rotation)
             if qr[3] < 0:
                 qr = -qr
             error = np.r_[self.control_position - target, -self.control_rotation @ qr[:3]]
@@ -274,12 +287,7 @@ class Franka:
                 :7
             ]
         else:
-            # Same conversion as the controller's mat_to_quat (wxyz), done once per target.
-            if target_rotation is None:
-                quat = self.initial_quat_wxyz
-            else:
-                x, y, z, w = Rotation.from_matrix(rotation).as_quat()
-                quat = np.array([w, x, y, z])
+            quat = self.initial_quat_wxyz if target_rotation is None else quat_wxyz(rotation)
             requested = serl_controller()(
                 self.model, self.data, self.control_site, np.arange(7), pos=target, ori=quat, joint=HOME[:7]
             )

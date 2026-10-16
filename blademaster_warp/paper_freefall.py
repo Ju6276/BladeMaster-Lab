@@ -18,7 +18,15 @@ from .provenance import git_revision
 FIG3_CUTTING_ENERGY = 100.0
 
 
-def run(output, sharpness=0.9, dt=0.002, duration=1.0, sampling_seed=1, cutting_energy=FIG3_CUTTING_ENERGY):
+def run(
+    output,
+    sharpness=0.9,
+    dt=0.002,
+    duration=1.0,
+    sampling_seed=1,
+    cutting_energy=FIG3_CUTTING_ENERGY,
+    normal_scale=0.1,
+):
     cfg = Config(
         size=(0.14, 0.10, 0.08),
         grid_spacing=0.01,
@@ -32,6 +40,7 @@ def run(output, sharpness=0.9, dt=0.002, duration=1.0, sampling_seed=1, cutting_
         sharpness=sharpness,
         cutting_energy=cutting_energy,
         sampling_seed=sampling_seed,
+        normal_scale=normal_scale,
     )
     steps = round(duration / dt)
     if steps < 1 or not np.isclose(steps * dt, duration):
@@ -122,5 +131,6 @@ if __name__ == "__main__":
     p.add_argument("--duration", type=float, default=1.0)
     p.add_argument("--sampling-seed", type=int, default=1)
     p.add_argument("--cutting-energy", type=float, default=FIG3_CUTTING_ENERGY)
+    p.add_argument("--normal-scale", type=float, default=0.1, help="Contact s_n (paper Eq. 11)")
     a = p.parse_args()
-    run(a.output, a.sharpness, a.dt, a.duration, a.sampling_seed, a.cutting_energy)
+    run(a.output, a.sharpness, a.dt, a.duration, a.sampling_seed, a.cutting_energy, a.normal_scale)

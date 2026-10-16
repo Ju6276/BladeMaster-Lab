@@ -77,6 +77,11 @@ def render(directory, output=None, preview=False, layout="overview"):
         cameras = [dict(position=[300, -600, 470], focal=[0, 0, 80], scale=140) for _ in scenes]
     for scene, camera in zip(scenes, cameras):
         set_camera(scene, **camera)
+    cycle_path = directory / "cycle.json"
+    cycle = json.loads(cycle_path.read_text()) if cycle_path.exists() else dict(phases=[], events=[])
+    phase_labels = [{"descend": "Cut"}.get(name, name.capitalize()) for name in cycle["phases"]]
+    cuts = sum(event["phase"] == "descend" for event in cycle["events"])
+    title = "Franka | Single cut" if cuts <= 1 else f"Franka | {cuts} cuts + push"
     font = ImageFont.truetype("DejaVuSans.ttf", 22)
     small = ImageFont.truetype("DejaVuSans.ttf", 16)
     selected = sorted({0, len(frames) // 2, len(frames) - 1}) if preview else range(len(frames))
@@ -114,10 +119,8 @@ def render(directory, output=None, preview=False, layout="overview"):
             phase = ""
             trace = z["cycle_trace"]
             if trace.size:
-                phase = ("Settle", "Cut", "Withdraw", "Verify", "Done")[
-                    int(trace[np.argmin(abs(trace[:, 0] - now)), 1])
-                ]
-            draw.text((20, 12), "Franka | Single cut", font=font, fill=ink)
+                phase = phase_labels[int(trace[np.argmin(abs(trace[:, 0] - now)), 1])]
+            draw.text((20, 12), title, font=font, fill=ink)
             draw.text((1020, 12), f"{phase}  {now:.2f} s", font=font, fill=ink)
             if layout == "paper":
                 draw.rectangle((12, 56, 242, 82), fill=(241, 244, 246))

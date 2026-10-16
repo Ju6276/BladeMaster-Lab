@@ -18,4 +18,5 @@ def banana_config(*, paper_material=True):
     if paper_material:
         cfg=replace(cfg,young_modulus=400000.,poisson_ratio=.45,yield_stress=30000.,
                     blade_mass=.1,friction_static=.2,friction_dynamic=.2,cutting_energy=700.,dt=.000025)
-    return cfg
+    # Contact stiffness is fixed at its value for the preset dt; other dt keep it.
+    return replace(cfg,contact_reference_dt=cfg.dt)

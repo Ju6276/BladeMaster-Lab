@@ -18,6 +18,48 @@ def accumulate_reaction(reaction: wp.array(dtype=wp.vec3),
     angular[0] += torque[0] + wp.cross(position[0], reaction[0])
 
 
+@wp.kernel
+def finish_external_step(reaction: wp.array(dtype=wp.vec3),
+                         torque: wp.array(dtype=wp.vec3),
+                         board: wp.array(dtype=wp.vec3),
+                         speed: wp.array(dtype=float),
+                         bx: wp.array(dtype=wp.vec3), bv: wp.array(dtype=wp.vec3),
+                         bq: wp.array(dtype=wp.quat), bw: wp.array(dtype=wp.vec3),
+                         mobility: wp.array2d(dtype=float), predict: int, dt: float,
+                         linear: wp.array(dtype=wp.vec3),
+                         angular: wp.array(dtype=wp.vec3)):
+    """Accumulate the step impulse, optionally advance the tool, reset sums.
+
+    predict=0 holds pose and twist over the coupling interval (paper III-G).
+    predict=1 applies the step impulse through the external body's mobility
+    and integrates the pose at the resulting twist; the external engine
+    resets the state at the start of the next interval.
+    """
+    j = reaction[0]
+    tau = torque[0]
+    linear[0] += j
+    angular[0] += tau + wp.cross(bx[0], j)
+    if predict != 0:
+        u = wp.spatial_vector(j[0], j[1], j[2], tau[0], tau[1], tau[2])
+        dv = wp.vec3(0.0)
+        dw = wp.vec3(0.0)
+        for row in range(3):
+            for col in range(6):
+                dv[row] += mobility[row, col]*u[col]
+                dw[row] += mobility[row+3, col]*u[col]
+        bv[0] = bv[0] + dv
+        w = bw[0] + dw
+        bw[0] = w
+        bx[0] = bx[0] + dt*bv[0]
+        rate = wp.length(w)
+        if rate > 1.e-12:
+            bq[0] = wp.normalize(wp.quat_from_axis_angle(w/rate, dt*rate)*bq[0])
+    reaction[0] = wp.vec3(0.0)
+    torque[0] = wp.vec3(0.0)
+    board[0] = wp.vec3(0.0)
+    speed[0] = 0.0
+
+
 @wp.func
 def vertex(i: int, half: wp.vec3, bevel: float):
     j = i % 5

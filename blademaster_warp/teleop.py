@@ -2,7 +2,6 @@
 import argparse
 from dataclasses import asdict,replace
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
-import hashlib
 import json
 import socket
 from pathlib import Path
@@ -15,6 +14,7 @@ from .run import preset,write
 from .presets import DEFAULT_BANANA_PRESET
 from .solver import Solver
 from .teleop_input import LatestInput,PoseTarget,mock_command
+from .provenance import git_revision
 
 
 class Server:
@@ -129,7 +129,7 @@ def run(output,name=DEFAULT_BANANA_PRESET,duration=8.,mock=False,port=8765,pace=
         'control_provenance':'local pose servo: translational DexLab gains; rotational gains and plane contact solver documented in README',
         'display':'HTTP state stream; video rendering and final NPZ compression excluded from compute timing',
         'predefined_cut_surfaces':False,'future_trajectory_given_to_solver':False,
-        'source_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('*.py')},
+        'revision':git_revision(),
         'surface':'recorded physical particles; no online smooth-surface reconstruction',
         'total_duration_s':duration,'pace_wall_clock':pace}
     write(out/'manifest.json',metadata)

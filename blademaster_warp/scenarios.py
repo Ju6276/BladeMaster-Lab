@@ -5,13 +5,14 @@ experiment inputs, not preset cut surfaces and not claimed author trajectories.
 """
 import argparse
 from dataclasses import asdict
-import json,hashlib
+import json
 from pathlib import Path
 import time
 import numpy as np
 from scipy.spatial.transform import Rotation,Slerp
 from .coupling import ToolState,ExternalToolPort
 from .geometry import DEMO_KNIFE_HALF_SIZE_M, DEMO_KNIFE_BEVEL_HEIGHT_M
+from .provenance import git_revision
 
 
 def keyframes(name):
@@ -63,7 +64,7 @@ def run(args):
     surface=SurfaceRecorder(s,out/'surface',args.surface_spacing,getattr(args,'surface_embedding','cpu'),getattr(args,'surface_ccd','cpu')) if args.surface else None
     meta={'scenario':args.scenario,'config':asdict(cfg),'keyframes':keys,'driver':'prescribed tool (infinite effective mass)',
         'parameter_provenance':'Fig.7 elastic E/nu/rho; local geometry, path, Gc=.5 and contact numerics',
-        'source_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('*.py')},
+        'revision':git_revision(),
         'no_presplit':True,'surface_interval_s':.04 if surface else None,'status':'running'}
     (out/'manifest.json').write_text(json.dumps(meta,indent=2))
     saved={k:[] for k in s.state()};forces=[];energy=[];events=[];minimum=1.;status='completed';error=None

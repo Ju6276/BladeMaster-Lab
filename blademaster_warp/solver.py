@@ -23,6 +23,11 @@ class Config:
     friction_dynamic: float = .2
     tangent_stiffness: float = .05
     tangent_damping: float = .1
+    # 0: s_n and gamma_k are per-step constants (paper Eqs. 11, 12, 15), so the
+    # contact stiffness s_n*m/dt^2 changes with dt. >0: normal_scale and
+    # tangent_stiffness are the values at this dt and are rescaled by
+    # (dt/contact_reference_dt)^2, keeping the stiffness fixed across dt.
+    contact_reference_dt: float = 0.
     cutting_energy: float = .5
     sharpness: float = .9
     blade_mass: float = .2
@@ -37,6 +42,12 @@ class Config:
     external_tool: bool = False
     cache_topology: bool = False
     grid_storage: str = 'hash'  # compact is validated against the original hash path
+    # 'all' checks every pair (cheaper than a hash-grid build for small n),
+    # 'auto' picks 'all' up to ALL_PAIRS_MAX_PARTICLES.
+    pair_search: str = 'auto'
+    # External tool within a coupling interval: 'hold' (paper III-G) or
+    # 'predict' (mobility-based twist update, see tool.finish_external_step).
+    tool_substep: str = 'hold'
     accumulate_tool_impulses: bool = False
     rotational_stiffness: float = .05
     rotational_damping: float = .003
@@ -44,6 +55,12 @@ class Config:
     def __post_init__(self):
         if self.grid_storage not in ('hash', 'compact'):
             raise ValueError('grid_storage must be hash or compact')
+        if self.pair_search not in ('auto', 'hash', 'all'):
+            raise ValueError('pair_search must be auto, hash or all')
+        if self.tool_substep not in ('hold', 'predict'):
+            raise ValueError('tool_substep must be hold or predict')
+        if self.tool_substep == 'predict' and not self.external_tool:
+            raise ValueError('tool_substep=predict requires external_tool')
         numeric = [float(v) for k, v in asdict(self).items() if isinstance(v, (int, float))]
         if not np.isfinite(numeric).all():
             raise ValueError('Nonfinite configuration')
@@ -55,8 +72,10 @@ class Config:
             raise ValueError('Invalid material/sharpness')
         if not (0 <= self.flip_fraction <= 1 and 0 <= self.friction_dynamic <= self.friction_static):
             raise ValueError('Invalid transfer/friction')
-        if min(self.dynamic_viscosity, self.yield_stress, self.tangent_damping) < 0:
-            raise ValueError('Negative damping/plasticity')
+        if min(self.dynamic_viscosity, self.yield_stress, self.tangent_damping, self.contact_reference_dt) < 0:
+            raise ValueError('Negative damping/plasticity/reference step')
+        if max(self.contact_scales()) > 1:
+            raise ValueError('Rescaled contact factor exceeds 1 (one-step overshoot); reduce dt')
         if not 0 <= self.blade_bevel_height < 2*self.blade_half_size[2]:
             raise ValueError('Invalid blade geometry')
         if sum((self.free_blade, self.pose_servo, self.external_tool)) > 1:
@@ -64,6 +83,14 @@ class Config:
         cells = np.asarray(self.size)/self.grid_spacing
         if min(cells) < 2 or not np.allclose(cells, np.rint(cells)):
             raise ValueError('Size must contain integer cells, at least two per axis')
+
+    def contact_scales(self):
+        """Effective (s_n, gamma_k) used by the kernels at this dt."""
+        ratio = 1. if self.contact_reference_dt == 0 else (self.dt/self.contact_reference_dt)**2
+        return self.normal_scale*ratio, self.tangent_stiffness*ratio
+
+
+ALL_PAIRS_MAX_PARTICLES = 4096
 
 
 class Solver:
@@ -93,6 +120,7 @@ class Solver:
         self.mu = cfg.young_modulus/(2*(1+cfg.poisson_ratio))
         self.lam = cfg.young_modulus*cfg.poisson_ratio/((1+cfg.poisson_ratio)*(1-2*cfg.poisson_ratio))
         self.threshold = cfg.cutting_energy*self.volume**(2/3)*(1-cfg.sharpness)/cfg.sharpness
+        self.normal_scale, self.tangent_stiffness = cfg.contact_scales()
         self.half = wp.vec3(*cfg.blade_half_size)
         hx, hy, hz = cfg.blade_half_size
         self.inertia_inv = wp.vec3(*(3/(cfg.blade_mass*np.array([hy*hy+hz*hz,hx*hx+hz*hz,hx*hx+hy*hy]))))
@@ -132,8 +160,10 @@ class Solver:
         # the reference box are still inserted and queried without clipping.
         extent=np.ceil(np.asarray(cfg.size)/(2*self.radius)).astype(int)+2
         self.hash_grid_shape=tuple(1 << (max(8,int(v))-1).bit_length() for v in extent)
-        self.pair_grid = wp.HashGrid(*self.hash_grid_shape,device=self.device)
-        self.pair_grid.reserve(self.n)
+        self.all_pairs = cfg.pair_search == 'all' or (cfg.pair_search == 'auto' and self.n <= ALL_PAIRS_MAX_PARTICLES)
+        if not self.all_pairs:
+            self.pair_grid = wp.HashGrid(*self.hash_grid_shape,device=self.device)
+            self.pair_grid.reserve(self.n)
         self.speed = zeros(1,float)
         self.bx = array([[0.,0.,cfg.size[2]+.012+hz]],wp.vec3)
         self.bv, self.bw = zeros(1,wp.vec3), zeros(1,wp.vec3)
@@ -199,12 +229,11 @@ class Solver:
         else:
             self._grid_launch(m.couple_and_velocity,m.couple_and_velocity_compact,[self.grid_keys,self.heads,self.links,self.gm,
                 self.momentum,self.gi,self.old_v,self.new_v,self.node_count])
-        self.launch(m.g2p,self.n,[self.x,self.v,self.slots,self.weights,self.old_v,self.new_v,cfg.dt,cfg.flip_fraction])
-        self.launch(m.remap,self.n,[self.v,self.slots,self.weights,self.mass,self.remapped])
+        self.launch(m.g2p_remap,self.n,[self.x,self.v,self.slots,self.weights,self.old_v,self.new_v,
+            cfg.dt,cfg.flip_fraction,self.mass,self.remapped])
         self._couple(self.remapped,self.coupled_remapped)
-        self.launch(m.update_F,self.n,[self.F,self.slots,self.gradients,self.gm,self.coupled_remapped,cfg.dt])
-        if cfg.yield_stress:
-            self.launch(m.plastic_project,self.n,[self.F,self.Fp,self.mu,cfg.yield_stress,self.errors])
+        self.launch(m.update_F_plastic,self.n,[self.F,self.Fp,self.slots,self.gradients,self.gm,
+            self.coupled_remapped,cfg.dt,self.mu,cfg.yield_stress,self.errors])
 
     def _couple(self, src, dst):
         self._grid_launch(m.couple,m.couple_compact,[self.grid_keys,self.heads,self.links,self.gm,src,dst,self.node_count])
@@ -232,27 +261,38 @@ class Solver:
 
     def _step_kernels(self, target_edge, cutting, cut_index, buffer=None, index=0, rotations=None, orientation=None):
         cfg = self.config
-        self.launch(c.clear_step,1,[self.reaction,self.torque,self.board,self.speed])
-        # Work accumulates across the entire run, reset explicitly in diagnostics if needed.
+        sn, gk = self.normal_scale, self.tangent_stiffness
+        if not cfg.external_tool:
+            # External mode resets these at the end of the previous step.
+            self.launch(c.clear_step,1,[self.reaction,self.torque,self.board,self.speed])
         self.launch(c.rigid_and_speed,self.n,[self.speed,self.x,self.v,self.bx,self.bv,self.bq,self.bw,self.half,cfg.blade_bevel_height,
             self.radius,cfg.grid_spacing,self.mass,cfg.blade_mass,self.inertia_inv,self.tool_mobility,
             -1 if cfg.external_tool else int(cfg.free_blade or cfg.pose_servo),
-            cfg.dt,cfg.normal_scale,cfg.friction_static,cfg.friction_dynamic,cfg.tangent_stiffness,cfg.tangent_damping,
+            cfg.dt,sn,cfg.friction_static,cfg.friction_dynamic,gk,cfg.tangent_damping,
             self.histories,self.damage,self.threshold,int(cutting),self.impulses,self.reaction,self.torque,self.board,self.work])
-        self.pair_grid.build(self.x,2*self.radius)
         old,new = self.step_count%2,(self.step_count+1)%2
         self.pair_keys[new].fill_(-1)
-        self.launch(c.pairs,self.n,[self.pair_grid.id,self.x,self.ref,self.v,self.codes,self.radius,cfg.grid_spacing,
-            self.mass,cfg.dt,cfg.normal_scale,cfg.friction_static,cfg.friction_dynamic,cfg.tangent_stiffness,cfg.tangent_damping,
-            self.speed,self.pair_keys[old],self.pair_history[old],self.pair_keys[new],self.pair_history[new],
-            self.pair_capacity,self.n,self.impulses,self.errors])
+        contact = [self.x,self.ref,self.v,self.codes,self.radius,cfg.grid_spacing,
+            self.mass,cfg.dt,sn,cfg.friction_static,cfg.friction_dynamic,gk,cfg.tangent_damping]
+        history = [self.pair_keys[old],self.pair_history[old],self.pair_keys[new],self.pair_history[new],
+            self.pair_capacity,self.n,self.impulses,self.errors]
+        if self.all_pairs:
+            self.launch(c.pairs_all,self.n,[*contact,*history])
+        else:
+            self.pair_grid.build(self.x,2*self.radius)
+            self.launch(c.pairs,self.n,[self.pair_grid.id,*contact,self.speed,*history])
         self.material_step()
-        if cfg.external_tool or cfg.accumulate_tool_impulses:
+        if cfg.external_tool:
+            # The external engine owns tool integration between intervals.
+            self.launch(tool.finish_external_step,1,[self.reaction,self.torque,self.board,self.speed,
+                self.bx,self.bv,self.bq,self.bw,self.tool_mobility,int(cfg.tool_substep=='predict'),cfg.dt,
+                self.interval_impulse,self.interval_angular_impulse])
+        elif cfg.accumulate_tool_impulses:
             # Use the contact-time origin, before integrating the rigid body.
             self.launch(tool.accumulate_reaction, 1, [self.reaction, self.torque, self.bx,
                 self.interval_impulse, self.interval_angular_impulse])
         if cfg.external_tool:
-            pass  # State integration belongs exclusively to the external engine.
+            pass
         elif cfg.pose_servo or cfg.free_blade:
             if buffer is None:
                 self.single_target.assign([target_edge])

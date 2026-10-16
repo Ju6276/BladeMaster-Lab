@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 from .solver import Solver
 from .presets import banana_config, DEFAULT_BANANA_PRESET
+from .provenance import git_revision
 
 
 def banana_target(t, push=True):
@@ -49,7 +50,7 @@ def run(out, name=DEFAULT_BANANA_PRESET, duration=8., push=True, cutting=True, d
     manifest={'status':'running','implementation':'independent BladeMaster-equation Warp GPU implementation; not author code',
         'preset':name,'config':asdict(cfg),'device':str(s.device),'device_name':s.device.name,'warp_version':wp.__version__,
         'particles':s.n,'simulation_duration_s':duration,'precision':'float32','push':push,'cutting':cutting,
-        'source_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in source.glob('*.py')},
+        'revision':git_revision(),
         'geometry_source':'DexLab synthetic curved fruit, not author mesh',
         'trajectory_source':'DexLab cut-push, guided PD with explicit 10 N drive limit',
         'surface':'this runner records particles only; shared linked-volume reconstruction is available through surface_runtime in franka_run and scenarios',

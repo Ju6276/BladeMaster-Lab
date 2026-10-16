@@ -63,7 +63,7 @@ def summarize_case(path, bin_width=.01):
     geometry_path = path/'material_geometry_validation.json'
     return {
         'config': manifest['config'], 'coupling_interval_s': manifest['coupling_interval_s'],
-        'source_sha256': manifest['source_sha256'],
+        'revision': manifest.get('revision'),
         'particle_count': result['particle_count'],
         'sampled_material_mass_kg': result['sampled_material_mass_kg'],
         'component_sizes': sizes.tolist(), 'component_mass_fractions': (sizes/sizes.sum()).tolist(),

@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from PIL import Image
 from .replay_style import ReplayScene, caption
+from .provenance import git_revision
 
 
 def render(directory, output=None, view='compare', preview=False,surface_directory=None):
@@ -102,7 +103,7 @@ def render(directory, output=None, view='compare', preview=False,surface_directo
         particle_colors='saved persistent cut-history codes; not inferred piece count',
         force='recorded interval-average reaction on tool; material Fx/Fz have opposite sign',
         limits='Normal shading and material color cannot repair coarse geometry; final geometry audit is not a force validation',
-        source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (Path(__file__),Path(__file__).with_name('replay_style.py'))}
+        revision=git_revision()
     ),indent=2))
     print(output if not preview else output.with_name(f'{output.stem}_{selected[-1]:04d}.png'))
 

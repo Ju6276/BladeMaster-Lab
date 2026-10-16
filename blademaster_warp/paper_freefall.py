@@ -7,13 +7,13 @@ Gc and contact coefficients. These remain declared independent test choices.
 import argparse
 from dataclasses import asdict
 from pathlib import Path
-import hashlib
 import time
 import numpy as np
 import warp as wp
 from .solver import Config,Solver
 from .run import write
 from .topology import components
+from .provenance import git_revision
 
 
 def run(output,sharpness=.9,dt=.002,duration=1.):
@@ -37,8 +37,7 @@ def run(output,sharpness=.9,dt=.002,duration=1.):
                                  'initial clearance 15mm','sharpness/Gc','contact/transfer coefficients'],
           'dt_is_table_value':dt==.002,'actuation':'none; gravity plus material/board reaction',
           'surface':'particles only; reconstruction pending',
-          'source_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest()
-                           for p in Path(__file__).parent.glob('*.py')}}
+          'revision':git_revision()}
     saved={k:[v] for k,v in s.state().items()};start=time.perf_counter();minimum=1.
     try:
         stride=max(1,round(.01/dt))

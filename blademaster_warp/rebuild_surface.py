@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 from .geometry import points
 from .surface_runtime import SurfaceRecorder
+from .provenance import git_revision
 
 
 def rebuild(directory, output, spacing=None):
@@ -45,8 +46,7 @@ def rebuild(directory, output, spacing=None):
         raise RuntimeError('Physical state changed during surface reconstruction')
     result=dict(source=str(directory.resolve()),kind='offline replay of online surface observations',
                 trajectory_sha256=before,physics_unchanged=True,frames=len(frames),wall_s=time.perf_counter()-begin,
-                source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in
-                    (Path(__file__),Path(__file__).with_name('surface.py'),Path(__file__).with_name('surface_runtime.py'))})
+                revision=git_revision())
     (output/'reconstruction.json').write_text(json.dumps(result,indent=2))
     return result
 

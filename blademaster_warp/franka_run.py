@@ -1,17 +1,16 @@
-"""Reproducible articulated coupling diagnostic; not a task success benchmark."""
+"""Franka + TLMPM cutting run (offline or live browser display)."""
 import argparse
 from dataclasses import asdict, replace
-import hashlib
 import json
 from pathlib import Path
 import time
 import numpy as np
 from .franka import Franka, HALF, BEVEL, SOURCE
 from .geometry import BANANA_DEMO_SIZE_M
+from .provenance import git_revision
 
 
 def target_at(t, initial):
-    # Explicit diagnostic reference only. Geometry is not pre-split.
     z = np.interp(t, [0, .3, 2.3, 2.6, 4.6], [0, 0, -.04, -.04, .01])
     return initial + np.array([0., 0., z])
 
@@ -22,14 +21,18 @@ def material_config(args):
     # Shared banana material and assets. Only the rigid-body integration owner
     # changes; material/contact kernels and their numerical settings do not.
     cfg=(banana_config() if args.material=='paper-banana' else
-         Config(size=(.06,.03,.03),grid_spacing=.0075,dt=.00025,
+         Config(size=(.06,.03,.03),grid_spacing=.0075,dt=.00025,contact_reference_dt=.00025,
                 density=1100.,young_modulus=6000.,poisson_ratio=.4,
                 blade_mass=.1,blade_half_size=HALF,blade_bevel_height=BEVEL))
     overrides={name:getattr(args,name) for name in ('dt','cutting_energy') if getattr(args,name) is not None}
     if args.spacing is not None:
         overrides['grid_spacing']=args.spacing
-    return replace(cfg,external_tool=True,grid_storage=getattr(args,'grid_storage',cfg.grid_storage),
-                   cache_topology=(getattr(args,'grid_storage',cfg.grid_storage)=='compact'),**overrides)
+    if getattr(args,'contact_scaling','physical')=='per-step':
+        overrides['contact_reference_dt']=0.
+    storage=getattr(args,'grid_storage',cfg.grid_storage)
+    return replace(cfg,external_tool=True,grid_storage=storage,cache_topology=storage=='compact',
+                   pair_search=getattr(args,'pair_search','auto'),
+                   tool_substep=getattr(args,'tool_substep','hold'),**overrides)
 
 
 def run(args, observer=None):
@@ -58,40 +61,24 @@ def run(args, observer=None):
     banana = args.material == 'paper-banana'
     cfg = material_config(args)
     provenance = {
+        'revision': git_revision(),
         'robot': json.loads((SOURCE.parent.parent/'SOURCE.json').read_text()),
         'controller': args.controller,
         'controller_source': json.loads((SOURCE.parents[2]/('libfranka/SOURCE.json' if args.controller == 'libfranka' else 'serl_controller/manifest.json')).read_text()),
         'controller_parameters': ({'stiffness':robot.k.tolist(),'damping':robot.damping.tolist()} if args.controller == 'libfranka' else
             {'pos_gains':[100.,100.,100.],'ori_gains':[2000.,2000.,200.],'damping_ratio':1.,
              'nullspace_stiffness':.5,'max_pos_acceleration':None,'max_ori_acceleration':None}),
-        'controller_modification': 'qfrc_bias includes gravity in MuJoCo; preserve upstream actuator force limits',
         'mount': robot.attachment,
-        'knife_geometry': {'source':'shared DexLab synthetic demo wedge; not author CAD',
-                           'half_size_m':list(HALF),'bevel_height_m':BEVEL,
-                           'fixture':'local MuJoCo attachment, not part of the shared blade'},
+        'knife_geometry': {'half_size_m':list(HALF),'bevel_height_m':BEVEL},
         'grip_force_per_finger_n': robot.grip_force_per_finger if args.attachment=='grasp' else None,
-        'geometry': ({'source':'DexLab b955d85 synthetic banana geometry; original 120 mm length, shared with standalone demo',
-                      'domain_size_m':list(BANANA_DEMO_SIZE_M), 'author_asset':False,
-                      'surface':'online linked-volume reconstruction; no preassigned display seams'} if banana else
-                     {'source':'synthetic rectangular block', 'author_asset':False}),
-        'material': ('paper banana E=400kPa, nu=.45, yield=30kPa, rho=1100, Gc=700; independent trajectory and contact numerics'
-            if banana else 'elastic block: paper Fig.3 E=6kPa, nu=.4, rho=1100; geometry/numerics/contact/cutting energy are declared independent test settings'),
-        'cutting_reference': ('measured knife pose gates descent/withdrawal; independent robot adapter, not author controller'
-                             if cycle else 'straight timed descent/withdrawal diagnostic; no pre-split particle topology'),
+        'geometry': 'banana' if banana else 'block',
+        'domain_size_m': list(BANANA_DEMO_SIZE_M) if banana else list(cfg.size),
         'cycle_settings': asdict(cycle.settings) if cycle else None,
-        'cycle_observations': 'actual tool pose only; topology is evaluated separately and never drives commands' if cycle else None,
         'material_origin_world_m': robot.material_origin.tolist(),
-        'config': asdict(cfg), 'args': vars(args),
+        'config': asdict(cfg), 'contact_scales_at_dt': list(cfg.contact_scales()), 'args': vars(args),
         'versions': {'mujoco': __import__('mujoco').__version__, 'warp': wp.__version__},
-        'source_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('*.py')},
-        'surface': 'online linked-volume reference at 25 Hz' if args.surface else 'disabled',
         'surface_embedding_backend':getattr(args,'surface_embedding','cpu') if args.surface else None,
-        'surface_ccd_backend':getattr(args,'surface_ccd','cpu') if args.surface else None,
-        'limitations': ['single tool; cut event index explicitly set to 0',
-            'default replay shows physical particles; optional surface has separate data and renderer',
-            'synthetic handle and blade CAD; fixed mount or free frictional grasp as declared in mount',
-            'MPM ground is an infinite plane; finite visible/MuJoCo board',
-            'not a physical force calibration or full BladeMaster reproduction']}
+        'surface_ccd_backend':getattr(args,'surface_ccd','cpu') if args.surface else None}
     if out is not None:
         (out/'manifest.json').write_text(json.dumps(provenance, indent=2))
         if record:
@@ -331,6 +318,11 @@ def parser():
     p.add_argument('--material',choices=['elastic-block','paper-banana'],default='elastic-block',
                    help='paper-banana selects published material values, with the original 120 mm synthetic demo geometry; not author assets/controller')
     p.add_argument('--dt',type=float,default=None,help='Defaults: elastic block 250 us; paper banana 25 us')
+    p.add_argument('--contact-scaling',choices=['physical','per-step'],default='physical',
+                   help='physical: contact stiffness fixed at the preset dt; per-step: fixed s_n, gamma_k (stiffness ~ 1/dt^2)')
+    p.add_argument('--pair-search',choices=['auto','hash','all'],default='auto')
+    p.add_argument('--tool-substep',choices=['hold','predict'],default='hold',
+                   help='Tool state within a coupling interval: held (paper) or mobility-predicted')
     p.add_argument('--spacing',type=float,default=None)
     p.add_argument('--duration',type=float,default=4.6)
     p.add_argument('--motion',choices=['timed','feedback'],default='timed',help='Feedback gates phases using actual knife pose; independent robot adapter')

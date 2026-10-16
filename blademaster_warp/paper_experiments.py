@@ -6,7 +6,6 @@ author assets. No result from this runner alone establishes reproduction.
 """
 import argparse
 from dataclasses import asdict, replace
-import hashlib
 from pathlib import Path
 import time
 import numpy as np
@@ -15,6 +14,7 @@ from .solver import Solver
 from .run import preset, write
 from .coupling import ExternalToolPort, ToolState, Reaction
 from .topology import components
+from .provenance import git_revision
 
 
 def vertical_state(t, half_height):
@@ -65,8 +65,7 @@ def single_cut(output,dt=.000025,interval=.002,duration=3.8,graph=True,cache_top
                                  'PIC/FLIP fraction','contact scales','Hencky plasticity return map'],
           'surface':'not recorded by this diagnostic; linked-volume reconstruction is a separate pipeline',
           'acceptance':'a diagnostic, not reproduction of the author force curve',
-          'source_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest()
-                           for p in Path(__file__).parent.glob('*.py')}}
+          'revision':git_revision()}
     write(out/'manifest.json',meta)
     saved={k:[v] for k,v in s.state().items()}; traces=[]; minimum=1.
     start=time.perf_counter()

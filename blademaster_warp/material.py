@@ -216,12 +216,11 @@ def viscous_impulse(F: wp.array(dtype=wp.mat33), slots: wp.array2d(dtype=int),
         wp.atomic_add(impulse, slots[p, a], -dt * volume * stress * gradients[p, a])
 
 
-@wp.kernel
-def g2p(x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3),
-        slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
-        old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
-        dt: float, flip: float):
-    p = wp.tid()
+@wp.func
+def g2p_at(p: int, x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3),
+           slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
+           old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
+           dt: float, flip: float):
     pic = wp.vec3(0.0)
     dv = wp.vec3(0.0)
     for a in range(8):
@@ -235,6 +234,26 @@ def g2p(x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3),
     # blended particle momentum velocity. FLIP residual modes must not
     # independently advect particles while MUSL updates F on the grid.
     x[p] += dt * pic
+
+
+@wp.kernel
+def g2p(x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3),
+        slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
+        old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
+        dt: float, flip: float):
+    g2p_at(wp.tid(), x, v, slots, weights, old_v, new_v, dt, flip)
+
+
+@wp.kernel
+def g2p_remap(x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3),
+              slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
+              old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
+              dt: float, flip: float, mass: float, out: wp.array(dtype=wp.vec3)):
+    """G2P followed by the MUSL re-scatter of the same particle."""
+    p = wp.tid()
+    g2p_at(p, x, v, slots, weights, old_v, new_v, dt, flip)
+    for a in range(8):
+        wp.atomic_add(out, slots[p, a], mass * weights[p, a] * v[p])
 
 
 @wp.kernel
@@ -258,11 +277,10 @@ def update_F(F: wp.array(dtype=wp.mat33), slots: wp.array2d(dtype=int),
     F[p] += dt * rate
 
 
-@wp.kernel
-def plastic_project(F: wp.array(dtype=wp.mat33), Fp: wp.array(dtype=wp.mat33),
-                    mu: float, yield_stress: float, errors: wp.array(dtype=int)):
-    """Hencky von Mises return map, documented constitutive choice (not specified in detail by paper)."""
-    p = wp.tid()
+@wp.func
+def plastic_at(p: int, F: wp.array(dtype=wp.mat33), Fp: wp.array(dtype=wp.mat33),
+               mu: float, yield_stress: float, errors: wp.array(dtype=int)):
+    """Hencky-strain von Mises return map."""
     U, s, V = wp.svd3(F[p] * wp.inverse(Fp[p]))
     if wp.min(s) <= 0.0:
         wp.atomic_add(errors, 1, 1)
@@ -275,6 +293,28 @@ def plastic_project(F: wp.array(dtype=wp.mat33), Fp: wp.array(dtype=wp.mat33),
         ep = e - (1.0 - limit / norm) * dev
         next_f = U * wp.diag(wp.vec3(wp.exp(ep[0]),wp.exp(ep[1]),wp.exp(ep[2]))) * wp.transpose(V)
         Fp[p] = wp.inverse(next_f) * F[p]
+
+
+@wp.kernel
+def plastic_project(F: wp.array(dtype=wp.mat33), Fp: wp.array(dtype=wp.mat33),
+                    mu: float, yield_stress: float, errors: wp.array(dtype=int)):
+    plastic_at(wp.tid(), F, Fp, mu, yield_stress, errors)
+
+
+@wp.kernel
+def update_F_plastic(F: wp.array(dtype=wp.mat33), Fp: wp.array(dtype=wp.mat33),
+                     slots: wp.array2d(dtype=int), gradients: wp.array2d(dtype=wp.vec3),
+                     gm: wp.array(dtype=float), momentum: wp.array(dtype=wp.vec3), dt: float,
+                     mu: float, yield_stress: float, errors: wp.array(dtype=int)):
+    p = wp.tid()
+    rate = wp.mat33(0.0)
+    for a in range(8):
+        s = slots[p, a]
+        if gm[s] > 0.0:
+            rate += wp.outer(momentum[s] / gm[s], gradients[p, a])
+    F[p] += dt * rate
+    if yield_stress > 0.0:
+        plastic_at(p, F, Fp, mu, yield_stress, errors)
 
 
 @wp.kernel

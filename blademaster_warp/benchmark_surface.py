@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import numpy as np
 from .geometry import points
 from .surface_runtime import SurfaceRecorder
+from .provenance import git_revision
 
 
 def mesh_violations(triangles):
@@ -31,8 +32,6 @@ def benchmark(directory, output, cuda_ccd=False):
     directory, output = Path(directory), Path(output)
     if output.exists():
         raise FileExistsError(output)
-    source_hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest()
-                   for p in Path(__file__).parent.glob('surface*.py')}
     manifest = json.loads((directory/'manifest.json').read_text())
     cfg = SimpleNamespace(**manifest['config'])
     cycle = json.loads((directory/'cycle.json').read_text())
@@ -129,11 +128,7 @@ def benchmark(directory, output, cuda_ccd=False):
             comparison_scope='equivalent compares current CPU and CUDA algorithms strictly; original mesh audit is separate because primal-edge winding replaces the unstable QEF-vertex orientation heuristic',
             cpu_to_cuda_speedup=result['backends']['cpu']['wall_s']/result['backends']['cuda']['wall_s'],
             equivalent=not mismatch_frames and not mesh_errors and maximum <= result['equivalence_tolerance_m'])
-    result['source_sha256'] = source_hashes
-    after={p.name:hashlib.sha256(p.read_bytes()).hexdigest()
-           for p in Path(__file__).parent.glob('surface*.py')}
-    if after!=source_hashes:
-        raise RuntimeError('Surface source changed during benchmark; rerun before reporting timing')
+    result['revision'] = git_revision()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, allow_nan=False)+'\n')
     print({k:v for k,v in result['comparison'].items()

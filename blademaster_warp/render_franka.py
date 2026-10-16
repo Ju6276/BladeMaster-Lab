@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from .replay_style import ReplayScene
 from .robot_replay import RobotVisuals
+from .provenance import git_revision
 
 
 def sha256(path):
@@ -154,7 +155,7 @@ def render(directory, output=None, preview=False, layout='overview'):
         particle_colors='saved cut-history codes, not component IDs; single cut: 0 yellow unmarked, 1 blue, 2 orange',
         geometry='recorded mesh vertices and triangles; compiled Menagerie visuals transformed by saved qpos; no smoothing or synthetic motion',
         playback='recorded simulation time, not wall-clock computation time',
-        source_sha256={name:sha256(Path(__file__).with_name(name)) for name in ('render_franka.py','robot_replay.py','replay_style.py')}
+        revision=git_revision()
     ),indent=2))
     print(output if not preview else output.with_name(f'{output.stem}_{selected[-1]:04d}.png'))
 

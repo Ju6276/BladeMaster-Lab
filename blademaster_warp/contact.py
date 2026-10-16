@@ -223,6 +223,45 @@ def max_speed(v: wp.array(dtype=wp.vec3), speed: wp.array(dtype=float)):
     wp.atomic_max(speed, 0, wp.length(v[wp.tid()]))
 
 
+@wp.func
+def pair_at(p: int, q: int, x: wp.array(dtype=wp.vec3), ref: wp.array(dtype=wp.vec3),
+            v: wp.array(dtype=wp.vec3), codes: wp.array(dtype=int), radius: float,
+            spacing: float, mass: float, dt: float, sn: float, mus: float, mud: float,
+            gk: float, gc: float,
+            old_keys: wp.array(dtype=wp.int64), old_history: wp.array(dtype=wp.vec3),
+            new_keys: wp.array(dtype=wp.int64), new_history: wp.array(dtype=wp.vec3),
+            capacity: int, n: int, impulses: wp.array(dtype=wp.vec3), errors: wp.array(dtype=int)):
+    delta = x[p]-x[q]
+    dist = wp.length(delta)
+    if dist >= 2.0*radius + dt*wp.length(v[p]-v[q]):
+        return
+    if compatible(codes[p], codes[q]) and wp.length(ref[p]-ref[q]) < 2.0*spacing:
+        return
+    if dist < 1.e-12:
+        wp.atomic_add(errors, 2, 1)
+        return
+    normal = delta/dist
+    relative = v[p]-v[q]
+    predicted = 2.0*radius-dist-dt*wp.min(wp.dot(relative, normal), 0.0)
+    if predicted <= 0.0:
+        return
+    key = wp.int64(p)*wp.int64(n) + wp.int64(q)
+    old = find_key(old_keys, key, capacity)
+    history = wp.vec3(0.0)
+    if old >= 0:
+        history = old_history[old]
+    new = insert_key(new_keys, key, capacity)
+    if new < 0:
+        wp.atomic_add(errors, 0, 1)
+        return
+    jn = sn*(mass/2.0)/dt*predicted
+    jt, ht = friction(normal, relative, jn, history, mass/2.0, dt, mus, mud, gk, gc)
+    new_history[new] = ht
+    impulse = jn*normal+jt
+    wp.atomic_add(impulses, p, impulse)
+    wp.atomic_add(impulses, q, -impulse)
+
+
 @wp.kernel
 def pairs(grid: wp.uint64, x: wp.array(dtype=wp.vec3), ref: wp.array(dtype=wp.vec3),
           v: wp.array(dtype=wp.vec3), codes: wp.array(dtype=int), radius: float,
@@ -234,35 +273,24 @@ def pairs(grid: wp.uint64, x: wp.array(dtype=wp.vec3), ref: wp.array(dtype=wp.ve
     p = wp.tid()
     query = wp.hash_grid_query(grid, x[p], 2.0*radius + 2.0*speed[0]*dt)
     for q in query:
-        if q <= p:
-            continue
-        if compatible(codes[p], codes[q]) and wp.length(ref[p]-ref[q]) < 2.0*spacing:
-            continue
-        delta = x[p]-x[q]
-        dist = wp.length(delta)
-        if dist < 1.e-12:
-            wp.atomic_add(errors, 2, 1)
-            continue
-        normal = delta/dist
-        relative = v[p]-v[q]
-        predicted = 2.0*radius-dist-dt*wp.min(wp.dot(relative, normal), 0.0)
-        if predicted <= 0.0:
-            continue
-        key = wp.int64(p)*wp.int64(n) + wp.int64(q)
-        old = find_key(old_keys, key, capacity)
-        history = wp.vec3(0.0)
-        if old >= 0:
-            history = old_history[old]
-        new = insert_key(new_keys, key, capacity)
-        if new < 0:
-            wp.atomic_add(errors, 0, 1)
-            continue
-        jn = sn*(mass/2.0)/dt*predicted
-        jt, ht = friction(normal, relative, jn, history, mass/2.0, dt, mus, mud, gk, gc)
-        new_history[new] = ht
-        impulse = jn*normal+jt
-        wp.atomic_add(impulses, p, impulse)
-        wp.atomic_add(impulses, q, -impulse)
+        if q > p:
+            pair_at(p, q, x, ref, v, codes, radius, spacing, mass, dt, sn, mus, mud, gk, gc,
+                    old_keys, old_history, new_keys, new_history, capacity, n, impulses, errors)
+
+
+@wp.kernel
+def pairs_all(x: wp.array(dtype=wp.vec3), ref: wp.array(dtype=wp.vec3),
+              v: wp.array(dtype=wp.vec3), codes: wp.array(dtype=int), radius: float,
+              spacing: float, mass: float, dt: float, sn: float, mus: float, mud: float,
+              gk: float, gc: float,
+              old_keys: wp.array(dtype=wp.int64), old_history: wp.array(dtype=wp.vec3),
+              new_keys: wp.array(dtype=wp.int64), new_history: wp.array(dtype=wp.vec3),
+              capacity: int, n: int, impulses: wp.array(dtype=wp.vec3), errors: wp.array(dtype=int)):
+    """All-pairs search. For small n it is cheaper than building a hash grid."""
+    p = wp.tid()
+    for q in range(p+1, n):
+        pair_at(p, q, x, ref, v, codes, radius, spacing, mass, dt, sn, mus, mud, gk, gc,
+                old_keys, old_history, new_keys, new_history, capacity, n, impulses, errors)
 
 
 @wp.kernel

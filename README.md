@@ -47,7 +47,7 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 python -m blademaster_warp.spacemouse_client --port 18765 --seconds 120 --wowskin-root ~/Desktop/WowSkin-Lab
 ```
 
-SpaceMouse 六轴给刀的世界系线速度和角速度；左键 `begin_cut` 开始新的一刀，右键 `end_cut` 结束，两键同按停住（最多 19 刀）。只有开始一刀之后刀刃经过的材料才会被切开，切口位置和形状完全由刀的实际轨迹决定。不加 `--live` 时使用固定的模拟输入序列（`teleop_input.mock_command`），用于测试。
+SpaceMouse 六轴给刀的世界系线速度和角速度；左键 `begin_cut` 开始新的一刀，右键 `end_cut` 结束，两键同按停住（6 mm 网格最多 33 刀）。加 `--cut-events auto` 则不用按键：刀每次离开材料后再进入就是新的一刀（用刀面推开切块时仍应用按键模式，自动模式会把推的动作也当成切）。只有开始一刀之后刀刃经过的材料才会被切开，切口位置和形状完全由刀的实际轨迹决定。不加 `--live` 时使用固定的模拟输入序列（`teleop_input.mock_command`），用于测试。
 
 `--attachment grasp` 让夹爪夹住带柄的自由刀（默认每指 30 N），刀只靠摩擦保持；默认 `fixed` 为刀固定在法兰安装座上，手指合在安装座上。
 

@@ -152,86 +152,76 @@ class LinkedSurface:
         # the original surface. It is not a motion/workspace constraint.
         self.origin = np.array([-size[0] / 2, -size[1] / 2, 0]) - spacing / 2
         self.dims = np.ceil(self.size / spacing).astype(int) + 2
-        ijk = np.array(list(product(*(range(n) for n in self.dims))))
+        ijk = np.indices(self.dims).reshape(3, -1).T
         self.reference = self.origin + ijk * spacing
         sdf = levelset(self.reference, size, shape)
         self.inside = sdf < 0
         self.codes = np.zeros(len(ijk), np.int64)
-        pairs = []
-        self.axes = []
-        for a, idx in enumerate(ijk):
-            for axis in range(3):
-                nxt = idx.copy()
-                nxt[axis] += 1
-                if nxt[axis] < self.dims[axis]:
-                    pairs.append((a, np.ravel_multi_index(nxt, self.dims)))
-                    self.axes.append(axis)
-        self.edges = np.array(pairs, int)
-        self.axes = np.array(self.axes)
-        self.broken = np.zeros(len(pairs), bool)
+        # Links from each node to its +x, +y, +z neighbour, ordered by (node, axis).
+        strides = np.array([self.dims[1] * self.dims[2], self.dims[2], 1])
+        start, axis = np.nonzero(ijk < self.dims - 1)
+        self.edges = np.column_stack([start, start + strides[axis]])
+        self.axes = axis
+        link_of = np.full((len(ijk), 3), -1)
+        link_of[start, axis] = np.arange(len(start))
+        self.broken = np.zeros(len(self.edges), bool)
         self.boundary = self.inside[self.edges[:, 0]] != self.inside[self.edges[:, 1]]
-        self.hermite = {}
-        for e in np.flatnonzero(self.boundary):
-            a, b = self.reference[self.edges[e]]
-            lo, hi = 0.0, 1.0
-            for _ in range(35):
-                t = (lo + hi) / 2
-                if (levelset(a + t * (b - a), size, shape) < 0) == (sdf[self.edges[e, 0]] < 0):
-                    lo = t
-                else:
-                    hi = t
-            p = a + (lo + hi) / 2 * (b - a)
-            eps = spacing * 1.0e-4
-            n = np.array(
-                [
-                    (
-                        levelset(p + eps * np.eye(3)[j], size, shape)
-                        - levelset(p - eps * np.eye(3)[j], size, shape)
-                    )
-                    / (2 * eps)
-                    for j in range(3)
-                ]
-            )
-            n /= max(np.linalg.norm(n), 1.0e-15)
-            self.hermite[int(e)] = (p, n)
-        lookup = {tuple(pair): e for e, pair in enumerate(self.edges)}
-        self.cells = []
-        self.cell_edges = []
-        self.incident = [[] for _ in pairs]
-        for idx in product(*(range(n - 1) for n in self.dims)):
-            corners = np.ravel_multi_index((OFFSETS + idx).T, self.dims)
-            if not self.inside[corners].any():
-                continue
-            es = [lookup[tuple(sorted((corners[a], corners[b])))] for a, b in LOCAL_EDGES]
-            ci = len(self.cells)
-            self.cells.append(corners)
-            self.cell_edges.append(es)
-            for e in es:
-                self.incident[e].append(ci)
-        self.cells = np.array(self.cells)
-        self.cell_edges = np.array(self.cell_edges)
-        # Cells around each edge in counterclockwise order about its axis; fixed by the reference grid.
-        for e, cs in enumerate(self.incident):
-            if len(cs) > 1:
-                other = [j for j in range(3) if j != self.axes[e]]
-                offset = self.reference[self.cells[cs]].mean(1) - self.reference[self.edges[e, 0]]
-                self.incident[e] = [
-                    cs[i] for i in np.argsort(np.arctan2(offset[:, other[1]], offset[:, other[0]]))
-                ]
-        # Face assembly tables: the (up to four) ordered cells around each link and,
-        # per link end, that node's corner slot in each of those cells.
+        # Hermite data on boundary links: bisection to the level set, then its gradient.
+        crossing = np.flatnonzero(self.boundary)
+        a, b = self.reference[self.edges[crossing, 0]], self.reference[self.edges[crossing, 1]]
+        lo, hi = np.zeros(len(crossing)), np.ones(len(crossing))
+        first_inside = sdf[self.edges[crossing, 0]] < 0
+        for _ in range(35):
+            t = (lo + hi) / 2
+            same = (levelset(a + t[:, None] * (b - a), size, shape) < 0) == first_inside
+            lo, hi = np.where(same, t, lo), np.where(same, hi, t)
+        points = a + ((lo + hi) / 2)[:, None] * (b - a)
+        eps = spacing * 1.0e-4
+        normals = np.column_stack(
+            [
+                (
+                    levelset(points + eps * np.eye(3)[j], size, shape)
+                    - levelset(points - eps * np.eye(3)[j], size, shape)
+                )
+                / (2 * eps)
+                for j in range(3)
+            ]
+        )
+        normals /= np.maximum(np.linalg.norm(normals, axis=1), 1.0e-15)[:, None]
+        self.hermite = {int(e): (p, n) for e, p, n in zip(crossing, points, normals)}
+        # Cells (in grid order) with at least one inside corner, and their twelve links.
+        cell_ijk = np.indices(self.dims - 1).reshape(3, -1).T
+        corners = (cell_ijk[:, None, :] + OFFSETS[None]) @ strides
+        keep = self.inside[corners].any(1)
+        self.cells = corners[keep]
+        local_a = np.array([a for a, _ in LOCAL_EDGES])
+        local_axis = np.array([np.flatnonzero(OFFSETS[b] - OFFSETS[a])[0] for a, b in LOCAL_EDGES])
+        self.cell_edges = link_of[self.cells[:, local_a], local_axis]
+        # Cells around each link, counterclockwise about its axis, and each link end's corner slot.
+        link = self.cell_edges.ravel()
+        cell = np.repeat(np.arange(len(self.cells)), len(LOCAL_EDGES))
+        ends = np.array(LOCAL_EDGES)[np.tile(np.arange(len(LOCAL_EDGES)), len(self.cells))]
+        other = np.array([[1, 2], [0, 2], [0, 1]])[self.axes[link]]
+        offset = self.reference[self.cells[cell]].mean(1) - self.reference[self.edges[link, 0]]
+        angle = np.arctan2(
+            np.take_along_axis(offset, other[:, 1:], 1)[:, 0],
+            np.take_along_axis(offset, other[:, :1], 1)[:, 0],
+        )
+        order = np.lexsort((angle, link))
+        link, cell, ends = link[order], cell[order], ends[order]
+        group_start = np.r_[0, np.flatnonzero(np.diff(link)) + 1]
+        slot = np.arange(len(link)) - np.repeat(group_start, np.diff(np.r_[group_start, len(link)]))
         self.incident_cells = np.full((len(self.edges), 4), -1)
+        self.incident_cells[link, slot] = cell
         self.incident_corner = np.zeros((len(self.edges), 2, 4), int)
-        for e, cs in enumerate(self.incident):
-            for slot, ci in enumerate(cs):
-                corners = self.cells[ci]
-                self.incident_cells[e, slot] = ci
-                self.incident_corner[e, 0, slot] = np.flatnonzero(corners == self.edges[e, 0])[0]
-                self.incident_corner[e, 1, slot] = np.flatnonzero(corners == self.edges[e, 1])[0]
-        self.node_cells = [[] for _ in range(len(self.reference))]
-        for ci, corners in enumerate(self.cells):
-            for node in corners:
-                self.node_cells[node].append(ci)
+        self.incident_corner[link, 0, slot] = ends[:, 0]
+        self.incident_corner[link, 1, slot] = ends[:, 1]
+        # Cells sharing each node, for invalidating regions when a node's side code changes.
+        node = self.cells.ravel()
+        by_node = np.argsort(node, kind="stable")
+        split = np.searchsorted(node[by_node], np.arange(len(ijk) + 1))
+        owner = np.repeat(np.arange(len(self.cells)), 8)[by_node]
+        self.node_cells = [owner[split[i] : split[i + 1]] for i in range(len(ijk))]
         # Local regions and QEF points per cell, valid while the cell's severed links are unchanged.
         self.cell_geometry = {}
         # At most one region per corner. corner_region: region slot holding each corner, or -1.
@@ -243,6 +233,10 @@ class LinkedSurface:
         self.dirty = set(range(len(self.cells)))
         self.updated_cells = 0
         self._mesh_cache = None
+
+    def cells_around(self, e):
+        row = self.incident_cells[e]
+        return row[row >= 0].tolist()
 
     def sweep(
         self,
@@ -323,7 +317,7 @@ class LinkedSurface:
                 self.hermite[int(e)] = (p, nref)
                 self.broken[e] = True
                 hits.append(int(e))
-                self.dirty.update(self.incident[e])
+                self.dirty.update(self.cells_around(e))
                 for node in (a, b):
                     if self.codes[node] // (3**cut_index) % 3 == 0:
                         point = (
@@ -398,7 +392,7 @@ class LinkedSurface:
                     nref /= np.linalg.norm(nref)
             self.hermite[int(e)] = ((1 - alpha) * self.reference[i] + alpha * self.reference[j], nref)
             self.broken[e] = True
-            self.dirty.update(self.incident[e])
+            self.dirty.update(self.cells_around(e))
         return set(self.edges[crossing].ravel().tolist())
 
     def _update_cell(self, ci):

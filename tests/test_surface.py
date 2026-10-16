@@ -210,7 +210,7 @@ def loop_mesh(s):
         for node in (a, b):
             if not s.inside[node]:
                 continue
-            ring = list(dict.fromkeys(lookup[ci, node] for ci in s.incident[e] if (ci, node) in lookup))
+            ring = list(dict.fromkeys(lookup[ci, node] for ci in s.cells_around(e) if (ci, node) in lookup))
             if len(ring) < 3:
                 continue
             if (-1 if s.axes[e] == 1 else 1) * (1 if node == a else -1) < 0:

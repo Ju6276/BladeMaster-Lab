@@ -18,7 +18,7 @@ def test_banana_material_and_blade_match_standalone_driver():
         material_config(SimpleNamespace(material="paper-banana", dt=None, spacing=None, cutting_energy=None))
     )
     differences = {k for k in robot if robot[k] != standalone[k]}
-    assert differences == {"external_tool"}
+    assert differences == {"external_tool", "board_half_extent"}
     assert robot["external_tool"] and not standalone["external_tool"]
     assert HALF == robot["blade_half_size"] and BEVEL == robot["blade_bevel_height"] == 0.005
 

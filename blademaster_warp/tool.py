@@ -1,4 +1,4 @@
-"""Six-DOF tool servo, tool/board contact and external-tool step finalization."""
+"""Rigid knife drive, knife/board contact and external-tool step finalization."""
 
 import warp as wp
 
@@ -153,7 +153,16 @@ def step(
     inertia_inverse: wp.vec3,
     friction: float,
     free: int,
+    lock_rotation: int,
+    board_half: wp.vec2,
 ):
+    """Drive (pose servo, guided translation or none) plus knife/board contact.
+
+    Every internally integrated knife uses this one board contact: the ten blade
+    vertices against the board top z = 0 inside its rectangle (zero half extent:
+    unbounded), the same rectangle the particles and the MuJoCo board use.
+    lock_rotation keeps the guided knife translation-only.
+    """
     x = tool_pos[0] + wp.vec3(0.0)
     q = wp.normalize(tool_rot[0])
     v = tool_vel[0] + wp.vec3(0.0)
@@ -179,10 +188,15 @@ def step(
             error = vector * (2.0 * wp.atan2(s, dq[3]) / s)
         servo_torque = rotational_stiffness * error - rotational_damping * w
     v += (force * dt + reaction[0]) / mass
-    local_w = wp.quat_rotate_inv(q, w)
-    inertia = wp.vec3(1.0 / inertia_inverse[0], 1.0 / inertia_inverse[1], 1.0 / inertia_inverse[2])
-    gyroscopic = wp.quat_rotate(q, wp.cross(local_w, wp.cw_mul(inertia, local_w)))
-    w += inv_inertia(q, inertia_inverse, torque[0] + dt * (servo_torque - gyroscopic))
+    ii = inertia_inverse
+    if lock_rotation != 0:
+        ii = wp.vec3(0.0)
+        w = wp.vec3(0.0)
+    else:
+        local_w = wp.quat_rotate_inv(q, w)
+        inertia = wp.vec3(1.0 / ii[0], 1.0 / ii[1], 1.0 / ii[2])
+        gyroscopic = wp.quat_rotate(q, wp.cross(local_w, wp.cw_mul(inertia, local_w)))
+        w += inv_inertia(q, ii, torque[0] + dt * (servo_torque - gyroscopic))
     normal = wp.vec3(0.0, 0.0, 1.0)
     total = wp.vec3(0.0)
     # Sequential velocity-constraint solve. Six iterations are an exposed
@@ -190,30 +204,35 @@ def step(
     for sweep in range(6):
         for i in range(10):
             r = wp.quat_rotate(q, vertex(i, half, bevel))
-            gap = (x + r)[2]
+            corner = x + r
+            if (board_half[0] > 0.0 and wp.abs(corner[0]) > board_half[0]) or (
+                board_half[1] > 0.0 and wp.abs(corner[1]) > board_half[1]
+            ):
+                continue
+            gap = corner[2]
             vn = wp.dot(v + wp.cross(w, r), normal)
             desired = -gap / dt
             if gap < 0.0:
                 desired *= 0.2
             if vn < desired:
                 rn = wp.cross(r, normal)
-                effective = 1.0 / mass + wp.dot(rn, inv_inertia(q, inertia_inverse, rn))
+                effective = 1.0 / mass + wp.dot(rn, inv_inertia(q, ii, rn))
                 jn = (desired - vn) / effective
                 impulse = jn * normal
                 v += impulse / mass
-                w += inv_inertia(q, inertia_inverse, wp.cross(r, impulse))
+                w += inv_inertia(q, ii, wp.cross(r, impulse))
                 vt = v + wp.cross(w, r)
                 vt -= wp.dot(vt, normal) * normal
                 speed = wp.length(vt)
                 if speed > 1.0e-10:
                     direction = -vt / speed
                     rt = wp.cross(r, direction)
-                    wt = 1.0 / mass + wp.dot(rt, inv_inertia(q, inertia_inverse, rt))
+                    wt = 1.0 / mass + wp.dot(rt, inv_inertia(q, ii, rt))
                     jt = wp.min(speed / wt, friction * jn)
                     tangent = jt * direction
                     impulse += tangent
                     v += tangent / mass
-                    w += inv_inertia(q, inertia_inverse, wp.cross(r, tangent))
+                    w += inv_inertia(q, ii, wp.cross(r, tangent))
                 total += impulse
     x += dt * v
     speed = wp.length(w)

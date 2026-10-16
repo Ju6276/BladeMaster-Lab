@@ -1,8 +1,27 @@
 from dataclasses import replace
 import numpy as np
-import warp as wp
 from blademaster_warp.solver import Solver, Config
-from blademaster_warp import tool
+
+
+def lowest_vertex(s):
+    from scipy.spatial.transform import Rotation
+
+    h, bevel = np.array(s.config.blade_half_size), s.config.blade_bevel_height
+    vertices = np.array(
+        [[0, -h[1], -h[2]], [0, h[1], -h[2]], [h[0], -h[1], -h[2] + bevel], [-h[0], h[1], -h[2] + bevel]]
+    )
+    pos, rot = s.tool_pos.numpy()[0], s.tool_rot.numpy()[0]
+    return (Rotation.from_quat(rot).apply(vertices) + pos)[:, 2].min()
+
+
+def drive(s, edge_target, rotation, steps=3000):
+    lowest = []
+    for i in range(steps):
+        s._drive_tool(edge_target, rotation, None, None, 0)
+        if i % 20 == 0:
+            lowest.append(lowest_vertex(s))
+    assert np.isfinite(s.tool_vel.numpy()).all()
+    return np.array(lowest)
 
 
 def run_tool(free=False):
@@ -12,55 +31,7 @@ def run_tool(free=False):
     angle = 0.2
     q = np.array([0, np.sin(angle / 2), 0, np.cos(angle / 2)])
     s.tool_rot.assign([q])
-    targets = wp.array([[0.12, 0.0, -0.01]], dtype=wp.vec3, device=s.device)
-    rotations = wp.array([q], dtype=wp.quat, device=s.device)
-    states = []
-    for i in range(3000):
-        s.launch(
-            tool.step,
-            1,
-            [
-                s.tool_pos,
-                s.tool_vel,
-                s.tool_rot,
-                s.tool_omega,
-                targets,
-                rotations,
-                0,
-                s.reaction,
-                s.torque,
-                s.tool_table_impulse,
-                cfg.dt,
-                cfg.blade_mass,
-                s.half,
-                cfg.blade_bevel_height,
-                cfg.drive_stiffness,
-                cfg.drive_damping,
-                cfg.drive_force_limit,
-                cfg.rotational_stiffness,
-                cfg.rotational_damping,
-                s.inertia_inv,
-                cfg.friction_dynamic,
-                int(free),
-            ],
-        )
-        if i % 20 == 0:
-            pos = s.tool_pos.numpy()[0]
-            rot = s.tool_rot.numpy()[0]
-            from scipy.spatial.transform import Rotation
-
-            h = np.array(cfg.blade_half_size)
-            vertices = np.array(
-                [
-                    [0, -h[1], -h[2]],
-                    [0, h[1], -h[2]],
-                    [h[0], -h[1], -h[2] + 0.005],
-                    [-h[0], h[1], -h[2] + 0.005],
-                ]
-            )
-            minimum = (Rotation.from_quat(rot).apply(vertices) + pos)[:, 2].min()
-            states.append(minimum)
-    assert np.isfinite(s.tool_vel.numpy()).all()
+    states = drive(s, [0.12, 0.0, -0.01], q)
     assert min(states) > -2e-5
     assert max(states) - min(states) > 0.01
     return s
@@ -89,3 +60,21 @@ def test_servo_graph_accepts_rotations_and_material_reaction():
     np.testing.assert_allclose(a["blade_orientation"], b["blade_orientation"], atol=3e-6)
     np.testing.assert_allclose(a["position"], b["position"], atol=3e-7)
     assert abs(b["blade_orientation"][0, 1]) > 0.001
+
+
+def test_guided_knife_stops_on_the_shared_board_contact_without_rotating():
+    s = Solver(replace(Config(), dt=0.00025, blade_bevel_height=0.005))
+    s.tool_pos.assign([[0.0, 0.0, 0.05]])
+    states = drive(s, [0.0, 0.0, -0.01], [0.0, 0.0, 0.0, 1.0])
+    assert min(states) > -2e-5 and states[-1] < 1e-4
+    np.testing.assert_allclose(s.tool_rot.numpy()[0], [0, 0, 0, 1], atol=1e-7)
+    assert s.tool_table_impulse.numpy()[0, 2] > 0
+
+
+def test_board_contact_ends_at_the_board_edge():
+    cfg = replace(Config(), dt=0.00025, free_blade=True, board_half_extent=(0.05, 0.05))
+    on, off = Solver(cfg), Solver(cfg)
+    on.tool_pos.assign([[0.0, 0.0, 0.05]])
+    off.tool_pos.assign([[0.2, 0.0, 0.05]])
+    assert drive(on, [0, 0, 0], [0, 0, 0, 1], 1500).min() > -2e-5
+    assert drive(off, [0, 0, 0], [0, 0, 0, 1], 1500).min() < -0.05

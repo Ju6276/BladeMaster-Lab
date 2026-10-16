@@ -555,8 +555,8 @@ class Solver:
             ],
         )
 
-    def _servo_tool(self, target_edge, orientation, buffer, rotations, index):
-        """Six-DOF servo (pose_servo) or free rigid blade (free_blade)."""
+    def _drive_tool(self, target_edge, orientation, buffer, rotations, index):
+        """Pose servo, free rigid blade, or guided translation; all share the knife/board contact."""
         cfg = self.config
         if buffer is None:
             self.single_target.assign([target_edge])
@@ -588,32 +588,8 @@ class Solver:
                 self.inertia_inv,
                 cfg.friction_dynamic,
                 int(cfg.free_blade),
-            ],
-        )
-
-    def _guide_tool(self, target_edge, buffer, index):
-        """DexLab guided translation toward the target edge position."""
-        cfg = self.config
-        control = [wp.vec3(*target_edge)] if buffer is None else [buffer, index]
-        self.launch(
-            c.blade_step if buffer is None else c.blade_step_buffer,
-            1,
-            [
-                self.tool_pos,
-                self.tool_vel,
-                self.tool_rot,
-                self.tool_omega,
-                *control,
-                self.reaction,
-                self.torque,
-                cfg.dt,
-                cfg.blade_mass,
-                self.half,
-                cfg.drive_stiffness,
-                cfg.drive_damping,
-                cfg.drive_force_limit,
-                int(cfg.free_blade),
-                self.inertia_inv,
+                int(not (cfg.free_blade or cfg.pose_servo)),
+                self.board_half,
             ],
         )
 
@@ -667,10 +643,7 @@ class Solver:
             if cfg.accumulate_tool_impulses:
                 # Use the contact-time origin, before the tool moves.
                 self._accumulate_tool_impulses()
-            if cfg.pose_servo or cfg.free_blade:
-                self._servo_tool(target_edge, orientation, buffer, rotations, index)
-            else:
-                self._guide_tool(target_edge, buffer, index)
+            self._drive_tool(target_edge, orientation, buffer, rotations, index)
         self.assign_sides(cut_index, cutting)
         self.step_count += 1
 
@@ -703,8 +676,7 @@ class Solver:
             return
         buffer, rotations, captured = self.prepare(targets, cutting, cut_index, orientations)
         buffer.assign(targets)
-        if self.config.pose_servo or self.config.free_blade:
-            rotations.assign(orientations)
+        rotations.assign(orientations)
         wp.capture_launch(captured)
         self.step_count += len(targets)
 
@@ -719,13 +691,7 @@ class Solver:
             # Eager warmup must have loaded all modules before capture.
             wp.load_module(module=m, device=self.device)
             wp.load_module(module=c, device=self.device)
-            if (
-                self.config.pose_servo
-                or self.config.free_blade
-                or self.config.external_tool
-                or self.config.accumulate_tool_impulses
-            ):
-                wp.load_module(module=tool, device=self.device)
+            wp.load_module(module=tool, device=self.device)
             buffer = wp.array(targets, dtype=wp.vec3, device=self.device)
             rotations = wp.array(orientations, dtype=wp.quat, device=self.device)
             count = self.step_count

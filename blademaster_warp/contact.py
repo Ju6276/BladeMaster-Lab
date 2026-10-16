@@ -591,6 +591,41 @@ def pairs_all(
         )
 
 
+@wp.func
+def assign_at(
+    p: int,
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    codes: wp.array(dtype=int),
+    tool_pos: wp.array(dtype=wp.vec3),
+    tool_vel: wp.array(dtype=wp.vec3),
+    tool_rot: wp.array(dtype=wp.quat),
+    tool_omega: wp.array(dtype=wp.vec3),
+    half: wp.vec3,
+    spacing: float,
+    dt: float,
+    digit: int,
+    cutting: int,
+    topology_dirty: wp.array(dtype=int),
+):
+    """Side digit for a particle the blade edge has just passed (paper Eq. 6, band h_k = 6 dx)."""
+    if cutting == 0 or (codes[p] // digit) % 3 != 0:
+        return
+    edge = tool_pos[0] + wp.quat_rotate(tool_rot[0], wp.vec3(0.0, 0.0, -half[2]))
+    local = wp.quat_rotate_inv(tool_rot[0], x[p] - edge)
+    front = -local[2]
+    edge_v = tool_vel[0] + wp.cross(tool_omega[0], edge - tool_pos[0])
+    d = wp.quat_rotate(tool_rot[0], wp.vec3(0.0, 0.0, -1.0))
+    advance = wp.dot(edge_v - v[p], d)
+    back = 2.0 * spacing + wp.max(advance * dt, 0.0)
+    if wp.abs(local[0]) <= 6.0 * spacing and wp.abs(local[1]) <= half[1] and front >= -back and front <= 0.0:
+        side = int(2)
+        if local[0] < 0.0:
+            side = 1
+        codes[p] += digit * side
+        wp.atomic_max(topology_dirty, 0, 1)
+
+
 @wp.kernel
 def assign(
     x: wp.array(dtype=wp.vec3),
@@ -607,22 +642,22 @@ def assign(
     cutting: int,
     topology_dirty: wp.array(dtype=int),
 ):
-    p = wp.tid()
-    if cutting == 0 or (codes[p] // digit) % 3 != 0:
-        return
-    edge = tool_pos[0] + wp.quat_rotate(tool_rot[0], wp.vec3(0.0, 0.0, -half[2]))
-    local = wp.quat_rotate_inv(tool_rot[0], x[p] - edge)
-    front = -local[2]
-    edge_v = tool_vel[0] + wp.cross(tool_omega[0], edge - tool_pos[0])
-    d = wp.quat_rotate(tool_rot[0], wp.vec3(0.0, 0.0, -1.0))
-    advance = wp.dot(edge_v - v[p], d)
-    back = 2.0 * spacing + wp.max(advance * dt, 0.0)
-    if wp.abs(local[0]) <= 6.0 * spacing and wp.abs(local[1]) <= half[1] and front >= -back and front <= 0.0:
-        side = int(2)
-        if local[0] < 0.0:
-            side = 1
-        codes[p] += digit * side
-        wp.atomic_max(topology_dirty, 0, 1)
+    assign_at(
+        wp.tid(),
+        x,
+        v,
+        codes,
+        tool_pos,
+        tool_vel,
+        tool_rot,
+        tool_omega,
+        half,
+        spacing,
+        dt,
+        digit,
+        cutting,
+        topology_dirty,
+    )
 
 
 @wp.func

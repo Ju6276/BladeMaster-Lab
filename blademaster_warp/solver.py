@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 import time
 import numpy as np
 import warp as wp
-from . import material as m, contact as c, tool
+from . import material as m, contact as c, fused, tool
 from .geometry import points, stencil
 
 
@@ -230,7 +230,8 @@ class Solver:
     def launch(self, kernel, dim, args):
         wp.launch(kernel, dim, args, device=self.device)
 
-    def material_step(self):
+    def material_step(self, clear_grid=True, assign=None):
+        """P2G, grid update, G2P and F update; assign=(cut_index, cutting) also labels sides."""
         cfg = self.config
         if cfg.cache_topology:
             # Fixed reference stencils and unchanged side codes imply the
@@ -238,7 +239,9 @@ class Solver:
             wp.capture_if(self.topology_dirty, self._register_topology)
         else:
             self._register_topology()
-        if self.compact:
+        if not clear_grid:
+            pass
+        elif self.compact:
             self.launch(
                 m.clear_compact_grid,
                 self.grid_threads,
@@ -272,7 +275,7 @@ class Solver:
                 self.grid_impulse,
             ],
         )
-        self._material_transfers()
+        self._material_transfers(assign)
 
     def _register_topology(self):
         self.keys.fill_(-1)
@@ -306,7 +309,7 @@ class Solver:
             self.launch(m.node_lists, self.capacity, [self.keys, self.heads, self.links, self.node_count])
         self.topology_dirty.zero_()
 
-    def _material_transfers(self):
+    def _material_transfers(self, assign=None):
         cfg = self.config
         if cfg.dynamic_viscosity:
             self._couple(self.momentum, self.coupled_momentum)
@@ -368,24 +371,25 @@ class Solver:
             ],
         )
         self._couple(self.remapped, self.coupled_remapped)
-        self.launch(
-            m.update_F_plastic,
-            self.n,
-            [
-                self.F,
-                self.Fp,
-                self.slots,
-                self.gradients,
-                self.grid_mass,
-                self.coupled_remapped,
-                cfg.dt,
-                self.mu,
-                self.lam,
-                cfg.yield_stress,
-                self.stress,
-                self.errors,
-            ],
-        )
+        update = [
+            self.F,
+            self.Fp,
+            self.slots,
+            self.gradients,
+            self.grid_mass,
+            self.coupled_remapped,
+            cfg.dt,
+            self.mu,
+            self.lam,
+            cfg.yield_stress,
+            self.stress,
+            self.errors,
+        ]
+        if assign is None:
+            self.launch(m.update_F_plastic, self.n, update)
+        else:
+            cut_index, cutting = assign
+            self.launch(fused.update_F_and_assign, self.n, [*update, *self._assign_args(cut_index, cutting)])
 
     def _couple(self, src, dst):
         self._grid_launch(
@@ -424,51 +428,64 @@ class Solver:
 
     def rigid_contacts(self, cutting=True):
         """Gravity plus board and blade contact impulses on every particle."""
-        cfg = self.config
-        self.launch(
-            c.rigid_and_speed,
-            self.n,
-            [
-                self.speed,
-                self.x,
-                self.v,
-                self.tool_pos,
-                self.tool_vel,
-                self.tool_rot,
-                self.tool_omega,
-                self.half,
-                cfg.blade_bevel_height,
-                self.radius,
-                cfg.grid_spacing,
-                self.mass,
-                cfg.blade_mass,
-                self.inertia_inv,
-                self.tool_mobility,
-                self._tool_model(),
-                self.board_half,
-                cfg.dt,
-                self.normal_scale,
-                cfg.friction_static,
-                cfg.friction_dynamic,
-                self.tangent_stiffness,
-                cfg.tangent_damping,
-                self.histories,
-                self.damage,
-                self.threshold,
-                int(cutting),
-                self.impulses,
-                self.reaction,
-                self.torque,
-                self.board,
-                self.work,
-            ],
-        )
+        self.launch(c.rigid_and_speed, self.n, self._rigid_args(cutting))
 
-    def particle_contacts(self):
+    def _begin_substep(self, cutting, pair_keys):
+        """Rigid contacts, compact-grid clear and pair-table clear in one launch."""
+        threads = max(self.n, self.grid_threads, pair_keys.shape[0])
+        grid = [
+            self.active_count,
+            self.grid_threads,
+            self.grid_mass,
+            self.momentum,
+            self.grid_impulse,
+            self.remapped,
+        ]
+        self.launch(fused.begin_substep, threads, [self.n, *self._rigid_args(cutting), *grid, pair_keys])
+
+    def _rigid_args(self, cutting):
+        cfg = self.config
+        return [
+            self.speed,
+            self.x,
+            self.v,
+            self.tool_pos,
+            self.tool_vel,
+            self.tool_rot,
+            self.tool_omega,
+            self.half,
+            cfg.blade_bevel_height,
+            self.radius,
+            cfg.grid_spacing,
+            self.mass,
+            cfg.blade_mass,
+            self.inertia_inv,
+            self.tool_mobility,
+            self._tool_model(),
+            self.board_half,
+            cfg.dt,
+            self.normal_scale,
+            cfg.friction_static,
+            cfg.friction_dynamic,
+            self.tangent_stiffness,
+            cfg.tangent_damping,
+            self.histories,
+            self.damage,
+            self.threshold,
+            int(cutting),
+            self.impulses,
+            self.reaction,
+            self.torque,
+            self.board,
+            self.work,
+        ]
+
+    def particle_contacts(self, clear_keys=True):
         """Contacts between particles on incompatible sides of a cut, with friction history."""
         cfg = self.config
         old, new = self.step_count % 2, (self.step_count + 1) % 2
-        self.pair_keys[new].fill_(-1)
+        if clear_keys:
+            self.pair_keys[new].fill_(-1)
         contact = [
             self.x,
             self.ref,
@@ -606,26 +623,25 @@ class Solver:
 
     def assign_sides(self, cut_index, cutting=True):
         """Give particles crossed by the blade edge a side digit for this cut."""
+        self.launch(c.assign, self.n, self._assign_args(cut_index, cutting))
+
+    def _assign_args(self, cut_index, cutting):
         cfg = self.config
-        self.launch(
-            c.assign,
-            self.n,
-            [
-                self.x,
-                self.v,
-                self.codes,
-                self.tool_pos,
-                self.tool_vel,
-                self.tool_rot,
-                self.tool_omega,
-                self.half,
-                cfg.grid_spacing,
-                cfg.dt,
-                3**cut_index,
-                int(cutting),
-                self.topology_dirty,
-            ],
-        )
+        return [
+            self.x,
+            self.v,
+            self.codes,
+            self.tool_pos,
+            self.tool_vel,
+            self.tool_rot,
+            self.tool_omega,
+            self.half,
+            cfg.grid_spacing,
+            cfg.dt,
+            3**cut_index,
+            int(cutting),
+            self.topology_dirty,
+        ]
 
     def _step_kernels(
         self, target_edge, cutting, cut_index, buffer=None, index=0, rotations=None, orientation=None
@@ -635,9 +651,15 @@ class Solver:
         if not cfg.external_tool:
             # In external mode finish_external_step already cleared these.
             self.launch(c.clear_step, 1, [self.reaction, self.torque, self.board, self.speed])
-        self.rigid_contacts(cutting)
-        self.particle_contacts()
-        self.material_step()
+        # Independent stages share launches where the order of tool updates allows it.
+        fuse_begin = self.compact
+        fuse_end = cfg.external_tool and cfg.tool_substep == "hold"
+        if fuse_begin:
+            self._begin_substep(cutting, self.pair_keys[(self.step_count + 1) % 2])
+        else:
+            self.rigid_contacts(cutting)
+        self.particle_contacts(clear_keys=not fuse_begin)
+        self.material_step(clear_grid=not fuse_begin, assign=(cut_index, cutting) if fuse_end else None)
         if cfg.external_tool:
             self._finish_external_tool()
         else:
@@ -648,7 +670,8 @@ class Solver:
                 self._servo_tool(target_edge, orientation, buffer, rotations, index)
             else:
                 self._guide_tool(target_edge, buffer, index)
-        self.assign_sides(cut_index, cutting)
+        if not fuse_end:
+            self.assign_sides(cut_index, cutting)
         self.step_count += 1
 
     def advance(self, targets, cutting=True, cut_index=0, graph=True, orientations=None):

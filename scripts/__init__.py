@@ -1,1 +1,1 @@
-"""Offline numerical diagnostics; not imported by the live runtime."""
+"""Standalone measurement tools; not imported by the runtime."""

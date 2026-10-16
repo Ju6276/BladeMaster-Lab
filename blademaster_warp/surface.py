@@ -201,23 +201,24 @@ class LinkedSurface:
         previous_nodes=None,
         previous_deformation=None,
         ccd=moving_segment_hits,
+        band=None,
     ):
         """Sever links hit by the actual swept edge; returning to a cut cannot heal it.
 
         current_nodes must be the current compatible field embedding of the
         reference nodes. Identity is useful for geometry-only unit tests.
+        band = (lateral half-width, depth behind the edge) also labels every node the
+        edge passes, matching the material's side assignment.
         """
         if not 0 <= cut_index < 19:
             raise ValueError("Cut code storage supports 19 events")
         x = self.reference if current_nodes is None else np.asarray(current_nodes)
         quad = np.asarray([edge_before[0], edge_before[1], edge_after[1], edge_after[0]])
         candidates = np.flatnonzero(self.inside[self.edges].all(axis=1) & ~self.broken)
-        if not len(candidates):
-            return 0
         aa, bb = x[self.edges[candidates, 0]], x[self.edges[candidates, 1]]
         hits = []
         batches = []
-        if previous_nodes is not None:
+        if previous_nodes is not None and len(candidates):
             old = np.asarray(previous_nodes)
             hit, alpha, time = ccd(
                 old[self.edges[candidates, 0]],
@@ -236,7 +237,9 @@ class LinkedSurface:
                 raise ValueError("A normal is required for a stationary blade with moving material")
             n = n / np.linalg.norm(n)
             batches.append((candidates[hit], alpha[hit], time[hit], n))
-        for tri in (() if previous_nodes is not None else (quad[[0, 1, 2]], quad[[0, 2, 3]])):
+        for tri in (
+            () if previous_nodes is not None or not len(candidates) else (quad[[0, 1, 2]], quad[[0, 2, 3]])
+        ):
             n = np.cross(tri[1] - tri[0], tri[2] - tri[0])
             norm = np.linalg.norm(n)
             if norm < 1.0e-15:
@@ -277,12 +280,42 @@ class LinkedSurface:
                         blade_point = (1 - t) * np.asarray(edge_before)[0] + t * np.asarray(edge_after)[0]
                         side = 1 if np.dot(point - blade_point, n) < 0 else 2
                         self.codes[node] += side * 3**cut_index
+        changed = set(self.edges[hits].ravel()) if hits else set()
+        if band is not None and normal_world is not None:
+            changed |= self._assign_band(x, edge_before, edge_after, normal_world, cut_index, band)
         # A node's new code changes every incident region using that node, not
         # just cells adjacent to the severed edge.
-        if hits:
-            changed = set(self.edges[hits].ravel())
+        if changed:
             self.dirty.update(i for i, c in enumerate(self.cells) if any(int(v) in changed for v in c))
         return len(hits)
+
+    def _assign_band(self, x, edge_before, edge_after, normal, cut_index, band):
+        """Side digits for nodes the blade edge has just passed, with the material's band rule.
+
+        Without this, skin nodes near a cut keep digit 0, stay compatible with both
+        pieces and are embedded in their average motion once the pieces move apart.
+        """
+        half_width, depth = band
+        edge = np.asarray(edge_after, float)
+        along = edge[1] - edge[0]
+        half_length = np.linalg.norm(along) / 2
+        along /= 2 * half_length
+        n = np.asarray(normal, float) / np.linalg.norm(normal)
+        up = np.cross(n, along)
+        travel = np.linalg.norm(np.asarray(edge_after) - np.asarray(edge_before), axis=1).max()
+        rel = x - edge.mean(0)
+        lateral, length, height = rel @ n, rel @ along, rel @ up
+        unassigned = self.codes // 3**cut_index % 3 == 0
+        nodes = np.flatnonzero(
+            self.inside
+            & unassigned
+            & (np.abs(lateral) <= half_width)
+            & (np.abs(length) <= half_length)
+            & (height >= 0)
+            & (height <= depth + travel)
+        )
+        self.codes[nodes] += np.where(lateral[nodes] < 0, 1, 2) * 3**cut_index
+        return set(nodes.tolist())
 
     def _update_cell(self, ci):
         corners = self.cells[ci]

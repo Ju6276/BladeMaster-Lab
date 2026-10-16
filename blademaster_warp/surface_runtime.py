@@ -43,6 +43,8 @@ class SurfaceRecorder:
 
             self.embedding = CudaMaterialEmbedding.from_reference(self.embedding, solver.device)
         self.half = np.array(cfg.blade_half_size)
+        # Same band as the material's side assignment (contact.assign): paper h_k = 6 dx.
+        self.band = (6.0 * cfg.grid_spacing, 2.0 * cfg.grid_spacing)
         self.previous = None
         self.previous_cut = None
         self.history = []
@@ -105,6 +107,7 @@ class SurfaceRecorder:
                 previous_nodes=self.previous_nodes,
                 previous_deformation=self.previous_deformation,
                 ccd=self.ccd,
+                band=self.band,
             )
             self.timing_s["link_sweep"] += time.perf_counter() - phase
         self.previous = edge.copy()

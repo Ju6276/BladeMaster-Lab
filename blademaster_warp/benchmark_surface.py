@@ -47,7 +47,7 @@ def benchmark(directory, output, cuda_ccd=False):
         with np.load(directory / "surface" / f"{i:05d}.npz") as z:
             poses.append(SimpleNamespace(position=z["tool_position"], orientation_xyzw=z["tool_orientation"]))
     active = [int(phase_trace[np.argmin(abs(phase_trace[:, 0] - t)), 1]) == descend for t in times]
-    ref, origin, _ = points(cfg.size, cfg.grid_spacing, cfg.shape)
+    ref, origin, _ = points(cfg.size, cfg.grid_spacing, cfg.shape, getattr(cfg, "sampling_seed", 0))
     solver = SimpleNamespace(config=cfg, reference=ref, origin=origin, device="cuda:0")
     result = dict(
         input_directory=str(directory.resolve()),

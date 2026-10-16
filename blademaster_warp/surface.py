@@ -118,6 +118,10 @@ class Mesh:
     weights: np.ndarray
 
 
+# Ternary digits that fit a nonnegative int64 (3**39 < 2**63).
+CODE_DIGITS = 39
+
+
 class LinkedSurface:
     def __init__(self, size, spacing, shape="block"):
         self.size = np.array(size, float)
@@ -224,8 +228,8 @@ class LinkedSurface:
         band = (lateral half-width, depth behind the edge) also labels every node the
         edge passes, matching the material's side assignment.
         """
-        if not 0 <= cut_index < 19:
-            raise ValueError("Cut code storage supports 19 events")
+        if not 0 <= cut_index < CODE_DIGITS:
+            raise ValueError(f"int64 side codes hold at most {CODE_DIGITS} cuts")
         x = self.reference if current_nodes is None else np.asarray(current_nodes)
         quad = np.asarray([edge_before[0], edge_before[1], edge_after[1], edge_after[0]])
         candidates = np.flatnonzero(self.inside[self.edges].all(axis=1) & ~self.broken)
@@ -369,7 +373,7 @@ class LinkedSurface:
         if cached is None or cached[0] != severed:
             cached = severed, self._cell_regions(ci)
             self.cell_geometry[ci] = cached
-        powers = 3 ** np.arange(19)
+        powers = 3 ** np.arange(CODE_DIGITS, dtype=np.int64)
         regions = []
         for region, p, weights in cached[1]:
             nodes = corners[list(region)]

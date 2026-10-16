@@ -254,7 +254,7 @@ class Solver:
                 a.zero_()
         self.launch(
             m.p2g,
-            self.n,
+            (self.n, 8),
             [
                 self.v,
                 self.stress,

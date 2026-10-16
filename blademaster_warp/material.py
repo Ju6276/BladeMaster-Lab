@@ -138,15 +138,17 @@ def p2g(
     momentum: wp.array(dtype=wp.vec3),
     grid_impulse: wp.array(dtype=wp.vec3),
 ):
-    """Scatter mass, momentum and stress plus contact impulse to the grid (stress from the previous update)."""
-    p = wp.tid()
-    for a in range(8):
-        s = slots[p, a]
-        if s >= 0:
-            w = weights[p, a]
-            wp.atomic_add(grid_mass, s, mass * w)
-            wp.atomic_add(momentum, s, mass * w * v[p])
-            wp.atomic_add(grid_impulse, s, w * impulses[p] - dt * volume * stress[p] * gradients[p, a])
+    """Scatter mass, momentum and stress plus contact impulse to the grid (stress from the previous update).
+
+    One thread per (particle, stencil node).
+    """
+    p, a = wp.tid()
+    s = slots[p, a]
+    if s >= 0:
+        w = weights[p, a]
+        wp.atomic_add(grid_mass, s, mass * w)
+        wp.atomic_add(momentum, s, mass * w * v[p])
+        wp.atomic_add(grid_impulse, s, w * impulses[p] - dt * volume * stress[p] * gradients[p, a])
 
 
 @wp.func

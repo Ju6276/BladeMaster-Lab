@@ -293,18 +293,18 @@ class FrankaCuttingRun:
 
     def _exchange_wrench(self):
         """Advance the material over one robot step and return the wrench it applies to the knife."""
-        if not self.port:
-            return np.zeros(6)
-        tick = time.perf_counter()
-        state = self.robot.state()
-        self._timed("robot_state", tick)
-        tick = time.perf_counter()
         if self.teleop is not None:
             self.cutting = not self.args.no_cutting and self.teleop.cutting
             self.cut_index = max(0, self.teleop.cut_index)
         else:
             self.cutting = not self.args.no_cutting and (self.cycle is None or self.cycle.cutting)
             self.cut_index = self.cycle.cut_index if self.cycle else 0
+        if not self.port:
+            return np.zeros(6)
+        tick = time.perf_counter()
+        state = self.robot.state()
+        self._timed("robot_state", tick)
+        tick = time.perf_counter()
         reaction = self.port.advance(
             state, self.args.interval, cutting=self.cutting, cut_index=self.cut_index
         )

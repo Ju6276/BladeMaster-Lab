@@ -45,6 +45,8 @@ def material_config(args):
     }
     if args.spacing is not None:
         overrides["grid_spacing"] = args.spacing
+    if getattr(args, "sampling_seed", 0):
+        overrides["sampling_seed"] = args.sampling_seed
     if getattr(args, "contact_scaling", "physical") == "per-step":
         overrides["contact_reference_dt"] = 0.0
     storage = getattr(args, "grid_storage", cfg.grid_storage)
@@ -629,6 +631,12 @@ def parser():
         help="Tool state within a coupling interval: held (paper) or mobility-predicted",
     )
     p.add_argument("--spacing", type=float, default=None)
+    p.add_argument(
+        "--sampling-seed",
+        type=int,
+        default=0,
+        help="Jitter particles inside their sub-cells (0: regular lattice)",
+    )
     p.add_argument("--duration", type=float, default=4.6)
     p.add_argument(
         "--motion",

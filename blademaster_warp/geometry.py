@@ -44,13 +44,17 @@ def check_domain(size, shape):
             )
 
 
-def points(size, spacing, shape):
+def points(size, spacing, shape, seed=0):
+    """Two particles per cell and axis, at sub-cell centres (seed 0) or
+    uniformly jittered inside their sub-cells (seed > 0)."""
     size = np.asarray(size)
     check_domain(size, shape)
     cells = np.rint(size / spacing).astype(int)
     origin = -np.array([size[0] / 2, size[1] / 2, 0.0])
     coords = [origin[i] + (np.arange(2 * cells[i]) + 0.5) * spacing / 2 for i in range(3)]
     x = np.array(list(product(*coords)))
+    if seed:
+        x += np.random.default_rng(seed).uniform(-spacing / 4, spacing / 4, size=x.shape)
     if shape in ("banana", "cylinder"):
         x = x[levelset(x, size, shape) <= 0]
     elif shape != "block":

@@ -37,6 +37,8 @@ class Config:
     drive_damping: float = 14.0
     drive_force_limit: float = 10.0
     shape: str = "block"
+    # 0: particles at sub-cell centres; >0: seed for uniform jitter inside each sub-cell.
+    sampling_seed: int = 0
     blade_bevel_height: float = 0.0
     free_blade: bool = False
     pose_servo: bool = False
@@ -118,7 +120,7 @@ class Solver:
         if not self.device.is_cuda:
             raise ValueError("CUDA device required")
         cfg = config
-        self.reference, self.origin, cells = points(cfg.size, cfg.grid_spacing, cfg.shape)
+        self.reference, self.origin, cells = points(cfg.size, cfg.grid_spacing, cfg.shape, cfg.sampling_seed)
         self.n = len(self.reference)
         nodes, weights, gradients = stencil(self.reference, self.origin, cfg.grid_spacing, cells)
         self.node_count = int(np.prod(cells + 1))

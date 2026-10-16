@@ -36,6 +36,23 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 
 打开 <http://127.0.0.1:18765>，点"开始"；可暂停、继续、结束、重新开始。三个视图是整臂、表面和粒子，粒子颜色表示切割侧标签。
 
+### 用 SpaceMouse 遥操作 Franka 切
+
+```bash
+# 服务器（tams61）
+.venv/bin/python -m blademaster_warp.franka_run --live --motion teleop --controller libfranka --stiffness 1000 \
+  --material paper-banana --duration 120 --surface --surface-embedding cuda --surface-ccd cuda
+# Mac：转发端口后运行客户端（读取 SpaceMouse 用的是 WowSkin-Lab 里的 HID 代码）
+ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
+python -m blademaster_warp.spacemouse_client --port 18765 --seconds 120 --wowskin-root ~/Desktop/WowSkin-Lab
+```
+
+SpaceMouse 六轴给刀的世界系线速度和角速度；左键 `begin_cut` 开始新的一刀，右键 `end_cut` 结束，两键同按停住（最多 19 刀）。只有开始一刀之后刀刃经过的材料才会被切开，切口位置和形状完全由刀的实际轨迹决定。不加 `--live` 时使用固定的模拟输入序列（`teleop_input.mock_command`），用于测试。
+
+`--attachment grasp` 让夹爪夹住带柄的自由刀（默认每指 30 N），刀只靠摩擦保持；默认 `fixed` 为刀固定在法兰安装座上，手指合在安装座上。
+
+![遥操作（模拟输入），两刀未切透](docs/media/franka_teleop_mock.png)
+
 ## 记录与离线分析
 
 ```bash
@@ -79,7 +96,7 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 | `blademaster_warp.paper_freefall` | 论文 Fig. 3 / Table I 重力刀 |
 | `blademaster_warp.scenarios` | 论文 Fig. 4/7/8 的切割历史场景（规定刀路） |
 | `blademaster_warp.convergence` | 步长、耦合间隔、分辨率扫描 |
-| `blademaster_warp.run`，`blademaster_warp.teleop` | 独立导向刀与独立遥操作（待并入 Franka 路径） |
+| `blademaster_warp.run`，`blademaster_warp.teleop` | 独立导向刀与不带机械臂的刀遥操作（刀—板接触待统一到 Franka 路径） |
 | `scripts/probe_substep.py` | 单子步耗时测量 |
 
 ## 测试

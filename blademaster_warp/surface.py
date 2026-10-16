@@ -185,6 +185,20 @@ class LinkedSurface:
                 self.incident[e].append(ci)
         self.cells = np.array(self.cells)
         self.cell_edges = np.array(self.cell_edges)
+        # Cells around each edge in counterclockwise order about its axis; fixed by the reference grid.
+        for e, cs in enumerate(self.incident):
+            if len(cs) > 1:
+                other = [j for j in range(3) if j != self.axes[e]]
+                offset = self.reference[self.cells[cs]].mean(1) - self.reference[self.edges[e, 0]]
+                self.incident[e] = [
+                    cs[i] for i in np.argsort(np.arctan2(offset[:, other[1]], offset[:, other[0]]))
+                ]
+        self.node_cells = [[] for _ in range(len(self.reference))]
+        for ci, corners in enumerate(self.cells):
+            for node in corners:
+                self.node_cells[node].append(ci)
+        # Local regions and QEF points per cell, valid while the cell's severed links are unchanged.
+        self.cell_geometry = {}
         self.regions = {}
         self.dirty = set(range(len(self.cells)))
         self.updated_cells = 0
@@ -285,8 +299,8 @@ class LinkedSurface:
             changed |= self._assign_band(x, edge_before, edge_after, normal_world, cut_index, band)
         # A node's new code changes every incident region using that node, not
         # just cells adjacent to the severed edge.
-        if changed:
-            self.dirty.update(i for i, c in enumerate(self.cells) if any(int(v) in changed for v in c))
+        for node in changed:
+            self.dirty.update(self.node_cells[node])
         return len(hits)
 
     def _assign_band(self, x, edge_before, edge_after, normal, cut_index, band):
@@ -318,6 +332,26 @@ class LinkedSurface:
         return set(nodes.tolist())
 
     def _update_cell(self, ci):
+        corners = self.cells[ci]
+        # Band labels change region codes far more often than links are severed.
+        severed = self.broken[self.cell_edges[ci]].tobytes()
+        cached = self.cell_geometry.get(ci)
+        if cached is None or cached[0] != severed:
+            cached = severed, self._cell_regions(ci)
+            self.cell_geometry[ci] = cached
+        powers = 3 ** np.arange(19)
+        regions = []
+        for region, p, weights in cached[1]:
+            nodes = corners[list(region)]
+            digits = self.codes[nodes][:, None] // powers % 3
+            # Combine compatible assigned digits in this local graph region.
+            low, high = np.where(digits > 0, digits, 3).min(0), digits.max(0)
+            code = int((np.where((low == high) & (high > 0), high, 0) * powers).sum())
+            regions.append((set(int(n) for n in nodes), p, code, weights))
+        self.regions[ci] = regions
+
+    def _cell_regions(self, ci):
+        """Connected corner groups over intact links, each with its QEF point and trilinear weights."""
         corners = self.cells[ci]
         es = self.cell_edges[ci]
         active = set(np.flatnonzero(self.inside[corners]).tolist())
@@ -367,15 +401,8 @@ class LinkedSurface:
                     ).x
                 )
             local = (p - lower) / self.h
-            weights = np.where(OFFSETS == 1, local, 1 - local).prod(1)
-            # Combine compatible assigned digits in this local graph region.
-            code = 0
-            for k in range(19):
-                digits = {int(self.codes[corners[a]]) // (3**k) % 3 for a in region} - {0}
-                if len(digits) == 1:
-                    code += digits.pop() * 3**k
-            regions.append((set(int(corners[a]) for a in region), p, code, weights))
-        self.regions[ci] = regions
+            regions.append((region, p, np.where(OFFSETS == 1, local, 1 - local).prod(1)))
+        return regions
 
     def mesh(self, use_cache=True):
         self.updated_cells = len(self.dirty)
@@ -406,12 +433,7 @@ class LinkedSurface:
         for e in np.flatnonzero(self.boundary | self.broken):
             a, b = self.edges[e]
             axis = self.axes[e]
-            other = [j for j in range(3) if j != axis]
-            centre = self.reference[a]
-            cs = sorted(
-                self.incident[e],
-                key=lambda ci: np.arctan2(*(self.reference[self.cells[ci]].mean(0) - centre)[other][::-1]),
-            )
+            cs = self.incident[e]
             for node in (a, b):
                 if not self.inside[node]:
                     continue

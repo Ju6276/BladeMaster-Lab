@@ -29,14 +29,14 @@
 | \(b_\text{lead}\)，\(b_\text{back}\)，\(u_\text{min}\) | \(2R_p\)，\(2\Delta x\)，0 | DexLab |
 | \(h_k\) | \(6\Delta x\) | 论文 |
 | 香蕉材料 | E=400 kPa，ν=0.45，ρ=1100，屈服 30 kPa，\(G_c\)=700，ζ=0.9，刀 0.1 kg，μ=0.2 | 论文 §IV-C |
-| 香蕉步长 | 25 μs | 本地选择 |
+| 香蕉步长 | 62.5 μs，接触参数以 25 μs 为参考 | 本地选择，见 RESULTS.md 步长扫描 |
 | 机器人耦合间隔 | 1 ms（MuJoCo 步长） | 本地选择 |
 
 ## 接触刚度与步长
 
 论文式 11/15 的法向刚度是 \(k = s_n m_\text{eff}/\Delta t^2\)，切向 \(k_t = \gamma_k m_\text{eff}/\Delta t^2\)。固定 \(s_n\) 时，步长减半，接触就硬 4 倍，所以力曲线不可能随步长收敛。
 
-`Config.contact_reference_dt > 0` 时，`normal_scale` 和 `tangent_stiffness` 视为该参考步长下的值，并按 \((\Delta t/\Delta t_\text{ref})^2\) 缩放，从而保持 \(k\) 不变。缩放后的因子必须 ≤ 1（否则单步过冲），对香蕉（参考 25 μs，\(s_n=0.1\)）这意味着 \(\Delta t \le 79\) μs。预设默认启用；`franka_run --contact-scaling per-step` 恢复论文的固定 \(s_n\) 写法。
+`Config.contact_reference_dt > 0` 时，`normal_scale` 和 `tangent_stiffness` 视为该参考步长下的值，并按 \((\Delta t/\Delta t_\text{ref})^2\) 缩放，从而保持 \(k\) 不变。缩放后的因子必须 ≤ 1（否则单步过冲），对香蕉（参考 25 μs，\(s_n=0.1\)）这意味着 \(\Delta t \le 79\) μs；默认 62.5 μs 时 \(s_n = 0.625\)。预设默认启用；`franka_run --contact-scaling per-step` 恢复论文的固定 \(s_n\) 写法。
 
 ## 与论文的差异
 
@@ -51,10 +51,3 @@
 | 刀具 | 未公开 | 80×40×1 mm 楔形，5 mm 刃口斜面 |
 | 地面 | 刚性支撑 | MPM 中为 z=0 无限平面；MuJoCo 中为有限砧板 |
 | 控制器 | 未公开 | libfranka 笛卡尔阻抗示例公式，或 SERL++ `impedance.py`（未改动） |
-
-## 第三方来源
-
-- DexLab `b955d85`（Apache-2.0）：`geometry.py` 采样与模板、`run.py` 轨迹、`replay_style.py` 配色，许可见 `vendor/DexLab-LICENSE`。
-- MuJoCo Menagerie Panda（Apache-2.0）：`vendor/mujoco_menagerie`。
-- libfranka 示例、SERL++ 控制器：`vendor/libfranka`，`vendor/serl_controller`。
-- three.js r169（MIT）：`blademaster_warp/web/vendor`。

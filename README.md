@@ -3,6 +3,7 @@
 [BladeMaster](https://arxiv.org/html/2609.27342v2)（拓扑感知 TLMPM 切割仿真）的 Warp/CUDA 实现，带 MuJoCo Franka 双向耦合、linked-volume 表面重建和浏览器实时显示。
 
 - 香蕉单刀（论文 §IV-C 材料）+ Franka + 表面：RTX 4060 上 **0.40× 实时**。
+- 连续三刀 + 推开 + 表面：**四块，0.59× 实时**（无录制）；含录制为 0.56×。
 - 论文 Table I 重力刀（8960 粒子，2 ms）：**0.47 wall/sim**（论文 RTX 5090 为 0.33）。
 - 接触刚度与步长解耦，25–77 μs 下刀阶段平均力相差 < 2%。
 
@@ -95,5 +96,13 @@ PYTHONPATH=/path/to/Dexlab/src .venv/bin/python -m pytest tests -q
 - `live.py`、`web/`：浏览器实时显示。
 - `render*.py`、`replay_style.py`、`robot_replay.py`：离线渲染。
 - `vendor/`：固定版本的 Franka 模型和控制器。
+
+检查已录制的表面与粒子近景：
+
+```bash
+.venv/bin/python -m scripts.surface_closeup runs/fig1_sequence --times 0 3.6 18
+```
+
+输出 `surface_closeup.png`，依赖 VTK 和 Pillow（同离线渲染）。
 
 第三方来源与许可见 [NOTICE.md](NOTICE.md)。贡献规范见 [AGENTS.md](AGENTS.md)。

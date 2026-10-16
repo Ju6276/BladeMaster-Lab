@@ -14,7 +14,7 @@ commit `c3ca5c6`；`franka_run --motion feedback --controller serl --material pa
 | 50 μs | 固定 \(s_n\)（论文写法） | 0.130 | 0.329 | 0.609 | 两块 |
 | 25 μs | 物理刚度 + 区间内刀具预测 | 0.160 | 0.407 | 0.756 | 两块 |
 
-固定物理刚度后，平均力与冲量在 25–77 μs 之间相差 < 2%；固定 \(s_n\) 时 50 μs 的冲量低 19%。峰值仍随步长变化（单个区间的尖峰）。20 mm/s 下刀时，区间内刀具预测与保持不变没有可见差别。
+固定物理刚度后，平均力在 25–77 μs 之间相差 < 2%；按上表舍入数值，冲量相差约 2.2%。固定 \(s_n\) 时 50 μs 的冲量低约 19%。峰值仍随步长变化（单个区间的尖峰）。20 mm/s 下刀时，区间内刀具预测与保持不变没有可见差别。
 
 ## 2026-10-16 性能
 
@@ -50,7 +50,7 @@ commit `a52ec9b`；`franka_run --motion sequence --controller libfranka --stiffn
 
 ![连续三刀](media/fig1_sequence.png)
 
-切点 x = +40、+20、0 mm，每刀后推开 12 mm。刀到达砧板（误差 ≤ 1 mm 并保持 0.1 s）后才开始推。
+切点 x = +40、+20、0 mm，每刀后推开 12 mm。刀具原点到达底部目标（误差 ≤ 0.5 mm 并保持 0.1 s）后才开始推。
 
 | 时间 [s] | 事件 | 粒子分块 |
 |---|---|---|
@@ -63,4 +63,12 @@ commit `a52ec9b`；`franka_run --motion sequence --controller libfranka --stiffn
 
 18.15 s 仿真用时 32.1 s（0.56×，含逐帧记录）：材料 19.8 s（每子步约 68 μs）、观测与表面 9.6 s（其中 CPU 网格构建 3.4 s、记录 1.9 s）、机器人 2.3 s。
 
-最初的版本按纯时间表推进，刀被托住、落后目标约 7 mm 时就开始推，最后一层没切断，整根香蕉被推走 36 mm；改为按实测刀位判定下刀结束后解决。
+## 2026-10-16 当前提交复核
+
+commit `872c633`；89 项测试通过（16.73 s）。三刀重跑命令：
+
+```bash
+.venv/bin/python -m blademaster_warp.franka_run --motion sequence --controller libfranka --stiffness 1000 --material paper-banana --duration 30 --surface --surface-embedding cuda --surface-ccd cuda --output /tmp/blademaster-review-20261016
+```
+
+18.164 s 仿真耗时 30.674 s（0.592×），关闭录制和显示，保留物理、观测及表面。四个机械连通块为 878 / 245 / 178 / 138 粒子，退刀后保持；峰值材料力 7.716 N，最大跟踪误差 7.392 mm，最小 det(F)=0.9275，GPU 错误和 MuJoCo 警告均为零。计时排除 JIT、显示初始化和客户端渲染。

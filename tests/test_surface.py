@@ -176,3 +176,21 @@ def test_relative_sweep_separates_surface_without_mechanical_labels():
     )
     count, _ = connected_components(adjacency, directed=False)
     assert count == 2
+
+
+def test_band_labels_keep_skin_near_a_cut_on_its_own_side():
+    s = LinkedSurface((0.06, 0.03, 0.03), 0.003)
+    above, below = [[0, -0.04, 0.04], [0, 0.04, 0.04]], [[0, -0.04, -0.01], [0, 0.04, -0.01]]
+    s.sweep(above, below, normal_world=[1, 0, 0], band=(0.018, 0.006))
+    x = s.reference[:, 0]
+    near = s.inside & (np.abs(x) <= 0.018)
+    np.testing.assert_array_equal(s.codes[near], np.where(x[near] < 0, 1, 2))
+    a, b = s.edges.T
+    assert not (~s.broken & (s.codes[a] * s.codes[b] == 2)).any()
+    mesh = s.mesh()
+    assert (mesh.codes[np.abs(mesh.reference[:, 0]) < 0.015] > 0).all()
+    # A crossing link the swept-edge test missed is severed on the next update.
+    missed = np.flatnonzero(s.broken & (s.codes[a] * s.codes[b] == 2))[0]
+    s.broken[missed] = False
+    s.sweep(below, below, normal_world=[1, 0, 0], band=(0.018, 0.006))
+    assert s.broken[missed]

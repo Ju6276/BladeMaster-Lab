@@ -434,6 +434,8 @@ def pair_at(
     old_history: wp.array(dtype=wp.vec3),
     new_keys: wp.array(dtype=wp.int64),
     new_history: wp.array(dtype=wp.vec3),
+    new_used: wp.array(dtype=int),
+    new_count: wp.array(dtype=int),
     capacity: int,
     n: int,
     impulses: wp.array(dtype=wp.vec3),
@@ -465,9 +467,22 @@ def pair_at(
     jn = sn * (mass / 2.0) / dt * predicted
     jt, ht = friction(normal, relative, jn, history, mass / 2.0, dt, mus, mud, gk, gc)
     new_history[new] = ht
+    new_used[wp.atomic_add(new_count, 0, 1)] = new
     impulse = jn * normal + jt
     wp.atomic_add(impulses, p, impulse)
     wp.atomic_add(impulses, q, -impulse)
+
+
+@wp.kernel
+def clear_pair_slots(
+    count: wp.array(dtype=int),
+    threads: int,
+    used: wp.array(dtype=int),
+    keys: wp.array(dtype=wp.int64),
+):
+    """Empty only the hash slots filled two steps ago, instead of the whole table."""
+    for a in range(wp.tid(), count[0], threads):
+        keys[used[a]] = wp.int64(-1)
 
 
 @wp.kernel
@@ -491,6 +506,8 @@ def pairs(
     old_history: wp.array(dtype=wp.vec3),
     new_keys: wp.array(dtype=wp.int64),
     new_history: wp.array(dtype=wp.vec3),
+    new_used: wp.array(dtype=int),
+    new_count: wp.array(dtype=int),
     capacity: int,
     n: int,
     impulses: wp.array(dtype=wp.vec3),
@@ -520,6 +537,8 @@ def pairs(
                 old_history,
                 new_keys,
                 new_history,
+                new_used,
+                new_count,
                 capacity,
                 n,
                 impulses,
@@ -546,6 +565,8 @@ def pairs_all(
     old_history: wp.array(dtype=wp.vec3),
     new_keys: wp.array(dtype=wp.int64),
     new_history: wp.array(dtype=wp.vec3),
+    new_used: wp.array(dtype=int),
+    new_count: wp.array(dtype=int),
     capacity: int,
     n: int,
     lanes: int,
@@ -584,6 +605,8 @@ def pairs_all(
             old_history,
             new_keys,
             new_history,
+            new_used,
+            new_count,
             capacity,
             n,
             impulses,

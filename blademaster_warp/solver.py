@@ -194,6 +194,9 @@ class Solver:
         self.pair_history = [zeros(self.pair_capacity, wp.vec3) for _ in range(2)]
         for a in self.pair_keys:
             a.fill_(-1)
+        # Slots filled in each table, so reuse clears only those.
+        self.pair_used = [zeros(self.pair_capacity, int) for _ in range(2)]
+        self.pair_count = [zeros(1, int) for _ in range(2)]
         # Hash-bucket dimensions, NOT spatial boundaries. Positions outside
         # the reference box are still inserted and queried without clipping.
         extent = np.ceil(np.asarray(cfg.size) / (2 * self.radius)).astype(int) + 2
@@ -468,7 +471,12 @@ class Solver:
         """Contacts between particles on incompatible sides of a cut, with friction history."""
         cfg = self.config
         old, new = self.step_count % 2, (self.step_count + 1) % 2
-        self.pair_keys[new].fill_(-1)
+        self.launch(
+            c.clear_pair_slots,
+            self.grid_threads,
+            [self.pair_count[new], self.grid_threads, self.pair_used[new], self.pair_keys[new]],
+        )
+        self.pair_count[new].zero_()
         contact = [
             self.x,
             self.ref,
@@ -489,6 +497,8 @@ class Solver:
             self.pair_history[old],
             self.pair_keys[new],
             self.pair_history[new],
+            self.pair_used[new],
+            self.pair_count[new],
             self.pair_capacity,
             self.n,
         ]

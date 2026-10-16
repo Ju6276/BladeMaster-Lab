@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from blademaster_warp.teleop_input import Command, LatestInput, PoseTarget, hid_twist
+from blademaster_warp.teleop_input import Command, ContactStrokes, LatestInput, PoseTarget, hid_twist
 
 
 def test_sequence_timeout_and_events_are_not_replayed():
@@ -45,3 +45,14 @@ def test_nonfinite_and_wrong_frame_rejected_not_clipped():
     p["linear_velocity_m_s"] = [float("nan"), 0, 0]
     with pytest.raises(ValueError):
         Command.parse(p)
+
+
+def test_contact_strokes_split_on_clear_gaps_and_advance_before_the_next_touch():
+    strokes, dt = ContactStrokes(clear_s=0.05), 0.001
+    pattern = [0] * 20 + [1] * 100 + [0] * 30 + [1] * 50 + [0] * 80 + [1] * 40 + [0] * 60
+    indices = [strokes.update(bool(c), dt) for c in pattern]
+    # A 30 ms gap stays inside the first stroke; the 80 ms gap ends the stroke.
+    assert strokes.strokes == 2
+    assert indices[199] == 0 and indices[-1] == 2
+    first_touch_of_second = 20 + 100 + 30 + 50 + 80
+    assert indices[first_touch_of_second - 1] == 1

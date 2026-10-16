@@ -12,7 +12,7 @@ from .geometry import BANANA_DEMO_SIZE_M
 from .provenance import git_revision
 from .topology import components
 from .cut_cycle import CutCycle, CutSequence, CycleSettings, SequenceSettings, evaluate_cut
-from .teleop_input import PoseTarget, mock_command
+from .teleop_input import ContactStrokes, PoseTarget, mock_command
 
 
 # Softer libfranka stiffness (the example's 150 N/m) cannot push a blade through the banana.
@@ -201,6 +201,7 @@ class FrankaCuttingRun:
         if args.motion == "teleop":
             self.teleop = PoseTarget(self.robot.position, quat_xyzw(self.robot.rotation))
             self._mock = dict(seq=0, phase=-1)
+        self.strokes = ContactStrokes() if args.motion == "teleop" and args.cut_events == "auto" else None
         self._last_codes = None
         self._last_component_sizes = None
 
@@ -293,7 +294,10 @@ class FrankaCuttingRun:
 
     def _exchange_wrench(self):
         """Advance the material over one robot step and return the wrench it applies to the knife."""
-        if self.teleop is not None:
+        if self.strokes is not None:
+            self.cutting = not self.args.no_cutting
+            self.cut_index = self.strokes.cut_index
+        elif self.teleop is not None:
             self.cutting = not self.args.no_cutting and self.teleop.cutting
             self.cut_index = max(0, self.teleop.cut_index)
         else:
@@ -309,6 +313,11 @@ class FrankaCuttingRun:
             state, self.args.interval, cutting=self.cutting, cut_index=self.cut_index
         )
         self._timed("material", tick)
+        if self.strokes is not None:
+            self.strokes.update(
+                np.any(reaction.impulse_ns != 0) or np.any(reaction.angular_impulse_nms != 0),
+                self.args.interval,
+            )
         return np.r_[reaction.force_n, reaction.torque_nm]
 
     def _log_step(self, target, tool_target, wrench, requested, applied):
@@ -540,7 +549,8 @@ class FrankaCuttingRun:
         if self.teleop is not None:
             report["teleop"] = dict(
                 input="live /input" if getattr(self.observer, "teleop", None) is not None else "mock fixture",
-                cut_strokes=self.teleop.cut_index + 1,
+                cut_events=self.args.cut_events,
+                cut_strokes=self.strokes.strokes if self.strokes else self.teleop.cut_index + 1,
             )
         log = np.array(self.data.logs)
         if len(log):
@@ -718,6 +728,16 @@ def parser():
             "feedback: one cut gated on the measured knife pose; sequence: several cuts, each followed by a push; "
             "teleop: knife twist and begin_cut/end_cut from /input (SpaceMouse client), or the fixed mock input "
             "sequence without --live"
+        ),
+    )
+    p.add_argument(
+        "--cut-events",
+        choices=["manual", "auto"],
+        default="manual",
+        help=(
+            "teleop only. manual: strokes start/stop with begin_cut/end_cut; auto: cutting stays on and a new "
+            "stroke starts at the first blade contact after 50 ms without contact (use manual for pushing pieces "
+            "with the blade flat, which auto would label as cutting)"
         ),
     )
     p.add_argument(

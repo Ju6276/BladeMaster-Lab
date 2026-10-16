@@ -138,6 +138,34 @@ class PoseTarget:
         return positions, rotations
 
 
+class ContactStrokes:
+    """Cut strokes from blade-material contact history instead of operator events.
+
+    A stroke ends once the blade has been out of contact for `clear_s`. The index
+    advances at that moment, not at the next touch, because the side labels of the
+    first contact interval are written with the index already passed to the solver.
+    """
+
+    def __init__(self, clear_s=0.05):
+        self.clear_s = clear_s
+        self.cut_index = 0
+        self.strokes = 0
+        self.touched = False
+        self.clear_for = 0.0
+
+    def update(self, in_contact, dt):
+        if in_contact:
+            self.strokes += not self.touched
+            self.touched = True
+            self.clear_for = 0.0
+        elif self.touched:
+            self.clear_for += dt
+            if self.clear_for >= self.clear_s:
+                self.cut_index += 1
+                self.touched = False
+        return self.cut_index
+
+
 def hid_twist(raw, speed=0.06, angular_speed=0.5, deadzone=0.08):
     """Exactly the existing WowSkin fixed-base HID axis convention.
 

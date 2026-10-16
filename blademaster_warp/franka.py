@@ -1,14 +1,11 @@
 """Torque-driven MuJoCo Panda with a fixed-mount or grasped knife."""
 
 from pathlib import Path
-from functools import lru_cache
-import hashlib
-import importlib.util
-import json
 import xml.etree.ElementTree as ET
 import numpy as np
 import mujoco as mj
 from .geometry import DEMO_KNIFE_HALF_SIZE_M, DEMO_KNIFE_BEVEL_HEIGHT_M
+from .impedance import ImpedanceController
 
 SOURCE = Path(__file__).resolve().parents[1] / "vendor/mujoco_menagerie/franka_emika_panda/panda.xml"
 HOME = np.array([0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.7853981634, 0.035, 0.035])
@@ -16,19 +13,6 @@ HALF = DEMO_KNIFE_HALF_SIZE_M
 BEVEL = DEMO_KNIFE_BEVEL_HEIGHT_M
 # Cutting board half extents (x, y), centred under the material; shared with the MPM board.
 BOARD_HALF_EXTENT = (0.17, 0.16)
-
-
-@lru_cache(maxsize=1)
-def serl_controller():
-    directory = SOURCE.parents[2] / "serl_controller"
-    manifest = json.loads((directory / "manifest.json").read_text())
-    path = directory / "impedance.py"
-    if hashlib.sha256(path.read_bytes()).hexdigest() != manifest["sha256"]:
-        raise RuntimeError("Pinned SERL++ controller checksum mismatch")
-    spec = importlib.util.spec_from_file_location("pinned_serl_impedance", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.impedance_control
 
 
 def quat_wxyz(matrix):
@@ -181,12 +165,15 @@ class Franka:
         if controller == "serl" and (translation_stiffness != 150.0 or rotation_stiffness != 10.0):
             raise ValueError("SERL mode uses its upstream gains, not libfranka stiffness arguments")
         self.controller = controller
+        self.impedance = None
         self.data = mj.MjData(self.model)
         self.data.qpos[:9] = HOME  # Initialization only; never written during control.
         if attachment == "grasp":
             self.data.qpos[7:9] = 0.0075
         self.data.ctrl[7] = 0.035 / 0.04 * 255 if attachment == "fixed" else -2 * self.grip_force_per_finger
         self.control_site = self.model.site("control_tcp").id
+        if controller == "serl":
+            self.impedance = ImpedanceController(self.model, self.control_site, np.arange(7))
         self.body = self.model.body("knife").id
         self.k = np.array([translation_stiffness] * 3 + [rotation_stiffness] * 3)
         self.damping = 2 * np.sqrt(self.k)
@@ -288,9 +275,7 @@ class Franka:
             ]
         else:
             quat = self.initial_quat_wxyz if target_rotation is None else quat_wxyz(rotation)
-            requested = serl_controller()(
-                self.model, self.data, self.control_site, np.arange(7), pos=target, ori=quat, joint=HOME[:7]
-            )
+            requested = self.impedance(self.data, target, quat, HOME[:7])
         limits = self.model.actuator_ctrlrange[:7]
         self.data.ctrl[:7] = np.clip(requested, limits[:, 0], limits[:, 1])
         self.data.qfrc_applied[:] = 0

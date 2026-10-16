@@ -14,9 +14,9 @@ from blademaster_warp.surface import LinkedSurface
 
 # (point on the cut plane, unit normal). Two vertical cuts, an oblique cut and three thin slices.
 CUTS = {
-    "vertical": [((-0.03, 0, 0), (1, 0, 0)), ((0.0, 0, 0), (1, 0, 0))],
-    "oblique": [((-0.03, 0, 0), (np.cos(0.5), 0, np.sin(0.5)))],
-    "thin slices": [((x, 0, 0), (1, 0, 0)) for x in (0.02, 0.026, 0.032)],
+    "vertical": [((-0.03, 0, 0.012), (1, 0, 0)), ((0.0, 0, 0.012), (1, 0, 0))],
+    "oblique": [((-0.03, 0, 0.012), (np.cos(0.5), 0, np.sin(0.5)))],
+    "thin slices": [((x, 0, 0.012), (1, 0, 0)) for x in (0.02, 0.026, 0.032)],
 }
 
 
@@ -25,7 +25,7 @@ def cut(surface, index, point, normal):
     n = np.asarray(normal, float) / np.linalg.norm(normal)
     down = np.cross(n, [0.0, 1.0, 0.0])
     down *= -np.sign(down[2])
-    centre = np.asarray(point, float) + np.array([0.0, 0.0, 0.012])
+    centre = np.asarray(point, float)
     edge = lambda c: [c - [0, 0.05, 0], c + [0, 0.05, 0]]  # noqa: E731
     surface.sweep(edge(centre - 0.05 * down), edge(centre + 0.05 * down), cut_index=index, normal_world=n)
 

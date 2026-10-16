@@ -86,6 +86,8 @@ def render(directory, output=None, preview=False, layout="overview"):
     phase_labels = [{"descend": "Cut"}.get(name, name.capitalize()) for name in cycle["phases"]]
     cuts = sum(event["phase"] == "descend" for event in cycle["events"])
     title = "Franka | Single cut" if cuts <= 1 else f"Franka | {cuts} cuts + push"
+    if "teleop" in report:
+        title = f"Franka | Teleoperation, {report['teleop']['cut_strokes']} cut strokes"
     font = ImageFont.truetype("DejaVuSans.ttf", 22)
     small = ImageFont.truetype("DejaVuSans.ttf", 16)
     selected = sorted({0, len(frames) // 2, len(frames) - 1}) if preview else range(len(frames))

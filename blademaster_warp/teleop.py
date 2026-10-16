@@ -13,7 +13,7 @@ import numpy as np
 from .run import preset, write
 from .presets import DEFAULT_BANANA_PRESET
 from .solver import Solver
-from .teleop_input import LatestInput, PoseTarget, mock_command
+from .teleop_input import LatestInput, PoseTarget, mock_command, read_chunked_packets
 from .provenance import git_revision
 
 
@@ -88,26 +88,10 @@ class Server:
             def do_POST(self):
                 if self.path == "/input":
                     self.close_connection = True
-                    accepted = 0
                     try:
-                        if self.headers.get("Transfer-Encoding", "").lower() != "chunked":
-                            raise ValueError("Streaming input requires HTTP chunked transfer")
-                        while owner.running:
-                            header = self.rfile.readline(64)
-                            if not header:
-                                break
-                            size = int(header.strip(), 16)
-                            if size == 0:
-                                if self.rfile.readline(3) != b"\r\n":
-                                    raise ValueError("Unexpected HTTP trailers")
-                                break
-                            if not 0 < size <= 8192:
-                                raise ValueError("Packet too long")
-                            line = self.rfile.read(size)
-                            if len(line) != size or self.rfile.read(2) != b"\r\n":
-                                raise ValueError("Incomplete packet")
-                            source.feed(json.loads(line))
-                            accepted += 1
+                        accepted = read_chunked_packets(
+                            self.headers, self.rfile, source.feed, lambda: owner.running
+                        )
                         self.send_json(200, {"accepted_packets": accepted})
                     except (ValueError, TypeError, KeyError) as exc:
                         self.send_json(400, {"error": str(exc)})

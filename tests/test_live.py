@@ -35,6 +35,61 @@ def test_live_state_protocol_and_pause_resume():
         server.server_close()
 
 
+def test_live_input_stream_feeds_teleop_source():
+    import http.client
+    from blademaster_warp.teleop_input import Command, LatestInput
+
+    live = LiveState()
+    live.teleop = LatestInput()
+    live._set(dict(state="ready", sim_s=0.0))
+    server = make_server(live, 0)
+    Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.server_port}/state") as response:
+            packet = json.loads(gzip.decompress(response.read()))
+        assert packet["ready"] and packet["last_seq"] == -1
+        chunks = b""
+        for seq, event in ((0, "begin_cut"), (1, "")):
+            data = (json.dumps(Command(seq, (0, 0, -0.01), (0, 0, 0), event).packet()) + "\n").encode()
+            chunks += f"{len(data):x}\r\n".encode() + data + b"\r\n"
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", "/input", body=chunks + b"0\r\n\r\n", headers={"Transfer-Encoding": "chunked"})
+        assert json.loads(gzip.decompress(conn.getresponse().read()))["accepted_packets"] == 2
+        command, events, stale = live.teleop.sample()
+        assert command.seq == 1 and events == [(0, "begin_cut")] and not stale
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_franka_teleop_follows_operator_twist_and_cut_events():
+    from blademaster_warp.franka_run import parser, FrankaCuttingRun
+
+    args = parser().parse_args(["--no-material", "--motion", "teleop", "--duration", "3.0"])
+    run = FrankaCuttingRun(args)
+    start = run.robot.position.copy()
+    start_rotation = run.robot.rotation.copy()
+    seen = []
+    original = run._exchange_wrench
+
+    def exchange():
+        wrench = original()
+        seen.append((run.robot.data.time, run.cutting, run.cut_index))
+        return wrench
+
+    run._exchange_wrench = exchange
+    report = run.execute()
+    assert report["status"] == "completed" and report["teleop"]["cut_strokes"] == 1
+    # Mock input: begin_cut at 0 s, down 0.4-1.3 s, end_cut and up at 1.7 s, then a twist from 2.3 s.
+    cutting = [t for t, on, _ in seen if on]
+    assert cutting[0] < 0.01 and 1.69 < cutting[-1] < 1.71
+    target = run.teleop.position
+    assert np.linalg.norm(run.robot.position - target) < 0.005
+    assert np.linalg.norm(target[:2] - start[:2] - [0.06 * 0.5, 0.006 * 0.5]) < 1.0e-6
+    angle = np.degrees(np.arccos(np.clip((np.trace(start_rotation.T @ run.robot.rotation) - 1) / 2, -1, 1)))
+    assert angle > 3.0
+
+
 def test_recording_is_opt_in(tmp_path):
     from blademaster_warp.franka_run import parser, run
 

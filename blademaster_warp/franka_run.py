@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 import time
 import numpy as np
-from .franka import Franka, HALF, BEVEL, SOURCE, BOARD_HALF_EXTENT
+from scipy.spatial.transform import Rotation
+from .franka import Franka, HALF, BEVEL, SOURCE, BOARD_HALF_EXTENT, quat_xyzw
 from .geometry import BANANA_DEMO_SIZE_M
 from .provenance import git_revision
 from .topology import components
 from .cut_cycle import CutCycle, CutSequence, CycleSettings, SequenceSettings, evaluate_cut
+from .teleop_input import PoseTarget, mock_command
 
 
 # Softer libfranka stiffness (the example's 150 N/m) cannot push a blade through the banana.
@@ -195,6 +197,10 @@ class FrankaCuttingRun:
         self.paused_s = 0.0
         self.cutting = False
         self.cut_index = 0
+        self.teleop = None
+        if args.motion == "teleop":
+            self.teleop = PoseTarget(self.robot.position, quat_xyzw(self.robot.rotation))
+            self._mock = dict(seq=0, phase=-1)
         self._last_codes = None
         self._last_component_sizes = None
 
@@ -251,14 +257,39 @@ class FrankaCuttingRun:
     def _timed(self, phase, start):
         self.phase_time[phase] += time.perf_counter() - start
 
+    def _phase_name(self):
+        if self.cycle:
+            return self.cycle.phase
+        if self.teleop is not None:
+            return f"teleop cut {self.cut_index}" if self.cutting else "teleop"
+        return "timed"
+
+    def _teleop_input(self, t):
+        """Latest operator command and events; the mock fixture without a live server."""
+        source = getattr(self.observer, "teleop", None)
+        if source is not None:
+            command, events, _ = source.sample()
+            return command, events
+        command, self._mock["phase"] = mock_command(t, self._mock["seq"], self._mock["phase"])
+        self._mock["seq"] += 1
+        return command, [(command.seq, command.event)] if command.event else []
+
     def _targets(self, t):
-        """Tool target from the cut cycle (or timed script) and the matching TCP target."""
+        """Tool target, the matching TCP target and TCP rotation (None: hold the initial one)."""
         robot = self.robot
+        if self.teleop is not None:
+            command, events = self._teleop_input(t)
+            positions, rotations = self.teleop.integrate(command, events, self.args.interval, 1)
+            tool_target = positions[-1]
+            # Keep the measured tool-to-TCP offset; it is zero for the fixed mount.
+            tcp_in_tool = robot.rotation.T @ robot.control_rotation
+            rotation = Rotation.from_quat(rotations[-1]).as_matrix() @ tcp_in_tool
+            return tool_target, tool_target + robot.control_position - robot.position, rotation
         if self.cycle is None:
-            return None, target_at(t, robot.initial_position)
+            return None, target_at(t, robot.initial_position), None
         tool_target = self.cycle.update(t, robot.position, robot.edge_points)
         # Grasp mode uses the measured tool-to-TCP offset; fixed mounting has zero offset.
-        return tool_target, tool_target + robot.control_position - robot.position
+        return tool_target, tool_target + robot.control_position - robot.position, None
 
     def _exchange_wrench(self):
         """Advance the material over one robot step and return the wrench it applies to the knife."""
@@ -268,8 +299,12 @@ class FrankaCuttingRun:
         state = self.robot.state()
         self._timed("robot_state", tick)
         tick = time.perf_counter()
-        self.cutting = not self.args.no_cutting and (self.cycle is None or self.cycle.cutting)
-        self.cut_index = self.cycle.cut_index if self.cycle else 0
+        if self.teleop is not None:
+            self.cutting = not self.args.no_cutting and self.teleop.cutting
+            self.cut_index = max(0, self.teleop.cut_index)
+        else:
+            self.cutting = not self.args.no_cutting and (self.cycle is None or self.cycle.cutting)
+            self.cut_index = self.cycle.cut_index if self.cycle else 0
         reaction = self.port.advance(
             state, self.args.interval, cutting=self.cutting, cut_index=self.cut_index
         )
@@ -357,7 +392,7 @@ class FrankaCuttingRun:
                 data.particles[-1] if s else None,
                 data.codes[-1] if s else None,
                 time.perf_counter() - begin - self.paused_s,
-                self.cycle.phase if self.cycle else "timed",
+                self._phase_name(),
                 wrench,
             )
         if not self.record:
@@ -383,12 +418,12 @@ class FrankaCuttingRun:
                     if self.observer.stop_requested:
                         status = "stopped"
                         break
-                tool_target, target = self._targets(i * args.interval)
+                tool_target, target, target_rotation = self._targets(i * args.interval)
                 if self.cycle and self.cycle.done:
                     break
                 wrench = self._exchange_wrench()
                 tick = time.perf_counter()
-                requested, applied = robot.step(target, wrench)
+                requested, applied = robot.step(target, wrench, target_rotation)
                 self._timed("robot_step", tick)
                 tick = time.perf_counter()
                 heights = self._log_step(target, tool_target, wrench, requested, applied)
@@ -502,6 +537,11 @@ class FrankaCuttingRun:
                     self.data.task_observations, cycle.done and completed, cycle.expected_pieces
                 ),
             )
+        if self.teleop is not None:
+            report["teleop"] = dict(
+                input="live /input" if getattr(self.observer, "teleop", None) is not None else "mock fixture",
+                cut_strokes=self.teleop.cut_index + 1,
+            )
         log = np.array(self.data.logs)
         if len(log):
             columns = self._log_columns()
@@ -545,7 +585,11 @@ def render(out):
     z = np.load(out / "trajectory.npz")
     report = json.loads((out / "report.json").read_text())
     outcome = report.get("task_evaluation", {}).get("success")
-    result_label = "timed" if outcome is None else "cycle complete" if outcome else "cycle incomplete"
+    result_label = (
+        "teleop"
+        if "teleop" in report
+        else "timed" if outcome is None else "cycle complete" if outcome else "cycle incomplete"
+    )
     audit_path = out / "material_geometry_validation.json"
     folded = (
         audit_path.exists() and json.loads(audit_path.read_text())["status"] == "sampled_material_map_folded"
@@ -668,9 +712,13 @@ def parser():
     p.add_argument("--duration", type=float, default=4.6)
     p.add_argument(
         "--motion",
-        choices=["timed", "feedback", "sequence"],
+        choices=["timed", "feedback", "sequence", "teleop"],
         default="timed",
-        help="feedback: one cut gated on the measured knife pose; sequence: several cuts, each followed by a push",
+        help=(
+            "feedback: one cut gated on the measured knife pose; sequence: several cuts, each followed by a push; "
+            "teleop: knife twist and begin_cut/end_cut from /input (SpaceMouse client), or the fixed mock input "
+            "sequence without --live"
+        ),
     )
     p.add_argument(
         "--cuts",

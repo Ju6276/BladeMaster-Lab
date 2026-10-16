@@ -1,6 +1,7 @@
 """Velocity command packets and pose integration for teleoperation."""
 
 from dataclasses import dataclass
+import json
 import threading
 import time
 import numpy as np
@@ -80,6 +81,30 @@ class LatestInput:
             if stale:
                 cmd = Command(-1 if cmd is None else cmd.seq, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
             return cmd, events, stale
+
+
+def read_chunked_packets(headers, rfile, feed, running=lambda: True):
+    """Feed each NDJSON packet of a chunked HTTP request body; return the count."""
+    if headers.get("Transfer-Encoding", "").lower() != "chunked":
+        raise ValueError("Streaming input requires HTTP chunked transfer")
+    accepted = 0
+    while running():
+        header = rfile.readline(64)
+        if not header:
+            break
+        size = int(header.strip(), 16)
+        if size == 0:
+            if rfile.readline(3) != b"\r\n":
+                raise ValueError("Unexpected HTTP trailers")
+            break
+        if not 0 < size <= 8192:
+            raise ValueError("Packet too long")
+        line = rfile.read(size)
+        if len(line) != size or rfile.read(2) != b"\r\n":
+            raise ValueError("Incomplete packet")
+        feed(json.loads(line))
+        accepted += 1
+    return accepted
 
 
 class PoseTarget:

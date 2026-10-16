@@ -11,6 +11,7 @@ import json
 import mimetypes
 import time
 import numpy as np
+from .teleop_input import LatestInput, read_chunked_packets
 
 WEB = Path(__file__).with_name("web")
 
@@ -60,6 +61,8 @@ class LiveState:
         self.snapshot = dict(state="loading", sequence=0)
         self.autostart = False
         self.can_restart = True
+        # Teleoperation input (LatestInput) when the run is driven by an operator.
+        self.teleop = None
 
     def initialize(self, robot, solver, surface):
         setup_begin = time.perf_counter()
@@ -170,8 +173,17 @@ def make_server(live, port):
                     packet = live.snapshot
                 if str(packet["sequence"]) == parse_qs(url.query).get("after", [""])[0]:
                     self.send(b"", "application/json", 204)
-                else:
-                    self.send(json.dumps(packet, allow_nan=False).encode(), "application/json")
+                    return
+                if live.teleop is not None:
+                    # Fields the SpaceMouse client waits for before streaming.
+                    with live.teleop.lock:
+                        last = live.teleop.latest
+                    packet = dict(
+                        packet,
+                        ready=packet["state"] in ("ready", "running", "paused"),
+                        last_seq=-1 if last is None else last.seq,
+                    )
+                self.send(json.dumps(packet, allow_nan=False).encode(), "application/json")
             elif url.path == "/scene":
                 self.send(json.dumps(live.asset).encode(), "application/json")
             else:
@@ -187,6 +199,16 @@ def make_server(live, port):
             origin = self.headers.get("Origin")
             if origin and urlparse(origin).netloc != self.headers.get("Host"):
                 self.send(b"Origin rejected", "text/plain", 403)
+                return
+            if self.path == "/input" and live.teleop is not None:
+                self.close_connection = True
+                try:
+                    accepted = read_chunked_packets(self.headers, self.rfile, live.teleop.feed)
+                    self.send(json.dumps({"accepted_packets": accepted}).encode(), "application/json")
+                except (ValueError, TypeError, KeyError) as error:
+                    self.send(str(error).encode(), "text/plain", 400)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
                 return
             try:
                 if not self.path.startswith("/command/"):
@@ -204,6 +226,8 @@ def make_server(live, port):
 def serve(args, run):
     live = LiveState()
     live.can_restart = not bool(args.output)
+    if args.motion == "teleop":
+        live.teleop = LatestInput()
     server = make_server(live, args.port)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()

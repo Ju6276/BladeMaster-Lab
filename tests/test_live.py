@@ -62,6 +62,42 @@ def test_state_long_poll_returns_the_next_frame_on_a_kept_alive_connection():
         server.server_close()
 
 
+def test_post_bodies_are_consumed_on_a_kept_alive_connection():
+    import http.client
+
+    live = LiveState()
+    live._set(dict(state="running", sim_s=0.0))
+    server = make_server(live, 0)
+    Thread(target=server.serve_forever, daemon=True).start()
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2.0)
+    try:
+        conn.request("POST", "/command/pause", body=b'{"x": 1}\n')
+        assert conn.getresponse().read() is not None and not live.play.is_set()
+        socket = conn.sock
+        conn.request("GET", "/state")
+        response = conn.getresponse()
+        assert response.status == 200 and json.loads(gzip.decompress(response.read()))["state"] == "paused"
+        # Cross-origin command with a body: rejected, connection still usable.
+        conn.request("POST", "/command/start", body=b"123456789", headers={"Origin": "http://evil.example"})
+        response = conn.getresponse()
+        assert response.status == 403
+        response.read()
+        assert not live.play.is_set()
+        conn.request("POST", "/input", body=b"not a stream")
+        response = conn.getresponse()
+        assert response.status == 400
+        response.read()
+        conn.request("GET", "/state")
+        response = conn.getresponse()
+        assert response.status == 200
+        response.read()
+        assert conn.sock is socket
+    finally:
+        conn.close()
+        server.shutdown()
+        server.server_close()
+
+
 def test_live_input_stream_feeds_teleop_source():
     import http.client
     from blademaster_warp.teleop_input import Command, LatestInput

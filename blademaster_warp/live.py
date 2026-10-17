@@ -52,6 +52,8 @@ def scene_asset(robot):
 
 
 LONG_POLL_S = 0.5
+# Larger bodies on command routes close the connection instead of being read.
+MAX_DISCARD_BYTES = 1 << 20
 
 
 def display(values):
@@ -136,30 +138,33 @@ class LiveState:
             self.lock.notify_all()
 
     def finish(self, report):
-        self._set(dict(self.snapshot, state=report["status"], report=report, can_restart=self.can_restart))
+        with self.lock:
+            self._set(dict(self.snapshot, state=report["status"], report=report, can_restart=self.can_restart))
 
     def command(self, command):
-        if command == "start":
-            state = self.snapshot["state"]
-            if state in ("completed", "stopped", "failed"):
-                if not self.can_restart:
-                    raise ValueError(
-                        "Choose a new --output directory in a new process before recording again"
-                    )
-                self.autostart = True
-                self._set(dict(self.snapshot, state="loading"))
-                self.restart.set()
-            else:
+        # The lock (reentrant) keeps a frame published meanwhile from being overwritten
+        # by a copy of the previous snapshot.
+        with self.lock:
+            if command == "start":
+                if self.snapshot["state"] in ("completed", "stopped", "failed"):
+                    if not self.can_restart:
+                        raise ValueError(
+                            "Choose a new --output directory in a new process before recording again"
+                        )
+                    self.autostart = True
+                    self._set(dict(self.snapshot, state="loading"))
+                    self.restart.set()
+                else:
+                    self.play.set()
+                    self._set(dict(self.snapshot, state="running"))
+            elif command == "pause":
+                self.play.clear()
+                self._set(dict(self.snapshot, state="paused"))
+            elif command == "stop":
+                self.stop_requested = True
                 self.play.set()
-                self._set(dict(self.snapshot, state="running"))
-        elif command == "pause":
-            self.play.clear()
-            self._set(dict(self.snapshot, state="paused"))
-        elif command == "stop":
-            self.stop_requested = True
-            self.play.set()
-        else:
-            raise ValueError("Unknown command")
+            else:
+                raise ValueError("Unknown command")
 
 
 def make_server(live, port):
@@ -174,17 +179,33 @@ def make_server(live, port):
 
         def send(self, body, content_type, status=200):
             body = gzip.compress(body, compresslevel=1) if body else b""
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Encoding", "gzip")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            if body:
-                try:
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if body:
                     self.wfile.write(body)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+
+        def discard_body(self):
+            """Read the request body so the next request on a kept-alive connection parses."""
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if self.headers.get("Transfer-Encoding") or not 0 <= length <= MAX_DISCARD_BYTES:
+                self.close_connection = True
+                return
+            while length > 0:
+                chunk = self.rfile.read(min(length, 65536))
+                if not chunk:
+                    self.close_connection = True
+                    return
+                length -= len(chunk)
 
         def do_GET(self):
             url = urlparse(self.path)
@@ -221,8 +242,11 @@ def make_server(live, port):
             # Reject cross-origin browser commands. The server is localhost-only.
             origin = self.headers.get("Origin")
             if origin and urlparse(origin).netloc != self.headers.get("Host"):
+                self.discard_body()
                 self.send(b"Origin rejected", "text/plain", 403)
                 return
+            if self.path != "/input" or live.teleop is None:
+                self.discard_body()
             if self.path == "/input" and live.teleop is not None:
                 self.close_connection = True
                 try:

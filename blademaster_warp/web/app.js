@@ -60,16 +60,19 @@ function applyPacket(p){
  $('sim').textContent=p.sim_s.toFixed(3)+' s';$('wall').textContent=p.wall_s.toFixed(2)+' s';$('ratio').textContent=p.ratio.toFixed(3)+' ×';$('ratio').className=p.ratio>=1?'good':'slow';$('force').textContent=Math.hypot(...p.wrench.slice(0,3)).toFixed(3)+' N';showPieces(p.pieces||[]);
 }
 const states={loading:'正在初始化 GPU…',ready:'已就绪 · 点击开始计算',running:'在线计算中',paused:'已暂停 · 点击继续',completed:'本次运行已结束',stopped:'已结束',failed:'运行出错'};
+// The server holds a poll for at most 0.5 s; a stalled connection is aborted and retried.
+const POLL_TIMEOUT_MS=5000;
 async function poll(){
  let delay=0;
+ const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),POLL_TIMEOUT_MS);
  try{
   const t0=performance.now();
-  const response=await fetch('/state?after='+seq);
+  const response=await fetch('/state?after='+seq,{signal:abort.signal});
   if(response.status!==204){
    if(!response.ok)throw Error('HTTP '+response.status);
    const text=await response.text();const t1=performance.now();
    const p=JSON.parse(text);const t2=performance.now();
-   if(p.generation!==undefined&&p.generation!==assetGeneration){const a=await(await fetch('/scene')).json();if(a)installAsset(a)}
+   if(p.generation!==undefined&&p.generation!==assetGeneration){const a=await(await fetch('/scene',{signal:abort.signal})).json();if(a)installAsset(a)}
    if(p.geom_positions&&assetGeneration===p.generation){applyPacket(p);const t3=performance.now();keep(timing.fetchMs,t1-t0);keep(timing.parseMs,t2-t1);keep(timing.applyMs,t3-t2);keep(timing.bytes,text.length);appliedAt=t3}
    seq=p.sequence;lastReceive=performance.now();packetCount++;lastState=p.state;
    $('connection').textContent=states[p.state]||p.state;$('connection').className='connection'+(p.state==='failed'?' error':'');
@@ -78,7 +81,8 @@ async function poll(){
    if(p.report){const success=p.report.task_evaluation?.success;$('result').textContent=p.report.exception|| (success?'单刀诊断通过':p.state==='stopped'?'用户结束':'本次诊断未通过');$('result').className=success?'good':'slow';$('storage').textContent=p.report.recording?'本次已开启原始数据记录':'本次未保存逐帧快照';}
    else $('result').textContent=p.phase==='ready'?'':p.phase||'';
   }
- }catch(e){$('connection').textContent='连接中断：'+e.message;$('connection').className='connection error';delay=500}
+ }catch(e){$('connection').textContent=e.name==='AbortError'?'连接超时，重试中':'连接中断：'+e.message;$('connection').className='connection error';delay=500}
+ finally{clearTimeout(timer)}
  // The server holds the request until a new frame, so polling again at once does not spin.
  setTimeout(poll,delay);
 }

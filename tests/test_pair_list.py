@@ -1,9 +1,49 @@
 from dataclasses import replace
 import numpy as np
 import warp as wp
+import pytest
 from blademaster_warp.coupling import ExternalToolPort, ToolState
 from blademaster_warp.presets import banana_config
 from blademaster_warp.solver import Solver
+from blademaster_warp.solver import Config
+
+
+@pytest.mark.parametrize(
+    "dt,speed,skin", [(0.001, 1.0, 0.0), (0.002, 1.0, 0.0), (0.0000625, 16.0, 0.0), (0.001, 1.0, 0.0001)]
+)
+@pytest.mark.parametrize("graph", [False, True])
+def test_rebuild_covers_this_steps_predictive_contacts(dt, speed, skin, graph):
+    cfg = Config(
+        size=(0.018, 0.018, 0.018), grid_spacing=0.006, dt=dt, grid_storage="compact", pair_skin=skin
+    )
+    results = []
+    for mode in ("all", "hash", "list"):
+        s = Solver(replace(cfg, pair_search=mode))
+        x = np.zeros((s.n, 3), np.float32)
+        x[:, 0] = np.arange(s.n) * 0.1 + 2
+        x[:, 2] = 0.1
+        x[:2] = [[0, 0, 0.1], [0.0048, 0, 0.1]]
+        v = np.zeros_like(x)
+        v[:2] = [[speed, 0, 0], [-speed, 0, 0]]
+        codes = np.zeros(s.n, np.int64)
+        codes[:2] = [1, 2]
+        s.x.assign(x)
+        s.v.assign(v)
+        s.codes.assign(codes)
+        s.speed.fill_(speed)
+        if graph:
+            import blademaster_warp.contact as contact
+
+            wp.load_module(module=contact, device=s.device)
+            with wp.ScopedCapture(device=s.device) as capture:
+                s.particle_contacts()
+            wp.capture_launch(capture.graph)
+        else:
+            s.particle_contacts()
+        assert s.pair_count[1].numpy()[0] == 1
+        results.append(s.impulses.numpy())
+    for result in results[1:]:
+        np.testing.assert_allclose(result, results[0], rtol=1e-6, atol=1e-12)
 
 
 def pair_impulses(s, listed):

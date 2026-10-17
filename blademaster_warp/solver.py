@@ -212,6 +212,7 @@ class Solver:
         # First Piola stress of the current F, Fp (and Fv); written by every material step.
         self.stress = zeros(self.n, wp.mat33)
         self.codes, self.damage = zeros(self.n, wp.int64), zeros(self.n, float)
+        self.tool_damage = [self.damage] + [zeros(self.n, float) for _ in range(cfg.tool_count - 1)]
         # Codes used for particle-grid transfers; all zero in the single-field baseline.
         self.field_codes = self.codes
         self.single_field_codes = zeros(self.n, wp.int64)
@@ -261,6 +262,7 @@ class Solver:
         if self.pair_list:
             self.pair_skin = cfg.pair_skin or self.radius
             self.pair_reach = 2 * self.radius + self.pair_skin
+            self.list_reach = array([self.pair_reach], float)
             self.partners = zeros(self.n * PAIR_LIST_LANES, int)
             self.partner_count = zeros(self.n, int)
             self.built_x = zeros(self.n, wp.vec3)
@@ -550,7 +552,8 @@ class Solver:
         if cut_index < self.cut_index or cut_index > last:
             raise ValueError(f"Cut indices must be monotonic and within [0, {last}]")
         if cut_index != self.cut_index:
-            self.damage.zero_()
+            for damage in self.tool_damage:
+                damage.zero_()
             self.cut_index = cut_index
 
     def _tool_model(self):
@@ -642,7 +645,7 @@ class Solver:
                     cfg.tangent_damping,
                     self.extra_histories,
                     i,
-                    self.damage,
+                    self.tool_damage[i],
                     self.threshold,
                     self._cut_bits(cutting),
                     self.impulses,
@@ -720,7 +723,7 @@ class Solver:
                     self.partner_count,
                     PAIR_LIST_LANES,
                     self.built_x,
-                    self.pair_reach,
+                    self.list_reach,
                     *contact,
                     *history,
                     self.impulses,
@@ -737,11 +740,16 @@ class Solver:
 
     def _build_pair_list(self):
         # Inside a CUDA conditional node: HashGrid.build allocates and is not allowed there.
+        self.launch(
+            c.set_pair_reach,
+            1,
+            [self.radius, self.pair_skin, self.config.dt, self.speed, self.list_reach],
+        )
         self.list_heads.fill_(-1)
         self.launch(
             c.bin_particles,
             self.n,
-            [self.x, self.pair_reach, self.list_mask, self.list_heads, self.list_links],
+            [self.x, self.list_reach, self.list_mask, self.list_heads, self.list_links],
         )
         self.launch(
             c.build_pair_list,
@@ -754,7 +762,7 @@ class Solver:
                 self.ref,
                 self.codes,
                 self.config.grid_spacing,
-                self.pair_reach,
+                self.list_reach,
                 PAIR_LIST_LANES,
                 self.partners,
                 self.partner_count,
@@ -952,7 +960,17 @@ class Solver:
         wp.capture_launch(captured)
         self.step_count += len(targets)
 
-    def prepare(self, targets, cutting=True, cut_index=0, orientations=None, before=(), after=(), tag=None):
+    def prepare(
+        self,
+        targets,
+        cutting=True,
+        cut_index=0,
+        orientations=None,
+        before=(),
+        after=(),
+        tag=None,
+        after_step=None,
+    ):
         """Capture scheduling without advancing physics or changing cut state.
 
         `before` and `after` are (kernel, dim, inputs) launches captured around the
@@ -978,6 +996,8 @@ class Solver:
                         self.launch(kernel, dim, inputs)
                     for i in range(len(targets)):
                         self._step_kernels(targets[i], cutting, cut_index, buffer, i, rotations)
+                        if after_step is not None:
+                            after_step(i)
                     for kernel, dim, inputs in after:
                         self.launch(kernel, dim, inputs)
             finally:
@@ -1009,6 +1029,8 @@ class Solver:
         }
         if self.maxwell:
             state["viscous_deformation"] = np.eye(3) + self.viscous.numpy()
+        if self.config.tool_count > 1:
+            state["tool_damage"] = np.stack([damage.numpy() for damage in self.tool_damage])
         state["time"] = self.step_count * self.config.dt
         if any(not np.isfinite(v).all() for v in state.values()):
             raise RuntimeError("Nonfinite state; run is invalid")

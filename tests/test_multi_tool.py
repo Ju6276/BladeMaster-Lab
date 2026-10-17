@@ -77,3 +77,29 @@ def test_knife_beside_the_block_falls_freely():
     assert state["blade_velocity"][1, 2] == pytest.approx(-g * n * dt, rel=1.0e-5)
     assert state["blade_position"][1, 2] == pytest.approx(z0 - g * dt * dt * n * (n + 1) / 2, abs=1.0e-6)
     np.testing.assert_allclose(state["blade_position"][1, :2], [0.2, 0.0], atol=1.0e-9)
+
+
+@pytest.mark.parametrize("first", [0, 1])
+def test_each_knife_pays_its_own_cutting_work(first):
+    s = two_knives(cutting_energy=1.0)
+    x = s.reference.copy()
+    x[:, 0] += 10
+    x[0] = [0, 0, 0.039]
+    s.x.assign(x)
+    positions = np.array([[3.0, 0, 0.06], [3.0, 0, 0.06]])
+    positions[first, 0] = 0
+    s.tool_pos.assign(positions)
+    s.tool_vel.assign([[0, 0, -1], [0, 0, -1]])
+    s.rigid_contacts(True)
+    initial_impulse = s.reaction.numpy()[first].copy()
+    assert s.tool_damage[first].numpy()[0] == 1
+    assert s.tool_damage[1 - first].numpy()[0] == 0
+    positions[:, 0] = positions[::-1, 0]
+    s.tool_pos.assign(positions)
+    s.reaction.zero_()
+    s.torque.zero_()
+    s.rigid_contacts(True)
+    np.testing.assert_allclose(s.reaction.numpy()[1 - first], initial_impulse, rtol=1e-6)
+    assert s.tool_damage[1 - first].numpy()[0] == 1
+    s._set_cut(2)
+    assert all(not damage.numpy().any() for damage in s.tool_damage)

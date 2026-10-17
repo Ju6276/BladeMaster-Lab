@@ -749,15 +749,32 @@ def list_bucket(c: wp.vec3i, mask: int):
 
 
 @wp.kernel
+def set_pair_reach(
+    radius: float,
+    skin: float,
+    dt: float,
+    speed: wp.array(dtype=float),
+    reach: wp.array(dtype=float),
+):
+    # A rebuild must include this step's predictive contacts, even when one
+    # step travels farther than the list's displacement allowance.
+    value = 2.0 * radius + skin
+    if dt * speed[0] > 0.5 * skin:
+        value += 2.0 * dt * speed[0]
+    reach[0] = value
+
+
+@wp.kernel
 def bin_particles(
     x: wp.array(dtype=wp.vec3),
-    size: float,
+    cell_size: wp.array(dtype=float),
     mask: int,
     heads: wp.array(dtype=int),
     links: wp.array(dtype=int),
 ):
     """Bucket linked lists of the particles by cell; heads must hold -1."""
     p = wp.tid()
+    size = cell_size[0]
     links[p] = wp.atomic_exch(heads, list_bucket(list_cell(x[p], size), mask), p)
 
 
@@ -770,7 +787,7 @@ def build_pair_list(
     ref: wp.array(dtype=wp.vec3),
     codes: wp.array(dtype=wp.int64),
     spacing: float,
-    reach: float,
+    search_reach: wp.array(dtype=float),
     lanes: int,
     partners: wp.array(dtype=int),
     partner_count: wp.array(dtype=int),
@@ -784,6 +801,7 @@ def build_pair_list(
     particle searches the buckets of this build at its build position instead.
     """
     p = wp.tid()
+    reach = search_reach[0]
     if p == 0:
         builds[0] += 1
     xp = x[p]
@@ -816,7 +834,7 @@ def pairs_listed(
     partner_count: wp.array(dtype=int),
     lanes: int,
     built_x: wp.array(dtype=wp.vec3),
-    reach: float,
+    search_reach: wp.array(dtype=float),
     x: wp.array(dtype=wp.vec3),
     ref: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
@@ -842,6 +860,7 @@ def pairs_listed(
     errors: wp.array(dtype=int),
 ):
     p = wp.tid()
+    reach = search_reach[0]
     count = partner_count[p]
     if count >= 0:
         for k in range(count):

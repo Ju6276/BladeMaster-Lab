@@ -150,7 +150,9 @@ if __name__ == "__main__":
     p.add_argument("--cutting-energy", type=float, default=FIG3_CUTTING_ENERGY)
     p.add_argument("--normal-scale", type=float, default=1.0, help="Contact s_n (paper Eq. 11)")
     p.add_argument("--board-normal-scale", type=float, default=1.0, help="Board s_n; 0 uses --normal-scale")
-    p.add_argument("--cut-hold", action="store_true", help="Config.cut_hold (not the paper's Eq. 5 behaviour)")
+    p.add_argument(
+        "--cut-hold", action="store_true", help="Config.cut_hold (not the paper's Eq. 5 behaviour)"
+    )
     p.add_argument("--tilt-axis", choices=["length", "thickness"], default="thickness")
     a = p.parse_args()
     run(

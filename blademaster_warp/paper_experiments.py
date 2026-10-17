@@ -58,7 +58,9 @@ def single_cut(
     )
     if drive_stiffness is not None:
         # Critically damped for the blade mass unless a damping is given.
-        damping = drive_damping if drive_damping is not None else 2 * np.sqrt(drive_stiffness * cfg.blade_mass)
+        damping = (
+            drive_damping if drive_damping is not None else 2 * np.sqrt(drive_stiffness * cfg.blade_mass)
+        )
         cfg = replace(cfg, drive_stiffness=drive_stiffness, drive_damping=damping)
     elif drive_damping is not None:
         cfg = replace(cfg, drive_damping=drive_damping)

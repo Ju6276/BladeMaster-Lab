@@ -55,7 +55,13 @@ def edge_height(position, orientation, half):
 
 
 def run(
-    output, dt=0.0005, duration=0.5, cutting_energy=100.0, cut_work="relative", cut_hold=False, knife_mass=KNIFE_MASS
+    output,
+    dt=0.0005,
+    duration=0.5,
+    cutting_energy=100.0,
+    cut_work="relative",
+    cut_hold=False,
+    knife_mass=KNIFE_MASS,
 ):
     cfg = config(dt, cutting_energy, cut_work, cut_hold, knife_mass)
     steps = round(duration / dt)

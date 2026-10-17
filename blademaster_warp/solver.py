@@ -365,7 +365,15 @@ class Solver:
         self.launch(
             m.register,
             (self.n, 8),
-            [self.nodes, self.field_codes, self.keys, self.slots, self.node_count, self.capacity, self.errors],
+            [
+                self.nodes,
+                self.field_codes,
+                self.keys,
+                self.slots,
+                self.node_count,
+                self.capacity,
+                self.errors,
+            ],
         )
         if self.compact:
             self.active_count.zero_()
@@ -512,7 +520,11 @@ class Solver:
         if not cutting:
             return 0
         cfg = self.config
-        return c.CUT_ON | (c.CUT_ADVANCE if cfg.cut_work == "advance" else 0) | (c.CUT_HOLD if cfg.cut_hold else 0)
+        return (
+            c.CUT_ON
+            | (c.CUT_ADVANCE if cfg.cut_work == "advance" else 0)
+            | (c.CUT_HOLD if cfg.cut_hold else 0)
+        )
 
     def rigid_contacts(self, cutting=True):
         """Gravity plus board and blade contact impulses on every particle."""
@@ -683,7 +695,9 @@ class Solver:
         # Inside a CUDA conditional node: HashGrid.build allocates and is not allowed there.
         self.list_heads.fill_(-1)
         self.launch(
-            c.bin_particles, self.n, [self.x, self.pair_reach, self.list_mask, self.list_heads, self.list_links]
+            c.bin_particles,
+            self.n,
+            [self.x, self.pair_reach, self.list_mask, self.list_heads, self.list_links],
         )
         self.launch(
             c.build_pair_list,

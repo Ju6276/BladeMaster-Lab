@@ -57,7 +57,10 @@ def main():
     ax.set_xlim(0, 0.5)
     ax.set_xlabel("time [s]")
     ax.set_ylabel("edge tilt [deg]")
-    fig.suptitle("Free-falling 0.1 kg knife, 25° initial edge tilt (paper Fig. 3); blue / orange = cut sides", fontsize=12)
+    fig.suptitle(
+        "Free-falling 0.1 kg knife, 25° initial edge tilt (paper Fig. 3); blue / orange = cut sides",
+        fontsize=12,
+    )
     fig.tight_layout()
     fig.savefig(a.output, dpi=110)
     print(a.output)

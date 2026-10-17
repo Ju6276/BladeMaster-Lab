@@ -42,7 +42,11 @@ def main():
     a = p.parse_args()
     runs = [("BladeMaster", *load(a.blademaster)), ("Single-field baseline", *load(a.single_field))]
     keys = runs[0][2]["keyframes"]
-    moments = [("Two radial cuts", keys[-5][0]), ("Lifting", (keys[-3][0] + keys[-2][0]) / 2), ("Lifted", keys[-1][0])]
+    moments = [
+        ("Two radial cuts", keys[-5][0]),
+        ("Lifting", (keys[-3][0] + keys[-2][0]) / 2),
+        ("Lifted", keys[-1][0]),
+    ]
     fig = plt.figure(figsize=(13.5, 8.2))
     for r, (name, d, m, piece) in enumerate(runs):
         half = m["config"]["blade_half_size"]

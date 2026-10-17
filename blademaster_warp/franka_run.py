@@ -275,7 +275,15 @@ class FrankaCuttingRun:
             self.args.surface_spacing,
             getattr(self.args, "surface_embedding", "cpu"),
             getattr(self.args, "surface_ccd", "cpu"),
+            self._surface_precision(),
         )
+
+    def _surface_precision(self):
+        precision = getattr(self.args, "surface_precision", "auto")
+        if precision == "auto":
+            # Live display without recording: float32; recordings keep CPU-equivalent float64.
+            return "float32" if self.observer is not None and not self.record else "float64"
+        return precision
 
     def _timed(self, phase, start):
         self.phase_time[phase] += time.perf_counter() - start
@@ -863,6 +871,12 @@ def parser():
     p.add_argument("--no-cutting", action="store_true")
     p.add_argument("--video", action="store_true")
     p.add_argument("--surface", action="store_true", help="Online reconstruction, included in elapsed time")
+    p.add_argument(
+        "--surface-precision",
+        choices=["auto", "float64", "float32"],
+        default="auto",
+        help="CUDA surface embedding precision; auto: float32 for live display without --record, else float64",
+    )
     p.add_argument(
         "--surface-embedding",
         choices=["cpu", "cuda"],

@@ -1,153 +1,113 @@
 """CUDA nodal embedding for the linked-volume surface."""
 
-from functools import cached_property
+from functools import cache, cached_property
 import numpy as np
 import warp as wp
 from .material import compatible
 from .surface import MaterialEmbedding, OFFSETS
 
 
-@wp.func
-def node_field(
-    i: int,
-    code: wp.int64,
-    extend: int,
-    nodes: wp.array(dtype=wp.vec3d),
-    reference: wp.array(dtype=wp.vec3d),
-    offsets: wp.array(dtype=int),
-    indices: wp.array(dtype=int),
-    weights: wp.array(dtype=wp.float64),
-    extra_offsets: wp.array(dtype=int),
-    extra_indices: wp.array(dtype=int),
-    extra_weights: wp.array(dtype=wp.float64),
-    x: wp.array(dtype=wp.vec3d),
-    deformation: wp.array(dtype=wp.mat33d),
-    particle_codes: wp.array(dtype=wp.int64),
-):
-    """Weighted sums of compatible affine-extrapolated positions and F at node i.
+@cache
+def kernels(scalar):
+    """Node and vertex kernels for float64 (exact CPU equivalence) or float32.
 
-    Falls back to the next support ring when extend is set and the first ring has
-    no compatible particle. Returns (position sum, F sum, weight sum, extended).
-    A code still unassigned for a cut is compatible with both of its sides; such a
-    node follows the side of its heaviest compatible particle instead of their
-    average, which would stretch it across the gap once the pieces separate.
+    Consumer GPUs run float64 at a small fraction of the float32 rate; float32
+    resolves positions of a 0.1 m scene to about 0.01 um, enough for display.
     """
-    total = wp.float64(0.0)
-    position = wp.vec3d(0.0)
-    gradient = wp.mat33d(0.0)
-    anchor = code
-    heaviest = wp.float64(0.0)
-    for a in range(offsets[i], offsets[i + 1]):
-        p = indices[a]
-        if compatible(code, particle_codes[p]) and weights[a] > heaviest:
-            heaviest = weights[a]
-            anchor = particle_codes[p]
-    for a in range(offsets[i], offsets[i + 1]):
-        p = indices[a]
-        if compatible(code, particle_codes[p]) and compatible(anchor, particle_codes[p]):
-            w = weights[a]
-            position += w * (x[p] + deformation[p] * (nodes[i] - reference[p]))
-            gradient += w * deformation[p]
-            total += w
-    extended = int(0)
-    if total == wp.float64(0.0) and extend != 0:
-        for a in range(extra_offsets[i], extra_offsets[i + 1]):
-            p = extra_indices[a]
-            if compatible(code, particle_codes[p]) and extra_weights[a] > heaviest:
-                heaviest = extra_weights[a]
+    vec3 = wp.types.vector(3, scalar)
+    mat33 = wp.types.matrix((3, 3), scalar)
+
+    @wp.func
+    def node_field(
+        i: int,
+        code: wp.int64,
+        extend: int,
+        nodes: wp.array(dtype=vec3),
+        reference: wp.array(dtype=vec3),
+        offsets: wp.array(dtype=int),
+        indices: wp.array(dtype=int),
+        weights: wp.array(dtype=scalar),
+        extra_offsets: wp.array(dtype=int),
+        extra_indices: wp.array(dtype=int),
+        extra_weights: wp.array(dtype=scalar),
+        x: wp.array(dtype=vec3),
+        deformation: wp.array(dtype=mat33),
+        particle_codes: wp.array(dtype=wp.int64),
+    ):
+        """Weighted sums of compatible affine-extrapolated positions and F at node i.
+
+        Falls back to the next support ring when extend is set and the first ring has
+        no compatible particle. Returns (position sum, F sum, weight sum, extended).
+        A code still unassigned for a cut is compatible with both of its sides; such a
+        node follows the side of its heaviest compatible particle instead of their
+        average, which would stretch it across the gap once the pieces separate.
+        """
+        total = scalar(0.0)
+        position = vec3(0.0)
+        gradient = mat33(0.0)
+        anchor = code
+        heaviest = scalar(0.0)
+        for a in range(offsets[i], offsets[i + 1]):
+            p = indices[a]
+            if compatible(code, particle_codes[p]) and weights[a] > heaviest:
+                heaviest = weights[a]
                 anchor = particle_codes[p]
-        for a in range(extra_offsets[i], extra_offsets[i + 1]):
-            p = extra_indices[a]
+        for a in range(offsets[i], offsets[i + 1]):
+            p = indices[a]
             if compatible(code, particle_codes[p]) and compatible(anchor, particle_codes[p]):
-                w = extra_weights[a]
+                w = weights[a]
                 position += w * (x[p] + deformation[p] * (nodes[i] - reference[p]))
                 gradient += w * deformation[p]
                 total += w
-        if total > wp.float64(0.0):
-            extended = 1
-    return position, gradient, total, extended
+        extended = int(0)
+        if total == scalar(0.0) and extend != 0:
+            for a in range(extra_offsets[i], extra_offsets[i + 1]):
+                p = extra_indices[a]
+                if compatible(code, particle_codes[p]) and extra_weights[a] > heaviest:
+                    heaviest = extra_weights[a]
+                    anchor = particle_codes[p]
+            for a in range(extra_offsets[i], extra_offsets[i + 1]):
+                p = extra_indices[a]
+                if compatible(code, particle_codes[p]) and compatible(anchor, particle_codes[p]):
+                    w = extra_weights[a]
+                    position += w * (x[p] + deformation[p] * (nodes[i] - reference[p]))
+                    gradient += w * deformation[p]
+                    total += w
+            if total > scalar(0.0):
+                extended = 1
+        return position, gradient, total, extended
 
 
-@wp.kernel
-def evaluate_nodes(
-    nodes: wp.array(dtype=wp.vec3d),
-    reference: wp.array(dtype=wp.vec3d),
-    offsets: wp.array(dtype=int),
-    indices: wp.array(dtype=int),
-    weights: wp.array(dtype=wp.float64),
-    extra_offsets: wp.array(dtype=int),
-    extra_indices: wp.array(dtype=int),
-    extra_weights: wp.array(dtype=wp.float64),
-    x: wp.array(dtype=wp.vec3d),
-    deformation: wp.array(dtype=wp.mat33d),
-    particle_codes: wp.array(dtype=wp.int64),
-    node_codes: wp.array(dtype=wp.int64),
-    uniform_code: wp.int64,
-    per_node_codes: int,
-    extend: int,
-    positions: wp.array(dtype=wp.vec3d),
-    gradients: wp.array(dtype=wp.mat33d),
-    extensions: wp.array(dtype=int),
-    nan: wp.float64,
-):
-    i = wp.tid()
-    code = uniform_code
-    if per_node_codes != 0:
-        code = node_codes[i]
-    position, gradient, total, extended = node_field(
-        i,
-        code,
-        extend,
-        nodes,
-        reference,
-        offsets,
-        indices,
-        weights,
-        extra_offsets,
-        extra_indices,
-        extra_weights,
-        x,
-        deformation,
-        particle_codes,
-    )
-    if extended != 0:
-        wp.atomic_add(extensions, 0, 1)
-    if total > wp.float64(0.0):
-        positions[i] = position / total
-        gradients[i] = gradient / total
-    else:
-        positions[i] = wp.vec3d(nan)
-        gradients[i] = wp.mat33d(nan)
-
-
-@wp.kernel
-def embed_vertices(
-    vertex_codes: wp.array(dtype=wp.int64),
-    corner_nodes: wp.array2d(dtype=int),
-    corner_weights: wp.array2d(dtype=wp.float64),
-    nodes: wp.array(dtype=wp.vec3d),
-    reference: wp.array(dtype=wp.vec3d),
-    offsets: wp.array(dtype=int),
-    indices: wp.array(dtype=int),
-    weights: wp.array(dtype=wp.float64),
-    extra_offsets: wp.array(dtype=int),
-    extra_indices: wp.array(dtype=int),
-    extra_weights: wp.array(dtype=wp.float64),
-    x: wp.array(dtype=wp.vec3d),
-    deformation: wp.array(dtype=wp.mat33d),
-    particle_codes: wp.array(dtype=wp.int64),
-    vertices: wp.array(dtype=wp.vec3d),
-    extensions: wp.array(dtype=int),
-    unsupported: wp.array(dtype=int),
-):
-    """Trilinear interpolation of each vertex's own-code field over its grid cell."""
-    v = wp.tid()
-    result = wp.vec3d(0.0)
-    for k in range(8):
+    @wp.kernel(module="unique")
+    def evaluate_nodes(
+        nodes: wp.array(dtype=vec3),
+        reference: wp.array(dtype=vec3),
+        offsets: wp.array(dtype=int),
+        indices: wp.array(dtype=int),
+        weights: wp.array(dtype=scalar),
+        extra_offsets: wp.array(dtype=int),
+        extra_indices: wp.array(dtype=int),
+        extra_weights: wp.array(dtype=scalar),
+        x: wp.array(dtype=vec3),
+        deformation: wp.array(dtype=mat33),
+        particle_codes: wp.array(dtype=wp.int64),
+        node_codes: wp.array(dtype=wp.int64),
+        uniform_code: wp.int64,
+        per_node_codes: int,
+        extend: int,
+        positions: wp.array(dtype=vec3),
+        gradients: wp.array(dtype=mat33),
+        extensions: wp.array(dtype=int),
+        nan: scalar,
+    ):
+        i = wp.tid()
+        code = uniform_code
+        if per_node_codes != 0:
+            code = node_codes[i]
         position, gradient, total, extended = node_field(
-            corner_nodes[v, k],
-            vertex_codes[v],
-            1,
+            i,
+            code,
+            extend,
             nodes,
             reference,
             offsets,
@@ -162,44 +122,107 @@ def embed_vertices(
         )
         if extended != 0:
             wp.atomic_add(extensions, 0, 1)
-        if total > wp.float64(0.0):
-            result += corner_weights[v, k] * position / total
-        elif corner_weights[v, k] > wp.float64(1.0e-9):
-            wp.atomic_add(unsupported, 0, 1)
-    vertices[v] = result
+        if total > scalar(0.0):
+            positions[i] = position / total
+            gradients[i] = gradient / total
+        else:
+            positions[i] = vec3(nan)
+            gradients[i] = mat33(nan)
+
+
+    @wp.kernel(module="unique")
+    def embed_vertices(
+        vertex_codes: wp.array(dtype=wp.int64),
+        corner_nodes: wp.array2d(dtype=int),
+        corner_weights: wp.array2d(dtype=scalar),
+        nodes: wp.array(dtype=vec3),
+        reference: wp.array(dtype=vec3),
+        offsets: wp.array(dtype=int),
+        indices: wp.array(dtype=int),
+        weights: wp.array(dtype=scalar),
+        extra_offsets: wp.array(dtype=int),
+        extra_indices: wp.array(dtype=int),
+        extra_weights: wp.array(dtype=scalar),
+        x: wp.array(dtype=vec3),
+        deformation: wp.array(dtype=mat33),
+        particle_codes: wp.array(dtype=wp.int64),
+        vertices: wp.array(dtype=vec3),
+        extensions: wp.array(dtype=int),
+        unsupported: wp.array(dtype=int),
+    ):
+        """Trilinear interpolation of each vertex's own-code field over its grid cell."""
+        v = wp.tid()
+        result = vec3(0.0)
+        for k in range(8):
+            position, gradient, total, extended = node_field(
+                corner_nodes[v, k],
+                vertex_codes[v],
+                1,
+                nodes,
+                reference,
+                offsets,
+                indices,
+                weights,
+                extra_offsets,
+                extra_indices,
+                extra_weights,
+                x,
+                deformation,
+                particle_codes,
+            )
+            if extended != 0:
+                wp.atomic_add(extensions, 0, 1)
+            if total > scalar(0.0):
+                result += corner_weights[v, k] * position / total
+            elif corner_weights[v, k] > scalar(1.0e-9):
+                wp.atomic_add(unsupported, 0, 1)
+        vertices[v] = result
+
+    return evaluate_nodes, embed_vertices
 
 
 class CudaMaterialEmbedding(MaterialEmbedding):
     @classmethod
-    def from_reference(cls, reference, device="cuda:0"):
+    def from_reference(cls, reference, device="cuda:0", precision="float64"):
         self = cls.__new__(cls)
         self.__dict__.update(reference.__dict__)
         self.device = wp.get_device(device)
         if not self.device.is_cuda:
             raise ValueError("CUDA surface embedding requires a CUDA device")
+        if precision not in ("float64", "float32"):
+            raise ValueError("Surface precision must be float64 or float32")
+        self.precision = precision
+        self.scalar = wp.float64 if precision == "float64" else wp.float32
+        self.np_scalar = np.float64 if precision == "float64" else np.float32
+        self.vec3 = wp.types.vector(3, self.scalar)
+        self.mat33 = wp.types.matrix((3, 3), self.scalar)
+        self.evaluate_nodes, self.embed_vertices = kernels(self.scalar)
         if reference.material_grid is not None:
-            self.material_grid = cls.from_reference(reference.material_grid, self.device)
+            self.material_grid = cls.from_reference(reference.material_grid, self.device, precision)
 
-        self.g_nodes = self._upload(self.nodes, wp.vec3d)
-        self.g_ref = self._upload(self.ref, wp.vec3d)
-        self.g_x = wp.empty(len(self.ref), dtype=wp.vec3d, device=self.device)
-        self.g_f = wp.empty(len(self.ref), dtype=wp.mat33d, device=self.device)
+        self.g_nodes = self._upload(self.nodes, self.vec3)
+        self.g_ref = self._upload(self.ref, self.vec3)
+        self.g_x = wp.empty(len(self.ref), dtype=self.vec3, device=self.device)
+        self.g_f = wp.empty(len(self.ref), dtype=self.mat33, device=self.device)
         self.g_codes = wp.empty(len(self.ref), dtype=wp.int64, device=self.device)
         self.g_node_codes = wp.empty(len(self.nodes), dtype=wp.int64, device=self.device)
-        self.g_positions = wp.empty(len(self.nodes), dtype=wp.vec3d, device=self.device)
-        self.g_gradients = wp.empty(len(self.nodes), dtype=wp.mat33d, device=self.device)
+        self.g_positions = wp.empty(len(self.nodes), dtype=self.vec3, device=self.device)
+        self.g_gradients = wp.empty(len(self.nodes), dtype=self.mat33, device=self.device)
         self.g_extensions = wp.zeros(1, dtype=int, device=self.device)
         self.g_unsupported = wp.zeros(1, dtype=int, device=self.device)
         return self
 
     def _upload(self, data, dtype):
-        return wp.array(np.asarray(data), dtype=dtype, device=self.device)
+        data = np.asarray(data)
+        if data.dtype.kind == "f":
+            data = data.astype(self.np_scalar)
+        return wp.array(data, dtype=dtype, device=self.device)
 
     def _support_arrays(self, support):
         return (
             self._upload(support.offsets.astype(np.int32), int),
             self._upload(support.indices.astype(np.int32), int),
-            self._upload(support.weights, wp.float64),
+            self._upload(support.weights, self.scalar),
         )
 
     @cached_property
@@ -218,8 +241,8 @@ class CudaMaterialEmbedding(MaterialEmbedding):
         return np.ascontiguousarray(a, dtype=np.int64)
 
     def _upload_particles(self, x, F, particle_codes):
-        x = np.ascontiguousarray(x, dtype=np.float64)
-        F = np.ascontiguousarray(F, dtype=np.float64)
+        x = np.ascontiguousarray(x, dtype=self.np_scalar)
+        F = np.ascontiguousarray(F, dtype=self.np_scalar)
         if (
             x.shape != self.ref.shape
             or F.shape != (len(self.ref), 3, 3)
@@ -242,7 +265,7 @@ class CudaMaterialEmbedding(MaterialEmbedding):
             self.g_node_codes.assign(self._codes(node_codes, len(self.nodes)))
         self.g_extensions.zero_()
         wp.launch(
-            evaluate_nodes,
+            self.evaluate_nodes,
             len(self.nodes),
             [
                 *self._support_inputs(extend),
@@ -253,7 +276,7 @@ class CudaMaterialEmbedding(MaterialEmbedding):
                 self.g_positions,
                 self.g_gradients,
                 self.g_extensions,
-                wp.float64(float("nan")),
+                self.scalar(float("nan")),
             ],
             device=self.device,
         )
@@ -263,11 +286,11 @@ class CudaMaterialEmbedding(MaterialEmbedding):
     def field(self, x, F, particle_codes, code):
         self._codes(np.array([code]), 1)
         self._evaluate(x, F, particle_codes, code=code, extend=True)
-        return self.g_positions.numpy()
+        return self.g_positions.numpy().astype(np.float64)
 
     def node_state(self, x, F, particle_codes, node_codes):
         self._evaluate(x, F, particle_codes, node_codes=node_codes)
-        return self.g_positions.numpy(), self.g_gradients.numpy()
+        return self.g_positions.numpy().astype(np.float64), self.g_gradients.numpy().astype(np.float64)
 
     def vertices(self, mesh, x, F, particle_codes):
         """All vertices in one launch; extension_nodes counts extended corner lookups."""
@@ -285,16 +308,16 @@ class CudaMaterialEmbedding(MaterialEmbedding):
         weights = np.where(OFFSETS[None, :, :] == 1, local[:, None, :], 1 - local[:, None, :]).prod(2)
         grid._upload_particles(x, F, particle_codes)
         device = self.device
-        out = wp.empty(len(mesh.reference), dtype=wp.vec3d, device=device)
+        out = wp.empty(len(mesh.reference), dtype=self.vec3, device=device)
         grid.g_extensions.zero_()
         grid.g_unsupported.zero_()
         wp.launch(
-            embed_vertices,
+            self.embed_vertices,
             len(mesh.reference),
             [
                 wp.array(self._codes(mesh.codes, len(mesh.codes)), dtype=wp.int64, device=device),
                 wp.array(corners.astype(np.int32), dtype=int, device=device),
-                wp.array(weights, dtype=wp.float64, device=device),
+                wp.array(weights.astype(self.np_scalar), dtype=self.scalar, device=device),
                 *grid._support_inputs(),
                 out,
                 grid.g_extensions,
@@ -308,4 +331,4 @@ class CudaMaterialEmbedding(MaterialEmbedding):
             raise RuntimeError(
                 "Surface region has no compatible material support; refine reference grid/support"
             )
-        return out.numpy()
+        return out.numpy().astype(np.float64)

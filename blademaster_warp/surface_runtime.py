@@ -10,7 +10,9 @@ from .surface import LinkedSurface, MaterialEmbedding, moving_segment_hits
 
 
 class SurfaceRecorder:
-    def __init__(self, solver, directory, spacing=None, embedding_backend="cpu", ccd_backend="cpu"):
+    def __init__(
+        self, solver, directory, spacing=None, embedding_backend="cpu", ccd_backend="cpu", precision="float64"
+    ):
         if embedding_backend not in ("cpu", "cuda"):
             raise ValueError("Surface embedding backend must be cpu or cuda")
         if ccd_backend not in ("cpu", "cuda"):
@@ -42,7 +44,7 @@ class SurfaceRecorder:
         if embedding_backend == "cuda":
             from .surface_gpu import CudaMaterialEmbedding
 
-            self.embedding = CudaMaterialEmbedding.from_reference(self.embedding, solver.device)
+            self.embedding = CudaMaterialEmbedding.from_reference(self.embedding, solver.device, precision)
         self.half = np.array(cfg.blade_half_size)
         # Same band as the material's side assignment (contact.assign): paper h_k = 6 dx.
         self.band = (6.0 * cfg.grid_spacing, 2.0 * cfg.grid_spacing)
@@ -93,9 +95,11 @@ class SurfaceRecorder:
             np.array([[0, -self.half[1], -self.half[2]], [0, self.half[1], -self.half[2]]]) @ r.T
             + tool.position
         )
+        current = None
         if cutting and self.previous_cut == cut_index and self.previous is not None:
             phase = time.perf_counter()
             nodes, nodeF = self.embedding.node_state(x, F, codes, s.codes)
+            before = s.codes.copy()
             self.timing_s["node_embedding"] += time.perf_counter() - phase
             phase = time.perf_counter()
             s.sweep(
@@ -111,10 +115,15 @@ class SurfaceRecorder:
                 band=self.band,
             )
             self.timing_s["link_sweep"] += time.perf_counter() - phase
+            if np.array_equal(before, s.codes):
+                current = nodes, nodeF
         self.previous = edge.copy()
         self.previous_cut = cut_index if cutting else None
         phase = time.perf_counter()
-        self.previous_nodes, self.previous_deformation = self.embedding.node_state(x, F, codes, s.codes)
+        # Node codes decide which particles a node follows; unchanged codes, same state.
+        self.previous_nodes, self.previous_deformation = current or self.embedding.node_state(
+            x, F, codes, s.codes
+        )
         self.timing_s["node_embedding"] += time.perf_counter() - phase
         phase = time.perf_counter()
         mesh = s.mesh()

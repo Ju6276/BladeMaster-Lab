@@ -145,14 +145,10 @@ def moving_hits(
     a1: wp.array(dtype=wp.vec3d),
     b1: wp.array(dtype=wp.vec3d),
     blade: wp.array(dtype=wp.vec3d),
-    hit: wp.array(dtype=int),
-    alphas: wp.array(dtype=wp.float64),
-    times: wp.array(dtype=wp.float64),
+    result: wp.array(dtype=wp.vec3d),
 ):
     i = wp.tid()
-    hit[i] = 0
-    alphas[i] = wp.float64(0.0)
-    times[i] = wp.float64(0.0)
+    result[i] = wp.vec3d(0.0)
     c0, d0, c1, d1 = blade[0], blade[1], blade[2], blade[3]
     for axis in range(3):
         lo = wp.min(wp.min(c0[axis], d0[axis]), wp.min(c1[axis], d1[axis]))
@@ -225,9 +221,7 @@ def moving_hits(
             and beta <= wp.float64(1.0) + wp.float64(1.0e-8)
             and t < best
         ):
-            hit[i] = 1
-            alphas[i] = alpha
-            times[i] = t
+            result[i] = wp.vec3d(wp.float64(1.0), alpha, t)
             best = t
 
 
@@ -248,17 +242,15 @@ class CudaSegmentCCD:
             raise ValueError("Expected two finite blade endpoints per observation")
         if not n:
             return np.zeros(0, bool), np.zeros(0), np.zeros(0)
-        if self.capacity != n:
-            self.inputs = [wp.empty(n, dtype=wp.vec3d, device=self.device) for _ in range(4)]
+        if self.capacity < n:
+            capacity = 1 << (n - 1).bit_length()
+            self.inputs = [wp.empty(capacity, dtype=wp.vec3d, device=self.device) for _ in range(4)]
             self.blade = wp.empty(4, dtype=wp.vec3d, device=self.device)
-            self.hit = wp.empty(n, dtype=int, device=self.device)
-            self.alpha = wp.empty(n, dtype=wp.float64, device=self.device)
-            self.times = wp.empty(n, dtype=wp.float64, device=self.device)
-            self.capacity = n
+            self.result = wp.empty(capacity, dtype=wp.vec3d, device=self.device)
+            self.capacity = capacity
         for target, value in zip(self.inputs, arrays):
-            target.assign(value)
+            target[:n].assign(value)
         self.blade.assign(blade)
-        wp.launch(
-            moving_hits, n, [*self.inputs, self.blade, self.hit, self.alpha, self.times], device=self.device
-        )
-        return self.hit.numpy().astype(bool), self.alpha.numpy(), self.times.numpy()
+        wp.launch(moving_hits, n, [*self.inputs, self.blade, self.result], device=self.device)
+        result = self.result[:n].numpy()
+        return result[:, 0].astype(bool), result[:, 1], result[:, 2]

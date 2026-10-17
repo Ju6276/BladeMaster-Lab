@@ -92,3 +92,17 @@ def test_cuda_ccd_preserves_persistent_cut_surface_topology():
         meshes = [s.mesh() for s in surfaces]
         np.testing.assert_array_equal(meshes[0].triangles, meshes[1].triangles)
         np.testing.assert_allclose(meshes[0].reference, meshes[1].reference, atol=1.0e-12)
+
+
+def test_cuda_ccd_reuses_growing_buffers_without_stale_results():
+    detector = CudaSegmentCCD()
+    rng = np.random.default_rng(81)
+    for n in [1, 65, 3, 240, 0, 12]:
+        endpoints = [rng.uniform(-0.05, 0.05, (n, 3)) for _ in range(4)]
+        blade = rng.uniform(-0.05, 0.05, (2, 2, 3))
+        expected = moving_segment_hits(*endpoints, *blade)
+        actual = detector(*endpoints, *blade)
+        np.testing.assert_array_equal(actual[0], expected[0])
+        mask = expected[0]
+        np.testing.assert_allclose(actual[1][mask], expected[1][mask], atol=1e-8)
+        np.testing.assert_allclose(actual[2][mask], expected[2][mask], atol=1e-8)

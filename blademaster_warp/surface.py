@@ -265,6 +265,16 @@ class LinkedSurface:
         x = self.reference if current_nodes is None else np.asarray(current_nodes)
         quad = np.asarray([edge_before[0], edge_before[1], edge_after[1], edge_after[0]])
         candidates = np.flatnonzero(self.inside[self.edges].all(axis=1) & ~self.broken)
+        if previous_nodes is not None and len(candidates):
+            # Reject disjoint swept AABBs before uploading a short substep to
+            # CCD. The same 1e-10 m bound is used by the CUDA narrow phase.
+            old = np.asarray(previous_nodes)
+            endpoints = self.edges[candidates]
+            lower = np.minimum(old[endpoints].min(axis=1), x[endpoints].min(axis=1))
+            upper = np.maximum(old[endpoints].max(axis=1), x[endpoints].max(axis=1))
+            blade_lower, blade_upper = quad.min(axis=0) - 1e-10, quad.max(axis=0) + 1e-10
+            overlaps = np.all(upper >= blade_lower, axis=1) & np.all(lower <= blade_upper, axis=1)
+            candidates = candidates[overlaps]
         aa, bb = x[self.edges[candidates, 0]], x[self.edges[candidates, 1]]
         hits = []
         batches = []
@@ -511,13 +521,17 @@ class LinkedSurface:
             q = region_points[np.maximum(ring, 0)]
 
             def agreement(a, b, c, d):
-                n1, n2 = np.cross(q[:, b] - q[:, a], q[:, c] - q[:, a]), np.cross(q[:, c] - q[:, a], q[:, d] - q[:, a])
+                n1, n2 = np.cross(q[:, b] - q[:, a], q[:, c] - q[:, a]), np.cross(
+                    q[:, c] - q[:, a], q[:, d] - q[:, a]
+                )
                 return np.einsum("ij,ij->i", n1, n2) / np.maximum(
                     np.linalg.norm(n1, axis=1) * np.linalg.norm(n2, axis=1), 1.0e-300
                 )
 
             rings[:, end] = ring
-            others[:, end] = (count == 4) & (agreement(1, 2, 3, 0) > agreement(0, 1, 2, 3) + QUAD_SPLIT_MARGIN)
+            others[:, end] = (count == 4) & (
+                agreement(1, 2, 3, 0) > agreement(0, 1, 2, 3) + QUAD_SPLIT_MARGIN
+            )
         faces, self.split_changes = triangulate(rings, others)
         owner = np.nonzero(valid)[0]
         self._mesh_cache = Mesh(

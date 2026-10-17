@@ -33,3 +33,17 @@ def test_push_waits_for_the_knife_to_reach_the_board():
     for t in np.arange(0.0, 3 * sequence.duration_s, 0.001):
         sequence.update(t, stuck, np.zeros((2, 3)))
     assert sequence.phase == "descend"
+
+
+def test_tilted_knife_with_one_low_corner_does_not_end_the_descent():
+    sequence = CutSequence([0.0, 0.0, 0.06], 0.0, 0.02, SequenceSettings(cut_offsets_m=(0.0,)))
+    bottom = np.array([0.0, 0.0, 0.02])
+    tilted = np.array([[-0.04, 0.0, 0.0], [0.04, 0.0, 0.004]])
+    for t in np.arange(0.0, 3 * sequence.duration_s, 0.001):
+        sequence.update(t, bottom, tilted)
+    assert sequence.phase == "descend"
+    level = np.array([[-0.04, 0.0, 0.0], [0.04, 0.0, 0.0]])
+    t0 = 3 * sequence.duration_s
+    for t in np.arange(t0, t0 + 0.5, 0.001):
+        sequence.update(t, bottom, level)
+    assert sequence.phase != "descend"

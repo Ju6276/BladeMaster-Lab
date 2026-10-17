@@ -169,6 +169,7 @@ class CutSequence:
     def __init__(self, initial, board_z, half_height, settings=None):
         self.settings = s = settings or SequenceSettings()
         self.initial = np.array(initial, dtype=float, copy=True)
+        self.board_z = float(board_z)
         bottom_z = board_z + half_height
         if self.initial[2] <= bottom_z:
             raise ValueError("Initial knife must be above the board")
@@ -210,9 +211,16 @@ class CutSequence:
         return self.phase == "descend"
 
     def update(self, t, actual, edge_points):
-        """Tool-origin target at time t, given the measured tool origin."""
+        """Tool-origin target at time t, given the measured tool origin and blade edge ends.
+
+        A descent ends only when the origin and both ends of the edge are at the board,
+        so a tilted knife with one low corner does not count as through.
+        """
         s = self.settings
         actual = np.asarray(actual, dtype=float)
+        edges = np.asarray(edge_points, dtype=float)
+        if edges.shape != (2, 3) or not np.isfinite(edges).all():
+            raise ValueError("Expected the two blade edge end points")
         while self.index < len(self.segments):
             phase, a, b, duration, cut_index = self.segments[self.index]
             elapsed = t - self.segment_start
@@ -221,7 +229,11 @@ class CutSequence:
                 break
             target = b
             if phase == "descend":
-                if np.linalg.norm(actual - b) > s.position_tolerance_m:
+                arrived = (
+                    np.linalg.norm(actual - b) <= s.position_tolerance_m
+                    and np.max(np.abs(edges[:, 2] - self.board_z)) <= s.position_tolerance_m
+                )
+                if not arrived:
                     self.arrived_since = None
                     break
                 self.arrived_since = t if self.arrived_since is None else self.arrived_since

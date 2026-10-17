@@ -3,8 +3,8 @@
 [BladeMaster](https://arxiv.org/html/2609.27342v2)（拓扑感知 TLMPM 切割仿真）的 Warp/CUDA 实现，带 MuJoCo Franka 双向耦合、linked-volume 表面重建和浏览器实时显示。
 
 - 香蕉单刀（论文 §IV-C 材料）+ Franka + 表面：RTX 4060 上 **0.40× 实时**。
-- 连续三刀 + 推开 + 表面：**四块，0.66× 实时**（6 mm 网格，无录制）；3 mm 网格（11485 粒子）约 0.16×。
-- 论文 Table I 重力刀（8960 粒子，2 ms）：**0.47 wall/sim**（论文 RTX 5090 为 0.33）。
+- 连续三刀 + 推开 + 表面：**四块，0.80× 实时**（6 mm 网格，无录制）；3 mm 网格（11485 粒子）约 0.31×。
+- 论文 Table I 重力刀（8960 粒子，2 ms）：**0.42 wall/sim**，切透成两块（论文 RTX 5090 为 0.33）。
 - 接触刚度与步长解耦，25–77 μs 下刀阶段平均力相差 < 2%。
 
 详细数字见 [docs/RESULTS.md](docs/RESULTS.md)，公式对照与数值设置见 [docs/METHOD.md](docs/METHOD.md)，论文各实验参数、DexLab 与文献数据见 [docs/PARAMETERS.md](docs/PARAMETERS.md)，剩余工作见 [TODO.md](TODO.md)。
@@ -75,7 +75,7 @@ SpaceMouse 六轴给刀的世界系线速度和角速度；左键 `begin_cut` �
 .venv/bin/python -m blademaster_warp.render_franka runs/fig1_sequence --layout paper
 ```
 
-`--cuts` 指定各刀相对起始位置的 x 坐标（m，按顺序切），`--push-distance` 指定推开距离。加 `--spacing 0.003` 用 3 mm 网格（11485 粒子，与论文 Table I 的粒子数同一量级；步长自动取 40 μs），外形和切面明显更圆润，RTX 4060 上约 0.16× 实时。
+`--cuts` 指定各刀相对起始位置的 x 坐标（m，按顺序切），`--push-distance` 指定推开距离。加 `--spacing 0.003` 用 3 mm 网格（11485 粒子，与论文 Table I 的粒子数同一量级；步长自动取 40 μs），外形和切面明显更圆润，RTX 4060 上约 0.31× 实时。
 
 常用选项：
 

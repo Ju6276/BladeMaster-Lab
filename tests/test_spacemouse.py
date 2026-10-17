@@ -24,3 +24,13 @@ def test_buttons_left_right_and_both():
     assert snap.presses == ("close", "hold")
     assert snap.buttons == 2
     assert state.sample().presses == ()
+
+
+def test_held_button_reports_emit_one_event_until_the_next_press():
+    state = MouseState()
+    for buttons in (1, 1, 3, 3, 3, 2, 2):
+        state.feed([3, buttons])
+    assert state.sample().presses == ("close", "hold")
+    state.feed([3, 0])
+    state.feed([3, 3])
+    assert state.sample().presses == ("hold",)

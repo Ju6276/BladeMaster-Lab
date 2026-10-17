@@ -52,7 +52,7 @@ class MouseState:
                 buttons = int(report[1]) & 3
                 rising = buttons & ~self.buttons
                 # Both buttons together hold rather than choose a direction.
-                if buttons == 3:
+                if buttons == 3 and rising:
                     self.presses.append("hold")
                 elif rising:
                     self.presses.append("close" if rising & 1 else "open")
@@ -103,7 +103,9 @@ class SpaceMouse:
         if not devices and sys.platform.startswith("linux") and self._open_spacenavd():
             return self
         if len(devices) != 1:
-            raise RuntimeError(f"Expected one USB SpaceMouse, found {len(devices)}. Connect its USB data cable.")
+            raise RuntimeError(
+                f"Expected one USB SpaceMouse, found {len(devices)}. Connect its USB data cable."
+            )
         path, description = next(iter(devices.items()))
         self.info = {k: description.get(k) for k in ("product_string", "vendor_id", "product_id")}
         # macOS otherwise may route the same relative-axis reports to the desktop pointer.
@@ -176,7 +178,9 @@ class SpaceMouse:
         conn = socket.socket(fileno=os.dup(lib.spnav_fd()))
         try:
             while not self.stop.is_set():
-                if select.select([conn], [], [], 0.05)[0] and not conn.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT):
+                if select.select([conn], [], [], 0.05)[0] and not conn.recv(
+                    1, socket.MSG_PEEK | socket.MSG_DONTWAIT
+                ):
                     raise ConnectionError("spacenavd closed the connection")
                 while lib.spnav_poll_event(ctypes.byref(event)):
                     kind, a, b = event[0], event[1], event[2]

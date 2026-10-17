@@ -1,10 +1,91 @@
+import gzip
 import http.client
+import io
 import json
-import time
 import socket
+from threading import Thread
+import time
 import zlib
+
+import pytest
+
+from blademaster_warp.live import LiveState, make_server
 from blademaster_warp.teleop import Server
-from blademaster_warp.teleop_input import LatestInput, Command
+from blademaster_warp.teleop_input import LatestInput, Command, read_chunked_packets
+
+
+@pytest.fixture(params=["standalone", "live"])
+def input_server(request):
+    source = LatestInput()
+    if request.param == "standalone":
+        server = Server(source, port=0)
+        server.start()
+        try:
+            yield source, server.http.server_port
+        finally:
+            server.close()
+    else:
+        live = LiveState()
+        live.teleop = source
+        server = make_server(live, 0)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield source, server.server_port
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+
+@pytest.mark.parametrize("chunk_size", [None, 1, 23])
+def test_ndjson_packets_are_independent_of_http_chunk_boundaries(input_server, chunk_size):
+    source, port = input_server
+    events = ["begin_cut", "", "end_cut", "hold"]
+    packets = b"".join(
+        (json.dumps(Command(seq, (0.01, 0, 0), (0, 0, 0), event).packet()) + "\n").encode()
+        for seq, event in enumerate(events)
+    )
+    size = len(packets) if chunk_size is None else chunk_size
+    chunks = (packets[i : i + size] for i in range(0, len(packets), size))
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
+    try:
+        connection.request("POST", "/input", body=chunks, encode_chunked=True)
+        response = connection.getresponse()
+        body = response.read()
+        if response.getheader("Content-Encoding") == "gzip":
+            body = gzip.decompress(body)
+        assert response.status == 200, body
+        assert json.loads(body)["accepted_packets"] == 4
+        command, received, _ = source.sample()
+        assert command.seq == 3
+        assert received == [(0, "begin_cut"), (2, "end_cut"), (3, "hold")]
+    finally:
+        connection.close()
+
+
+def test_large_http_chunk_can_contain_many_small_packets():
+    source = LatestInput()
+    packets = b"".join(
+        (json.dumps(Command(seq, (0, 0, 0), (0, 0, 0)).packet()) + "\n").encode() for seq in range(64)
+    )
+    assert len(packets) > 8192
+    body = f"{len(packets):x};extension=value\r\n".encode() + packets + b"\r\n0\r\n\r\n"
+    accepted = read_chunked_packets({"Transfer-Encoding": "chunked"}, io.BytesIO(body), source.feed)
+    assert accepted == 64 and source.latest.seq == 63
+
+
+@pytest.mark.parametrize("chunk_size", [2048, 16384])
+def test_packet_length_limit_applies_across_http_chunks(chunk_size):
+    packet = b" " * 8193 + b"{}\n"
+    chunks = [packet[i : i + chunk_size] for i in range(0, len(packet), chunk_size)]
+    body = b"".join(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n" for chunk in chunks)
+    received = []
+    with pytest.raises(ValueError, match="Packet too long"):
+        read_chunked_packets(
+            {"Transfer-Encoding": "chunked"}, io.BytesIO(body + b"0\r\n\r\n"), received.append
+        )
+    assert received == []
 
 
 def test_http_packets_state_and_disconnect_timeout():

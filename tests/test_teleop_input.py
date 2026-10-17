@@ -118,3 +118,33 @@ def test_session_reset_discards_motion_and_events_but_keeps_sequence():
         data.feed(Command(10, (0, 0, 0), (0, 0, 0)).packet())
     data.feed(Command(11, (0, 0, 0), (0, 0, 0), "begin_cut").packet(), now=2.0)
     assert data.sample(now=2.0)[1:] == ([(11, "begin_cut")], False)
+
+
+@pytest.mark.parametrize("newer_motion", [False, True])
+def test_hold_stops_its_own_command_but_not_a_newer_motion(newer_motion):
+    data = LatestInput()
+    data.feed(Command(0, (0.1, 0, 0), (0, 0, 1), "hold").packet(), now=0.0)
+    if newer_motion:
+        data.feed(Command(1, (0.2, 0, 0), (0, 0, 2)).packet(), now=0.01)
+    command, events, _ = data.sample(now=0.01)
+    target = PoseTarget((0, 0, 0))
+    positions, rotations = target.integrate(command, events, 0.01, 1)
+    angle = 0.02 if newer_motion else 0.0
+    np.testing.assert_allclose(positions[-1], [0.002 if newer_motion else 0.0, 0, 0])
+    np.testing.assert_allclose(rotations[-1], [0, 0, np.sin(angle / 2), np.cos(angle / 2)])
+
+
+def test_hold_remains_stationary_until_a_new_command_arrives():
+    data = LatestInput()
+    data.feed(Command(0, (0.1, 0, 0), (0, 0, 1), "hold").packet(), now=0.0)
+    target = PoseTarget((0, 0, 0))
+    for now in (0.0, 0.01):
+        command, events, _ = data.sample(now=now)
+        positions, rotations = target.integrate(command, events, 0.01, 1)
+        np.testing.assert_array_equal(positions[-1], [0, 0, 0])
+        np.testing.assert_array_equal(rotations[-1], [0, 0, 0, 1])
+    data.feed(Command(1, (0.1, 0, 0), (0, 0, 1)).packet(), now=0.02)
+    command, events, _ = data.sample(now=0.02)
+    positions, rotations = target.integrate(command, events, 0.01, 1)
+    np.testing.assert_allclose(positions[-1], [0.001, 0, 0])
+    np.testing.assert_allclose(rotations[-1], [0, 0, np.sin(0.005), np.cos(0.005)])

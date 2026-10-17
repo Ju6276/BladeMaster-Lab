@@ -83,6 +83,45 @@ class TeleopRegressions(unittest.TestCase):
             target.cutting, f"old command {command.seq} replayed events={events}; cutting={target.cutting}"
         )
 
+    def test_cut_buttons_preserve_all_edges_in_one_mouse_sample(self):
+        live = lm.LiveState()
+        live.teleop = CaptureInput()
+        live._set({"state": "ready"})
+        server = self.server(live)
+        clock = SimpleNamespace(now=0.0)
+
+        def sleep(dt):
+            clock.now += dt
+
+        mouse = FakeMouse()
+        mouse.snapshots = [
+            ([0.0] * 6, 0, (), 0.0),
+            ([0.0] * 6, 0, ("close", "open"), 0.0),
+            ([0.0] * 6, 0, (), 0.0),
+        ]
+
+        def sample():
+            axes, buttons, presses, _ = mouse.snapshots[min(mouse.i, len(mouse.snapshots) - 1)]
+            mouse.i += 1
+            return spacemouse.MouseSnapshot(np.array(axes), np.full(2, clock.now), buttons, presses)
+
+        with patch.object(mouse, "sample", side_effect=sample), patch.object(
+            spacemouse, "SpaceMouse", return_value=mouse
+        ), patch.object(
+            client, "time", SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep)
+        ), contextlib.redirect_stdout(
+            io.StringIO()
+        ):
+            client.run(port=server.server_port, duration=0.05, buttons="cut")
+        command, events, _ = live.teleop.sample()
+        self.assertEqual([event for _, event in events], ["begin_cut", "end_cut", "hold"])
+        seqs = [packet["seq"] for packet in live.teleop.captured]
+        self.assertEqual(seqs, list(range(len(seqs))))
+        target = PoseTarget()
+        target.integrate(command, events, 0.001, 1)
+        self.assertEqual(target.cut_index, 0)
+        self.assertFalse(target.cutting)
+
     def test_right_button_survives_stale_motion_in_both_modes(self):
         for mode in ("session", "cut"):
             with self.subTest(mode=mode):

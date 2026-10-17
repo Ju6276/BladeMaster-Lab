@@ -115,9 +115,17 @@ def run(
                         )
                 elif snapshot.presses:
                     events = {"close": "begin_cut", "open": "end_cut", "hold": "hold"}
-                    requested = events.get(snapshot.presses[-1], "")
-                    if requested in ("end_cut", "hold") or (armed and not snapshot.error and not stale):
-                        event = requested
+                    requested_events = [
+                        events[press]
+                        for press in snapshot.presses
+                        if events[press] in ("end_cut", "hold")
+                        or (armed and not snapshot.error and not stale)
+                    ]
+                    if requested_events:
+                        for requested in requested_events[:-1]:
+                            send(Command(seq, tuple(v), tuple(w), requested))
+                            seq += 1
+                        event = requested_events[-1]
                 command = Command(seq, tuple(v), tuple(w), event)
             send(command)
             seq += 1

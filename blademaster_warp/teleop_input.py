@@ -98,22 +98,40 @@ def read_chunked_packets(headers, rfile, feed, running=lambda: True):
     if headers.get("Transfer-Encoding", "").lower() != "chunked":
         raise ValueError("Streaming input requires HTTP chunked transfer")
     accepted = 0
+    pending = b""
     while running():
         header = rfile.readline(64)
         if not header:
             break
-        size = int(header.strip(), 16)
+        size = int(header.split(b";", 1)[0].strip(), 16)
         if size == 0:
             if rfile.readline(3) != b"\r\n":
                 raise ValueError("Unexpected HTTP trailers")
+            if pending.strip():
+                feed(json.loads(pending))
+                accepted += 1
             break
-        if not 0 < size <= 8192:
-            raise ValueError("Packet too long")
-        line = rfile.read(size)
-        if len(line) != size or rfile.read(2) != b"\r\n":
+        if size < 0:
+            raise ValueError("Invalid chunk size")
+        # HTTP chunks can split a packet or contain several complete NDJSON lines.
+        while size:
+            length = min(size, 8192)
+            data = rfile.read(length)
+            if len(data) != length:
+                raise ValueError("Incomplete packet")
+            size -= length
+            lines = (pending + data).split(b"\n")
+            pending = lines.pop()
+            for line in lines:
+                if len(line) > 8192:
+                    raise ValueError("Packet too long")
+                if line.strip():
+                    feed(json.loads(line))
+                    accepted += 1
+            if len(pending) > 8192:
+                raise ValueError("Packet too long")
+        if rfile.read(2) != b"\r\n":
             raise ValueError("Incomplete packet")
-        feed(json.loads(line))
-        accepted += 1
     return accepted
 
 
@@ -188,13 +206,15 @@ class PoseTarget:
         return p, q
 
     def integrate(self, command, events, dt, substeps):
-        for _, event in events:
+        if command.event == "hold":
+            command = Command(command.seq, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        for seq, event in events:
             if event == "begin_cut":
                 self.cut_index += 1
                 self.cutting = True
             elif event == "end_cut":
                 self.cutting = False
-            elif event == "hold":
+            elif event == "hold" and seq == command.seq:
                 command = Command(command.seq, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
         if self._limited and not any(command.velocity) and not any(command.omega):
             return np.repeat(self.position[None], substeps, 0), np.repeat(self.orientation[None], substeps, 0)

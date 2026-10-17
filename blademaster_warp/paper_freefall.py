@@ -3,6 +3,7 @@
 import argparse
 from dataclasses import asdict
 from pathlib import Path
+import sys
 import time
 import numpy as np
 import warp as wp
@@ -10,11 +11,9 @@ from .solver import Config, Solver
 from .run import write
 from .topology import components
 from .provenance import git_revision
+from .paper_impact import edge_height
 
 
-# Not given in the paper. The knife brings about 0.19 J (fall plus depth); a full cut of
-# the 100 x 80 mm section needs Gc * 0.008 m^2 * (1 - sharpness) / sharpness, so 100 J/m^2
-# separates at sharpness 0.9 (0.09 J) and stalls at 0.5 (0.8 J).
 FIG3_CUTTING_ENERGY = 100.0
 
 
@@ -30,12 +29,14 @@ def run(
     cut_hold=False,
     tilt_axis="thickness",
     cut_work="relative",
+    grid_spacing=0.01,
+    contact_reference_dt=0.0,
 ):
     if tilt_axis not in ("length", "thickness"):
         raise ValueError(tilt_axis)
     cfg = Config(
         size=(0.14, 0.10, 0.08),
-        grid_spacing=0.01,
+        grid_spacing=grid_spacing,
         dt=dt,
         young_modulus=6000.0,
         poisson_ratio=0.4,
@@ -50,6 +51,7 @@ def run(
         board_normal_scale=board_normal_scale,
         cut_hold=cut_hold,
         cut_work=cut_work,
+        contact_reference_dt=contact_reference_dt,
     )
     steps = round(duration / dt)
     if steps < 1 or not np.isclose(steps * dt, duration):
@@ -91,7 +93,7 @@ def run(
         ],
         "independent_choices": [
             "block size 140x100x80mm",
-            "grid spacing 10mm",
+            f"grid spacing {grid_spacing:g} m",
             "blade geometry/inertia",
             "initial clearance 15mm",
             "sharpness/Gc",
@@ -101,6 +103,7 @@ def run(
         "actuation": "none; gravity plus material/board reaction",
         "surface": "particles only; reconstruction pending",
         "revision": git_revision(),
+        "command": sys.argv,
     }
     saved = {k: [v] for k, v in s.state().items()}
     start = time.perf_counter()
@@ -129,6 +132,11 @@ def run(
     _, counts = components(s.node_numpy, s.weight_numpy, saved["sides"][-1])
     qfinal = saved["blade_orientation"][-1][0]
     turn = 2 * np.arccos(np.clip(abs(np.dot(qfinal, q)), 0.0, 1.0))
+    lowest, _ = edge_height(
+        [saved["blade_position"][-1]], [saved["blade_orientation"][-1]], cfg.blade_half_size
+    )
+    assigned = saved["sides"][-1] != 0
+    damage = saved["damage"][-1]
     result = {
         "status": "complete",
         "component_sizes": counts.tolist(),
@@ -136,6 +144,13 @@ def run(
         "orientation_change_deg": float(np.rad2deg(turn)),
         "horizontal_displacement_m": saved["blade_position"][-1][0, :2].tolist(),
         "final_blade_height_m": float(saved["blade_position"][-1][0, 2]),
+        "final_lowest_edge_m": float(lowest[0, 0]),
+        "particle_count": s.n,
+        "assigned_particles": int(assigned.sum()),
+        "assigned_below_threshold_final": int(np.count_nonzero(assigned & (damage < 1.0))),
+        "released_particles": int(np.count_nonzero(damage >= 1.0)),
+        "directional_contact_work_j": float(s.work.numpy()[0]),
+        "gpu_errors": s.errors.numpy().tolist(),
         "minimum_det_f_sampled": minimum,
     }
     write(out / "result.json", result)
@@ -147,6 +162,13 @@ if __name__ == "__main__":
     p.add_argument("--output", required=True)
     p.add_argument("--sharpness", type=float, default=0.9)
     p.add_argument("--dt", type=float, default=0.002)
+    p.add_argument("--grid-spacing", type=float, default=0.01, help="Reference grid spacing in metres")
+    p.add_argument(
+        "--contact-reference-dt",
+        type=float,
+        default=0.0,
+        help="Reference step for contact stiffness; 0 keeps per-step factors",
+    )
     p.add_argument("--duration", type=float, default=1.0)
     p.add_argument("--sampling-seed", type=int, default=1)
     p.add_argument("--cutting-energy", type=float, default=FIG3_CUTTING_ENERGY)
@@ -165,14 +187,16 @@ if __name__ == "__main__":
     a = p.parse_args()
     run(
         a.output,
-        a.sharpness,
-        a.dt,
-        a.duration,
-        a.sampling_seed,
-        a.cutting_energy,
-        a.normal_scale,
-        a.board_normal_scale,
-        a.cut_hold,
-        a.tilt_axis,
-        a.cut_work,
+        sharpness=a.sharpness,
+        dt=a.dt,
+        duration=a.duration,
+        sampling_seed=a.sampling_seed,
+        cutting_energy=a.cutting_energy,
+        normal_scale=a.normal_scale,
+        board_normal_scale=a.board_normal_scale,
+        cut_hold=a.cut_hold,
+        tilt_axis=a.tilt_axis,
+        cut_work=a.cut_work,
+        grid_spacing=a.grid_spacing,
+        contact_reference_dt=a.contact_reference_dt,
     )

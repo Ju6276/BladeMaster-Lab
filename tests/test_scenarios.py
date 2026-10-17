@@ -3,7 +3,7 @@ from blademaster_warp.scenarios import keyframes, command_at
 
 
 def test_scenario_velocities_match_poses_and_cut_history_is_monotone():
-    for name in ("parallel", "cross-shallow", "slice-lift"):
+    for name in ("parallel", "cross-shallow", "slice-lift", "fig4"):
         keys = keyframes(name)
         previous = -1
         for a, b in zip(keys[:-1], keys[1:]):

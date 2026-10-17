@@ -94,7 +94,7 @@ SpaceMouse 六轴给刀的世界系线速度和角速度；左键 `begin_cut` �
 | 模块 | 用途 |
 |---|---|
 | `blademaster_warp.paper_freefall` | 论文 Fig. 3 / Table I 重力刀 |
-| `blademaster_warp.scenarios` | 论文 Fig. 4/7/8 的切割历史场景（规定刀路） |
+| `blademaster_warp.scenarios` | 论文 Fig. 4/7/8 的切割历史场景（规定刀路）；`--scenario fig4 --single-field` 为单场对照 |
 | `blademaster_warp.convergence` | 步长、耦合间隔、分辨率扫描 |
 | `blademaster_warp.run`，`blademaster_warp.teleop` | 独立导向刀与不带机械臂的刀遥操作（刀—板接触待统一到 Franka 路径） |
 | `scripts/probe_substep.py` | 单子步耗时测量 |

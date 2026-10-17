@@ -169,6 +169,9 @@ class Solver:
         # First Piola stress of the current F, Fp; written by every material step.
         self.stress = zeros(self.n, wp.mat33)
         self.codes, self.damage = zeros(self.n, wp.int64), zeros(self.n, float)
+        # Codes used for particle-grid transfers; all zero in the single-field baseline.
+        self.field_codes = self.codes
+        self.single_field_codes = zeros(self.n, wp.int64)
         self.nodes = array(nodes, int)
         self.weights = array(weights, float)
         self.gradients = array(gradients, wp.vec3)
@@ -283,13 +286,26 @@ class Solver:
         )
         self._material_transfers()
 
+    @property
+    def single_field(self):
+        return self.field_codes is self.single_field_codes
+
+    def set_single_field(self, enabled):
+        """Baseline of paper Fig. 4: particle-grid transfers ignore cut-side codes.
+
+        Cut-side assignment and particle contact still use the codes.
+        """
+        if bool(enabled) != self.single_field:
+            self.field_codes = self.single_field_codes if enabled else self.codes
+            self.topology_dirty.fill_(1)
+
     def _register_topology(self):
         self.keys.fill_(-1)
         self.heads.fill_(-1)
         self.launch(
             m.register,
             (self.n, 8),
-            [self.nodes, self.codes, self.keys, self.slots, self.node_count, self.capacity, self.errors],
+            [self.nodes, self.field_codes, self.keys, self.slots, self.node_count, self.capacity, self.errors],
         )
         if self.compact:
             self.active_count.zero_()
@@ -689,7 +705,7 @@ class Solver:
         targets = np.ascontiguousarray(targets, dtype=np.float32)
         if orientations is None:
             orientations = np.tile([0.0, 0.0, 0.0, 1.0], (len(targets), 1))
-        key = (len(targets), bool(cutting), cut_index, self.step_count % 2)
+        key = (len(targets), bool(cutting), cut_index, self.step_count % 2, self.single_field)
         if key not in self._batches:
             start = time.perf_counter()
             # Eager warmup must have loaded all modules before capture.

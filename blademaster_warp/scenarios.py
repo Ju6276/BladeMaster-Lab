@@ -326,7 +326,7 @@ def run(args):
     ExternalToolPort(warm).advance(command_at(0, keys)[0], interval)
     del warm
     s = Solver(cfg)
-    port = ExternalToolPort(s)
+    port = ExternalToolPort(s, record_trajectory=args.surface)
     meter = Metrics(s)
     surface = (
         SurfaceRecorder(
@@ -373,6 +373,8 @@ def run(args):
             tick = time.perf_counter()
             reaction = port.advance(tool, interval, cutting=active, cut_index=index)
             physics += time.perf_counter() - tick
+            if surface:
+                surface.record_trajectory(t + port.trajectory_times, port.trajectory, active, index)
             forces.append([t, *reaction.force_n, *reaction.torque_nm])
             if i % 20 == 0 or i == round(duration / interval) - 1:
                 state = s.state()
@@ -382,7 +384,13 @@ def run(args):
                 minimum = min(minimum, energy[-1][-1])
                 if surface:
                     surface.update(
-                        t, state["position"], state["deformation"], state["sides"], tool, active, index
+                        t + interval,
+                        state["position"],
+                        state["deformation"],
+                        state["sides"],
+                        tool,
+                        active,
+                        index,
                     )
             if (i + 1) % 250 == 0:
                 print(

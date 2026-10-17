@@ -264,7 +264,7 @@ class FrankaCuttingRun:
         ExternalToolPort(disposable).advance(self.robot.state(), self.args.interval)
         del disposable
         solver = Solver(self.cfg)
-        return solver, ExternalToolPort(solver)
+        return solver, ExternalToolPort(solver, record_trajectory=self.args.surface)
 
     def _make_surface(self):
         from .surface_runtime import SurfaceRecorder
@@ -344,6 +344,11 @@ class FrankaCuttingRun:
             state, self.args.interval, cutting=self.cutting, cut_index=self.cut_index
         )
         self._timed("material", tick)
+        if self.surface:
+            tick = time.perf_counter()
+            times = self.robot.data.time + self.port.trajectory_times
+            self.surface.record_trajectory(times, self.port.trajectory, self.cutting, self.cut_index)
+            self._timed("observation", tick)
         if self.strokes is not None:
             self.strokes.update(self.solver.embedded_particles_previous() > 0, self.args.interval)
         return np.concatenate((reaction.force_n, reaction.torque_nm))

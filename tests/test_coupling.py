@@ -182,3 +182,23 @@ def test_auto_strokes_label_each_cut_plane_with_its_own_digit():
     assert np.any((codes // 3) % 3 != 0)
     _, sizes = components(s.node_numpy, s.weight_numpy, codes)
     assert len(sizes) == 3
+
+
+@pytest.mark.parametrize("graph", [False, True])
+@pytest.mark.parametrize("mode", ["hold", "predict"])
+def test_recorded_tool_substeps_follow_the_applied_pose(graph, mode):
+    s = Solver(replace(Config(), external_tool=True, tool_substep=mode))
+    port = ExternalToolPort(s, record_trajectory=True)
+    state = ToolState([0, 0, 0.15], [0, 0, 0, 1], [0.01, 0, 0], [0, 0, 0.2])
+    # Replay twice to exercise graph-cache hits, then a different interval length.
+    for steps in [4, 4, 2, 4]:
+        port.advance(state, steps * s.config.dt, cutting=False, graph=graph)
+        trace = port.trajectory
+        samples = 2 if mode == "hold" else steps + 1
+        assert trace.shape == (samples, 7)
+        np.testing.assert_allclose(trace[0], [*state.position, *state.orientation_xyzw], atol=1e-8)
+        np.testing.assert_allclose(port.trajectory_times[-1], steps * s.config.dt)
+        t = port.trajectory_times if mode == "predict" else np.zeros(samples)
+        np.testing.assert_allclose(trace[:, 0], 0.01 * t, atol=1e-8)
+        np.testing.assert_allclose(trace[:, 5], np.sin(0.2 * t / 2), atol=1e-8)
+        np.testing.assert_allclose(trace[-1, :3], s.tool_pos.numpy()[0], atol=1e-8)

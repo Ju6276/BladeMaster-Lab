@@ -71,12 +71,16 @@ class Reaction:
 
 
 class ExternalToolPort:
-    def __init__(self, solver):
+    def __init__(self, solver, record_trajectory=False):
         if not solver.config.external_tool:
             raise ValueError("ExternalToolPort requires Config(external_tool=True)")
         self.solver = solver
         self.packed = wp.zeros(49, dtype=float, device=solver.device)
         self.result = wp.zeros(9, dtype=float, device=solver.device)
+        self.record_trajectory = record_trajectory
+        self.trajectory = None
+        self.trajectory_times = None
+        self._results = {}
 
     def advance(self, state, duration_s, *, cutting=True, cut_index=0, graph=True):
         state = state.checked()
@@ -89,6 +93,12 @@ class ExternalToolPort:
         # Validate before mutating state. No interpolation, trajectory limits,
         # local PD controller, or table clamp is applied to the external tool.
         s._set_cut(cut_index)
+        held_pose = s.config.tool_substep == "hold"
+        samples = 2 if held_pose else steps + 1
+        if self.record_trajectory:
+            if steps not in self._results:
+                self._results[steps] = wp.zeros(9 + 7 * samples, dtype=float, device=s.device)
+            self.result = self._results[steps]
         self.packed.assign(
             np.concatenate(
                 [
@@ -118,22 +128,45 @@ class ExternalToolPort:
             (validate_interval, s.n, [s.x, s.v, s.F, s.errors]),
             (tool.store_interval, 1, [s.interval_impulse, s.interval_angular_impulse, s.errors, self.result]),
         ]
+        before = [load]
+        sample = None
+        if self.record_trajectory:
+
+            def sample(i):
+                # In hold mode every intermediate pose is bitwise identical.
+                if not held_pose or i == steps - 1:
+                    index = 1 if held_pose else i + 1
+                    s.launch(tool.record_pose, 1, [s.tool_pos, s.tool_rot, index, self.result])
+
+            before.append((tool.record_pose, 1, [s.tool_pos, s.tool_rot, 0, self.result]))
         if graph:
             # One replay per interval: loading the tool state and storing the result are in the graph.
             unused_targets = np.zeros((steps, 3), dtype=np.float32)
             _, _, captured = s.prepare(
-                unused_targets, cutting, cut_index, before=[load], after=finish, tag=("external", id(self))
+                unused_targets,
+                cutting,
+                cut_index,
+                before=before,
+                after=finish,
+                tag=("external", id(self)),
+                after_step=sample,
             )
             wp.capture_launch(captured)
             s.step_count += steps
         else:
-            s.launch(*load)
+            for launch in before:
+                s.launch(*launch)
             for _ in range(steps):
                 s._step_kernels((0.0, 0.0, 0.0), cutting, cut_index)
+                if sample is not None:
+                    sample(_)
             for launch in finish:
                 s.launch(*launch)
         out = self.result.numpy().astype(np.float64)
-        impulse, angular, errors = out[:3], out[3:6], out[6:]
+        impulse, angular, errors = out[:3], out[3:6], out[6:9]
+        if self.record_trajectory:
+            self.trajectory = out[9:].reshape(samples, 7)
+            self.trajectory_times = np.linspace(0.0, duration_s, samples)
         (px, py, pz), (ix, iy, iz) = state.position, impulse
         angular -= (py * iz - pz * iy, pz * ix - px * iz, px * iy - py * ix)
         if errors.any() or not np.isfinite([impulse, angular]).all():

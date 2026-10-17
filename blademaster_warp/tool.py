@@ -40,6 +40,20 @@ def load_external_state(
 
 
 @wp.kernel
+def record_pose(
+    position: wp.array(dtype=wp.vec3),
+    rotation: wp.array(dtype=wp.quat),
+    index: int,
+    out: wp.array(dtype=float),
+):
+    offset = 9 + 7 * index
+    for i in range(3):
+        out[offset + i] = position[0][i]
+    for i in range(4):
+        out[offset + 3 + i] = rotation[0][i]
+
+
+@wp.kernel
 def store_interval(
     linear: wp.array(dtype=wp.vec3),
     angular: wp.array(dtype=wp.vec3),

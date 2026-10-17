@@ -40,12 +40,13 @@ def benchmark(directory, output, cuda_ccd=False):
     frames = json.loads((directory / "surface/frames.json").read_text())
     if len(frames) != len(x):
         raise ValueError("Surface and material recordings must have the same frame count")
-    poses = []
+    poses, paths = [], []
     for i, frame in enumerate(frames):
         if abs(frame["time_s"] - times[i]) > 1.0e-9:
             raise ValueError("Surface and material timestamps do not match")
         with np.load(directory / "surface" / f"{i:05d}.npz") as z:
             poses.append(SimpleNamespace(position=z["tool_position"], orientation_xyzw=z["tool_orientation"]))
+            paths.append(z["tool_path"] if "tool_path" in z else None)
     active = [int(phase_trace[np.argmin(abs(phase_trace[:, 0] - t)), 1]) == descend for t in times]
     ref, origin, _ = points(cfg.size, cfg.grid_spacing, cfg.shape, getattr(cfg, "sampling_seed", 0))
     solver = SimpleNamespace(config=cfg, reference=ref, origin=origin, device="cuda:0")
@@ -78,7 +79,15 @@ def benchmark(directory, output, cuda_ccd=False):
             frame_wall = []
             for i, t in enumerate(times):
                 start = time.perf_counter()
-                recorder.update(t, x[i], F[i], codes[i], poses[i], active[i])
+                path = paths[i]
+                if path is not None:
+                    for row in path:
+                        # First row is the previous frame's endpoint.
+                        if i == 0 or row[0] >= times[i - 1] - 1e-10:
+                            recorder.record_trajectory(row[:1], row[None, 1:8], bool(row[8]), int(row[9]))
+                cutting = bool(path[-1, 8]) if path is not None else active[i]
+                cut_index = int(path[-1, 9]) if path is not None else 0
+                recorder.update(t, x[i], F[i], codes[i], poses[i], cutting, cut_index)
                 frame_wall.append(time.perf_counter() - start)
             start = time.perf_counter()
             recorder.close()

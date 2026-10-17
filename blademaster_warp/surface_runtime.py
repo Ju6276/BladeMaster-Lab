@@ -2,6 +2,7 @@
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 import json
 import time
@@ -13,6 +14,23 @@ from .surface import LinkedSurface, MaterialEmbedding, moving_segment_hits
 
 def _write_json(path, value):
     path.write_text(json.dumps(value, indent=2))
+
+
+@dataclass
+class ToolSample:
+    time_s: float
+    pose: np.ndarray  # position, quaternion xyzw in the material frame
+    edge: np.ndarray
+    normal: np.ndarray
+    cutting: bool
+    cut_index: int
+
+    def same_pose_and_cut(self, other):
+        return (
+            self.cutting == other.cutting
+            and self.cut_index == other.cut_index
+            and np.array_equal(self.pose, other.pose)
+        )
 
 
 class SurfaceRecorder:
@@ -64,6 +82,8 @@ class SurfaceRecorder:
         self.history = []
         self.previous_nodes = None
         self.previous_deformation = None
+        self._tool_samples = []
+        self.last_path = np.empty((0, 10))
         self.wall_s = 0.0
         self.timing_s = dict(
             node_embedding=0.0, link_sweep=0.0, mesh_construction=0.0, vertex_embedding=0.0, recording=0.0
@@ -93,49 +113,112 @@ class SurfaceRecorder:
             "material_grid_spacing_m": cfg.grid_spacing,
             "embedding": "fixed trilinear weights on original MPM grid, compatible affine-extrapolated position fields",
             "empty_node_extension": "one reference-grid support ring, same compatible cut side, affine",
-            "sampling": "continuous segment/segment detection with linearly interpolated actual blade AND material-link endpoints; interval recorded per frame",
+            "sampling": "all supplied tool substeps; material-link motion interpolated between observations; path retained in each recorded frame",
         }
         if self.directory is not None:
             (self.directory / "method.json").write_text(json.dumps(method, indent=2))
 
+    def record_trajectory(self, times, poses, cutting, cut_index):
+        """Retain actual tool substeps independently of the display/recording cadence.
+
+        times are simulation seconds; poses are material-frame [x,y,z,qx,qy,qz,qw].
+        The flag/index of a sample governs the interval starting at that sample.
+        """
+        times, poses = np.asarray(times, float), np.asarray(poses, float)
+        if (
+            not len(times)
+            or poses.shape != (len(times), 7)
+            or not np.isfinite(poses).all()
+            or not np.isfinite(times).all()
+        ):
+            raise ValueError("Expected finite tool times and (samples, 7) poses")
+        if np.any(np.diff(times) < 0) or (
+            self._tool_samples and times[0] < self._tool_samples[-1].time_s - 1e-10
+        ):
+            raise ValueError("Tool sample times must be monotonic")
+        rotations = Rotation.from_quat(poses[:, 3:]).as_matrix()
+        local_edge = np.array([[0, -self.half[1], -self.half[2]], [0, self.half[1], -self.half[2]]])
+        edges = np.einsum("nij,kj->nki", rotations, local_edge) + poses[:, None, :3]
+        for time_s, pose, edge, rotation in zip(times, poses, edges, rotations):
+            sample = ToolSample(
+                float(time_s), pose.copy(), edge, rotation[:, 0], bool(cutting), int(cut_index)
+            )
+            # Hold mode supplies the same pose every material step. Keep both ends
+            # of a stationary interval, including its material motion, without
+            # retaining thousands of identical interior samples.
+            if (
+                len(self._tool_samples) >= 2
+                and sample.same_pose_and_cut(self._tool_samples[-1])
+                and sample.same_pose_and_cut(self._tool_samples[-2])
+            ):
+                self._tool_samples[-1] = sample
+            else:
+                self._tool_samples.append(sample)
+
     def update(self, t, x, F, codes, tool, cutting=True, cut_index=0, record_frame=True):
         tick = time.perf_counter()
         s = self.surface
-        r = Rotation.from_quat(tool.orientation_xyzw).as_matrix()
-        edge = (
-            np.array([[0, -self.half[1], -self.half[2]], [0, self.half[1], -self.half[2]]]) @ r.T
-            + tool.position
-        )
-        current = None
-        if cutting and self.previous_cut == cut_index and self.previous is not None:
-            phase = time.perf_counter()
-            nodes, nodeF = self.embedding.node_state(x, F, codes, s.codes)
-            before = s.codes.copy()
-            self.timing_s["node_embedding"] += time.perf_counter() - phase
-            phase = time.perf_counter()
-            s.sweep(
-                self.previous,
-                edge,
-                nodes,
-                cut_index,
-                r[:, 0],
-                nodeF,
-                previous_nodes=self.previous_nodes,
-                previous_deformation=self.previous_deformation,
-                ccd=self.ccd,
-                band=self.band,
-            )
-            self.timing_s["link_sweep"] += time.perf_counter() - phase
-            if np.array_equal(before, s.codes):
-                current = nodes, nodeF
-        self.previous = edge.copy()
-        self.previous_cut = cut_index if cutting else None
+        pose = np.concatenate((tool.position, tool.orientation_xyzw))
+        self.record_trajectory([t], pose[None], cutting, cut_index)
+        samples = self._tool_samples
+        self.last_path = np.array([[p.time_s, *p.pose, int(p.cutting), p.cut_index] for p in samples])
         phase = time.perf_counter()
-        # Node codes decide which particles a node follows; unchanged codes, same state.
-        self.previous_nodes, self.previous_deformation = current or self.embedding.node_state(
-            x, F, codes, s.codes
+        nodes, nodeF = self.embedding.node_state(x, F, codes, s.codes)
+        self.timing_s["node_embedding"] += time.perf_counter() - phase
+        before = s.codes.copy()
+        phase = time.perf_counter()
+        if self.previous_nodes is not None:
+            start = samples[0].time_s
+            span = t - start
+
+            def interpolate(previous, current, time_s):
+                a = np.clip((time_s - start) / span, 0.0, 1.0) if span > 0 else 1.0
+                return previous if a == 0 else current if a == 1 else (1 - a) * previous + a * current
+
+            previous_time, interpolated_nodes, interpolated_F = None, None, None
+            for a, b in zip(samples, samples[1:]):
+                if not a.cutting:
+                    continue
+                if a.time_s == b.time_s and np.array_equal(a.edge, b.edge):
+                    continue
+                a_nodes = (
+                    interpolated_nodes
+                    if previous_time == a.time_s
+                    else interpolate(self.previous_nodes, nodes, a.time_s)
+                )
+                a_F = (
+                    interpolated_F
+                    if previous_time == a.time_s
+                    else interpolate(self.previous_deformation, nodeF, a.time_s)
+                )
+                b_nodes = (
+                    a_nodes if a.time_s == b.time_s else interpolate(self.previous_nodes, nodes, b.time_s)
+                )
+                b_F = a_F if a.time_s == b.time_s else interpolate(self.previous_deformation, nodeF, b.time_s)
+                s.sweep(
+                    a.edge,
+                    b.edge,
+                    b_nodes,
+                    a.cut_index,
+                    b.normal if b.cut_index == a.cut_index else a.normal,
+                    b_F,
+                    previous_nodes=a_nodes,
+                    previous_deformation=a_F,
+                    ccd=self.ccd,
+                    band=self.band,
+                )
+                previous_time, interpolated_nodes, interpolated_F = b.time_s, b_nodes, b_F
+        self.timing_s["link_sweep"] += time.perf_counter() - phase
+        phase = time.perf_counter()
+        self.previous_nodes, self.previous_deformation = (
+            (nodes, nodeF)
+            if np.array_equal(before, s.codes)
+            else self.embedding.node_state(x, F, codes, s.codes)
         )
         self.timing_s["node_embedding"] += time.perf_counter() - phase
+        self._tool_samples = [samples[-1]]
+        self.previous = samples[-1].edge.copy()
+        self.previous_cut = cut_index if cutting else None
         phase = time.perf_counter()
         mesh = s.mesh()
         self.timing_s["mesh_construction"] += time.perf_counter() - phase
@@ -152,6 +235,7 @@ class SurfaceRecorder:
             codes=mesh.codes,
             tool_position=tool.position,
             tool_orientation=tool.orientation_xyzw,
+            tool_path=self.last_path,
         )
         if self.directory is not None and record_frame:
             frame = {k: np.array(v, copy=True) for k, v in self.current.items()}

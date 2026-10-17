@@ -2,6 +2,7 @@
 
 from itertools import product
 from dataclasses import dataclass
+from functools import cached_property
 import numpy as np
 from .geometry import levelset
 from .topology import compatible
@@ -515,6 +516,16 @@ class LinkedSurface:
         return self._mesh_cache
 
 
+def tent_supports(tree, nodes, points, radius):
+    """Per node, the points with nonzero tent weight prod(max(1 - |p - node| / radius, 0))."""
+    result = []
+    for node, ids in zip(nodes, tree.query_ball_point(nodes, radius * np.sqrt(3) + 1.0e-10)):
+        ids = np.array(ids, int)
+        w = np.maximum(1 - np.abs(points[ids] - node) / radius, 0).prod(axis=1)
+        result.append((ids[w > 1.0e-12], w[w > 1.0e-12]))
+    return result
+
+
 class MaterialEmbedding:
     """Compatible nodal position fields; affine-exact and one-way.
 
@@ -524,8 +535,6 @@ class MaterialEmbedding:
     """
 
     def __init__(self, reference_nodes, particle_reference, spacing, grid_origin=None, grid_cells=None):
-        from scipy.spatial import cKDTree
-
         self.nodes = np.asarray(reference_nodes)
         self.ref = np.asarray(particle_reference)
         self.h = spacing
@@ -537,22 +546,27 @@ class MaterialEmbedding:
                 np.array(list(product(*(range(n + 1) for n in self.grid_cells)))) * spacing + self.grid_origin
             )
             self.material_grid = MaterialEmbedding(nodes, particle_reference, spacing)
-        tree = cKDTree(self.ref)
-        self.support = []
-        self.extension_support = []
         self.extension_nodes = 0
-        for node in self.nodes:
-            ids = np.array(tree.query_ball_point(node, spacing * np.sqrt(3) + 1.0e-10), int)
-            w = np.maximum(1 - np.abs(self.ref[ids] - node) / spacing, 0).prod(axis=1)
-            ids, w = ids[w > 1.0e-12], w[w > 1.0e-12]
-            self.support.append((ids, w))
-            # A surface stencil can touch an empty material-grid node on one
-            # cut side. Define its one-sided affine continuation from the next
-            # reference support ring. This changes visualization only; it does
-            # not populate an MPM state or transfer force across a cut.
-            ids = np.array(tree.query_ball_point(node, 2 * spacing * np.sqrt(3) + 1.0e-10), int)
-            w = np.maximum(1 - np.abs(self.ref[ids] - node) / (2 * spacing), 0).prod(axis=1)
-            self.extension_support.append((ids[w > 1.0e-12], w[w > 1.0e-12]))
+
+    @cached_property
+    def _tree(self):
+        from scipy.spatial import cKDTree
+
+        return cKDTree(self.ref)
+
+    # With a material grid, vertices() embeds through the grid's supports;
+    # surface-node supports are only built if field()/node_state() are called.
+    @cached_property
+    def support(self):
+        return tent_supports(self._tree, self.nodes, self.ref, self.h)
+
+    @cached_property
+    def extension_support(self):
+        # A surface stencil can touch an empty material-grid node on one
+        # cut side. Define its one-sided affine continuation from the next
+        # reference support ring. This changes visualization only; it does
+        # not populate an MPM state or transfer force across a cut.
+        return tent_supports(self._tree, self.nodes, self.ref, 2 * self.h)
 
     def field(self, x, F, particle_codes, code):
         result = np.full_like(self.nodes, np.nan, dtype=float)

@@ -1,5 +1,6 @@
 """CUDA nodal embedding for the linked-volume surface."""
 
+from functools import cached_property
 import numpy as np
 import warp as wp
 from .material import compatible
@@ -164,19 +165,8 @@ class CudaMaterialEmbedding(MaterialEmbedding):
         if reference.material_grid is not None:
             self.material_grid = cls.from_reference(reference.material_grid, self.device)
 
-        def upload(data, dtype):
-            return wp.array(np.asarray(data), dtype=dtype, device=self.device)
-
-        def support_arrays(support):
-            offsets = np.r_[0, np.cumsum([len(ids) for ids, _ in support])]
-            indices = np.concatenate([ids for ids, _ in support]).astype(np.int32)
-            weights = np.concatenate([w for _, w in support])
-            return upload(offsets, int), upload(indices, int), upload(weights, wp.float64)
-
-        self.g_nodes = upload(self.nodes, wp.vec3d)
-        self.g_ref = upload(self.ref, wp.vec3d)
-        self.g_support = support_arrays(self.support)
-        self.g_extra = support_arrays(self.extension_support)
+        self.g_nodes = self._upload(self.nodes, wp.vec3d)
+        self.g_ref = self._upload(self.ref, wp.vec3d)
         self.g_x = wp.empty(len(self.ref), dtype=wp.vec3d, device=self.device)
         self.g_f = wp.empty(len(self.ref), dtype=wp.mat33d, device=self.device)
         self.g_codes = wp.empty(len(self.ref), dtype=wp.int64, device=self.device)
@@ -186,6 +176,23 @@ class CudaMaterialEmbedding(MaterialEmbedding):
         self.g_extensions = wp.zeros(1, dtype=int, device=self.device)
         self.g_unsupported = wp.zeros(1, dtype=int, device=self.device)
         return self
+
+    def _upload(self, data, dtype):
+        return wp.array(np.asarray(data), dtype=dtype, device=self.device)
+
+    def _support_arrays(self, support):
+        offsets = np.r_[0, np.cumsum([len(ids) for ids, _ in support])]
+        indices = np.concatenate([ids for ids, _ in support]).astype(np.int32)
+        weights = np.concatenate([w for _, w in support])
+        return self._upload(offsets, int), self._upload(indices, int), self._upload(weights, wp.float64)
+
+    @cached_property
+    def g_support(self):
+        return self._support_arrays(self.support)
+
+    @cached_property
+    def g_extra(self):
+        return self._support_arrays(self.extension_support)
 
     @staticmethod
     def _codes(values, count):

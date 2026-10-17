@@ -56,3 +56,30 @@ def test_contact_strokes_split_on_clear_gaps_and_advance_before_the_next_touch()
     assert indices[199] == 0 and indices[-1] == 2
     first_touch_of_second = 20 + 100 + 30 + 50 + 80
     assert indices[first_touch_of_second - 1] == 1
+
+
+def test_pose_target_limits_tilt_workspace_and_floor():
+    from blademaster_warp.teleop_input import quaternion_rotate
+
+    edge = [(0.0, -0.04, -0.02), (0.0, 0.04, -0.02)]
+    target = PoseTarget(
+        (0.0, 0.0, 0.03),
+        (0.0, 0.0, 0.0, 1.0),
+        workspace=((-0.1, -0.1, 0.0), (0.1, 0.1, 0.3)),
+        edge=edge,
+        floor_z=-0.002,
+        max_tilt=np.radians(45.0),
+    )
+    # Roll 2 rad about x and push down and sideways for 1 s.
+    command = Command(0, (0.5, 0.0, -0.5), (2.0, 0.0, 0.0))
+    for _ in range(100):
+        positions, rotations = target.integrate(command, [], 0.01, 1)
+    axis = quaternion_rotate(target.orientation, np.array([0.0, 0.0, 1.0]))
+    assert np.degrees(np.arccos(axis[2])) == pytest.approx(45.0, abs=1e-6)
+    assert target.position[0] == pytest.approx(0.1)
+    lowest = min(quaternion_rotate(target.orientation, np.asarray(e))[2] for e in edge)
+    assert target.position[2] + lowest == pytest.approx(-0.002)
+    # Yaw is not limited.
+    yaw = PoseTarget((0.0, 0.0, 0.1), max_tilt=np.radians(45.0))
+    yaw.integrate(Command(0, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)), [], 1.0, 1)
+    assert yaw.orientation[2] == pytest.approx(np.sin(0.5))

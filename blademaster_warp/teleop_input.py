@@ -107,13 +107,62 @@ def read_chunked_packets(headers, rfile, feed, running=lambda: True):
     return accepted
 
 
+def quaternion_rotate(q, v):
+    """Rotate v by the unit quaternion q (x, y, z, w)."""
+    u, w = np.asarray(q[:3]), q[3]
+    return v + 2.0 * np.cross(u, np.cross(u, v) + w * v)
+
+
 class PoseTarget:
-    def __init__(self, position=(-0.03, 0.0, 0.036), orientation=(0.0, 0.0, 0.0, 1.0)):
+    """Integrated tool pose target.
+
+    Optional limits keep the operator inside what the arm and the scene allow:
+    `workspace` (lo, hi) boxes the tool origin, `edge` (local edge end points)
+    with `floor_z` keeps the target edge from sinking below the board, so the
+    impedance target cannot wind up under it, and `max_tilt` bounds the angle
+    between the tool z axis and its initial direction (yaw stays free).
+    """
+
+    def __init__(
+        self,
+        position=(-0.03, 0.0, 0.036),
+        orientation=(0.0, 0.0, 0.0, 1.0),
+        workspace=None,
+        edge=None,
+        floor_z=None,
+        max_tilt=None,
+    ):
         self.position = np.asarray(position, dtype=float).copy()
         self.orientation = np.asarray(orientation, dtype=float).copy()
         self.orientation /= np.linalg.norm(self.orientation)
         self.cut_index = -1
         self.cutting = False
+        self.workspace = None if workspace is None else np.asarray(workspace, dtype=float)
+        self.edge = None if edge is None else np.asarray(edge, dtype=float)
+        self.floor_z = floor_z
+        self.max_tilt = max_tilt
+        self.axis0 = quaternion_rotate(self.orientation, np.array([0.0, 0.0, 1.0]))
+
+    def limit(self, position, orientation):
+        """Pose clamped to the tilt cone, the workspace box and the floor."""
+        q = orientation / np.linalg.norm(orientation)
+        if self.max_tilt is not None:
+            axis = quaternion_rotate(q, np.array([0.0, 0.0, 1.0]))
+            tilt = np.arccos(np.clip(axis @ self.axis0, -1.0, 1.0))
+            if tilt > self.max_tilt:
+                hinge = np.cross(axis, self.axis0)
+                norm = np.linalg.norm(hinge)
+                # Antiparallel axes: any horizontal hinge brings the tool back.
+                hinge = hinge / norm if norm > 1.0e-9 else np.array([1.0, 0.0, 0.0])
+                q = quaternion_product(rotation_increment(hinge * (tilt - self.max_tilt)), q)
+                q /= np.linalg.norm(q)
+        p = np.asarray(position, dtype=float).copy()
+        if self.workspace is not None:
+            p = np.clip(p, self.workspace[0], self.workspace[1])
+        if self.edge is not None and self.floor_z is not None:
+            lowest = min(quaternion_rotate(q, e)[2] for e in self.edge)
+            p[2] = max(p[2], self.floor_z - lowest)
+        return p, q
 
     def integrate(self, command, events, dt, substeps):
         for _, event in events:
@@ -133,6 +182,8 @@ class PoseTarget:
             ]
         )
         rotations /= np.linalg.norm(rotations, axis=1)[:, None]
+        for i in range(len(positions)):
+            positions[i], rotations[i] = self.limit(positions[i], rotations[i])
         self.position = positions[-1].copy()
         self.orientation = rotations[-1].copy()
         return positions, rotations

@@ -476,6 +476,13 @@ def update_F_plastic(
 
 
 @wp.func
+def expm1(x: float):
+    if wp.abs(x) < 1.0e-3:
+        return x * (1.0 + 0.5 * x * (1.0 + x / 3.0))
+    return wp.exp(x) - 1.0
+
+
+@wp.func
 def maxwell_at(
     p: int,
     U: wp.mat33,
@@ -483,11 +490,11 @@ def maxwell_at(
     V: wp.mat33,
     F: wp.array(dtype=wp.mat33),
     Fp: wp.array(dtype=wp.mat33),
-    Fv: wp.array(dtype=wp.mat33),
+    viscous: wp.array(dtype=wp.mat33d),
     mu: float,
     lam: float,
     mu_maxwell: float,
-    decay: float,
+    relax: float,
     stress: wp.array(dtype=wp.mat33),
     errors: wp.array(dtype=int),
 ):
@@ -495,13 +502,16 @@ def maxwell_at(
 
     Equilibrium branch: fixed corotated with mu - mu_maxwell and lam + 2/3 mu_maxwell, so
     the instantaneous small-strain shear and bulk moduli equal those of (mu, lam).
-    Maxwell branch: f_m = f Fv^-1, Kirchhoff stress 2 mu_maxwell dev(log V_m). Its deviatoric
-    Hencky strain is multiplied by decay = exp(-dt/tau) (exact for a held strain, stable
-    for any dt/tau); Fv stays isochoric, so the branch carries no volumetric stress.
-    decay = 1 only evaluates the stress.
+    Maxwell branch: f_m = f Fv^-1 with Fv = I + viscous[p], Kirchhoff stress
+    2 mu_maxwell dev(log V_m). Its deviatoric Hencky strain is reduced by the factor
+    relax = 1 - exp(-dt/tau) (exact for a held strain, stable for any dt/tau); the update of
+    Fv is isochoric, so the branch carries no volumetric stress. relax = 0 only evaluates
+    the stress. The increment (dt/tau) * strain is far below the float32 resolution of Fv,
+    so Fv - I is accumulated in float64.
     """
     f = U * wp.diag(sigma) * wp.transpose(V)
-    fm = f * wp.inverse(Fv[p])
+    D = viscous[p]
+    fm = f * wp.inverse(wp.identity(n=3, dtype=float) + wp.mat33(D))
     Um, sm, Vm = wp.svd3(fm)
     if wp.min(sm) <= 0.0:
         wp.atomic_add(errors, 1, 1)
@@ -509,11 +519,13 @@ def maxwell_at(
         return
     e = wp.vec3(wp.log(sm[0]), wp.log(sm[1]), wp.log(sm[2]))
     dev = e - wp.vec3((e[0] + e[1] + e[2]) / 3.0)
-    if decay < 1.0:
-        dev = decay * dev
-        volumetric = wp.log(sigma[0] * sigma[1] * sigma[2]) / 3.0
-        sm = wp.vec3(wp.exp(volumetric + dev[0]), wp.exp(volumetric + dev[1]), wp.exp(volumetric + dev[2]))
-        Fv[p] = wp.inverse(Um * wp.diag(sm) * wp.transpose(Vm)) * f
+    if relax > 0.0:
+        step = relax * dev
+        dev = dev - step
+        # f_m <- f_m W with W = Vm diag(exp(-step)) Vm^T, i.e. Fv <- W^-1 Fv.
+        growth = wp.vec3(expm1(step[0]), expm1(step[1]), expm1(step[2]))
+        delta = wp.mat33d(Vm * wp.diag(growth) * wp.transpose(Vm))
+        viscous[p] = D + delta + delta * D
     kirchhoff = Um * wp.diag(2.0 * mu_maxwell * dev) * wp.transpose(Um)
     mu_eq = mu - mu_maxwell
     lam_eq = lam + 2.0 / 3.0 * mu_maxwell
@@ -526,11 +538,11 @@ def maxwell_stress_at(
     p: int,
     F: wp.array(dtype=wp.mat33),
     Fp: wp.array(dtype=wp.mat33),
-    Fv: wp.array(dtype=wp.mat33),
+    viscous: wp.array(dtype=wp.mat33d),
     mu: float,
     lam: float,
     mu_maxwell: float,
-    decay: float,
+    relax: float,
     yield_stress: float,
     stress: wp.array(dtype=wp.mat33),
     errors: wp.array(dtype=int),
@@ -542,7 +554,7 @@ def maxwell_stress_at(
         if not valid:
             stress[p] = wp.mat33(0.0)
             return
-        maxwell_at(p, U, sigma, V, F, Fp, Fv, mu, lam, mu_maxwell, decay, stress, errors)
+        maxwell_at(p, U, sigma, V, F, Fp, viscous, mu, lam, mu_maxwell, relax, stress, errors)
     else:
         f = F[p] * wp.inverse(Fp[p])
         J = wp.determinant(f)
@@ -551,14 +563,14 @@ def maxwell_stress_at(
             stress[p] = wp.mat33(0.0)
             return
         U, sigma, V = wp.svd3(f)
-        maxwell_at(p, U, sigma, V, F, Fp, Fv, mu, lam, mu_maxwell, decay, stress, errors)
+        maxwell_at(p, U, sigma, V, F, Fp, viscous, mu, lam, mu_maxwell, relax, stress, errors)
 
 
 @wp.kernel
 def compute_stress_maxwell(
     F: wp.array(dtype=wp.mat33),
     Fp: wp.array(dtype=wp.mat33),
-    Fv: wp.array(dtype=wp.mat33),
+    viscous: wp.array(dtype=wp.mat33d),
     mu: float,
     lam: float,
     mu_maxwell: float,
@@ -574,14 +586,14 @@ def compute_stress_maxwell(
         stress[p] = wp.mat33(0.0)
         return
     U, sigma, V = wp.svd3(f)
-    maxwell_at(p, U, sigma, V, F, Fp, Fv, mu, lam, mu_maxwell, 1.0, stress, errors)
+    maxwell_at(p, U, sigma, V, F, Fp, viscous, mu, lam, mu_maxwell, 0.0, stress, errors)
 
 
 @wp.kernel
 def update_F_maxwell(
     F: wp.array(dtype=wp.mat33),
     Fp: wp.array(dtype=wp.mat33),
-    Fv: wp.array(dtype=wp.mat33),
+    viscous: wp.array(dtype=wp.mat33d),
     slots: wp.array2d(dtype=int),
     gradients: wp.array2d(dtype=wp.vec3),
     grid_mass: wp.array(dtype=float),
@@ -590,7 +602,7 @@ def update_F_maxwell(
     mu: float,
     lam: float,
     mu_maxwell: float,
-    decay: float,
+    relax: float,
     yield_stress: float,
     stress: wp.array(dtype=wp.mat33),
     errors: wp.array(dtype=int),
@@ -603,7 +615,7 @@ def update_F_maxwell(
         if grid_mass[s] > 0.0:
             rate += wp.outer(momentum[s] / grid_mass[s], gradients[p, a])
     F[p] += dt * rate
-    maxwell_stress_at(p, F, Fp, Fv, mu, lam, mu_maxwell, decay, yield_stress, stress, errors)
+    maxwell_stress_at(p, F, Fp, viscous, mu, lam, mu_maxwell, relax, yield_stress, stress, errors)
 
 
 @wp.kernel

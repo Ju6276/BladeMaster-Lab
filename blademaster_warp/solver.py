@@ -185,7 +185,7 @@ class Solver:
         )
         self.maxwell = cfg.maxwell_tau > 0 and cfg.maxwell_fraction > 0
         self.mu_maxwell = cfg.maxwell_fraction * self.mu
-        self.maxwell_decay = float(np.exp(-cfg.dt / cfg.maxwell_tau)) if self.maxwell else 1.0
+        self.maxwell_relax = float(-np.expm1(-cfg.dt / cfg.maxwell_tau)) if self.maxwell else 0.0
         self.threshold = cfg.cutting_energy * self.volume ** (2 / 3) * (1 - cfg.sharpness) / cfg.sharpness
         self.normal_scale, self.tangent_stiffness = cfg.contact_scales()
         self.half = wp.vec3(*cfg.blade_half_size)
@@ -207,8 +207,8 @@ class Solver:
         self.v = zeros(self.n, wp.vec3)
         self.F = array(np.tile(np.eye(3), (self.n, 1, 1)), wp.mat33)
         self.Fp = array(np.tile(np.eye(3), (self.n, 1, 1)), wp.mat33)
-        # Viscous part of the Maxwell branch, f_maxwell = F Fp^-1 Fv^-1.
-        self.Fv = array(np.tile(np.eye(3), (self.n, 1, 1)), wp.mat33)
+        # Fv - I of the Maxwell branch, f_maxwell = F Fp^-1 Fv^-1 (float64, see material.maxwell_at).
+        self.viscous = zeros(self.n, wp.mat33d)
         # First Piola stress of the current F, Fp (and Fv); written by every material step.
         self.stress = zeros(self.n, wp.mat33)
         self.codes, self.damage = zeros(self.n, wp.int64), zeros(self.n, float)
@@ -308,12 +308,12 @@ class Solver:
         self.refresh_stress()
 
     def refresh_stress(self):
-        """Recompute the stored stress; needed after writing F, Fp or Fv from the host."""
+        """Recompute the stored stress; needed after writing F, Fp or viscous from the host."""
         if self.maxwell:
             self.launch(
                 m.compute_stress_maxwell,
                 self.n,
-                [self.F, self.Fp, self.Fv, self.mu, self.lam, self.mu_maxwell, self.stress, self.errors],
+                [self.F, self.Fp, self.viscous, self.mu, self.lam, self.mu_maxwell, self.stress, self.errors],
             )
         else:
             self.launch(
@@ -481,7 +481,7 @@ class Solver:
                 [
                     self.F,
                     self.Fp,
-                    self.Fv,
+                    self.viscous,
                     self.slots,
                     self.gradients,
                     self.grid_mass,
@@ -490,7 +490,7 @@ class Solver:
                     self.mu,
                     self.lam,
                     self.mu_maxwell,
-                    self.maxwell_decay,
+                    self.maxwell_relax,
                     cfg.yield_stress,
                     self.stress,
                     self.errors,
@@ -967,7 +967,7 @@ class Solver:
             ]
         }
         if self.maxwell:
-            state["viscous_deformation"] = self.Fv.numpy()
+            state["viscous_deformation"] = np.eye(3) + self.viscous.numpy()
         state["time"] = self.step_count * self.config.dt
         if any(not np.isfinite(v).all() for v in state.values()):
             raise RuntimeError("Nonfinite state; run is invalid")

@@ -4,8 +4,6 @@ import argparse
 import gzip
 import http.client
 import json
-from pathlib import Path
-import sys
 import socket
 import time
 import numpy as np
@@ -38,7 +36,6 @@ def run(
     port=8765,
     duration=30.0,
     mock=False,
-    wowskin_root=None,
     speed=0.06,
     angular_speed=0.5,
     buttons="session",
@@ -61,11 +58,7 @@ def run(
         time.sleep(0.2)
     mouse = None
     if not mock:
-        root = Path(wowskin_root or Path(__file__).resolve().parents[4] / "WowSkin-Lab")
-        if not (root / "wowskin_lab/teleop/spacemouse.py").exists():
-            raise FileNotFoundError("Pass --wowskin-root pointing to the existing WowSkin-Lab checkout")
-        sys.path.insert(0, str(root))
-        from wowskin_lab.teleop.spacemouse import SpaceMouse
+        from .spacemouse import SpaceMouse
 
         mouse = SpaceMouse()
         mouse.__enter__()
@@ -146,7 +139,6 @@ if __name__ == "__main__":
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--seconds", type=float, default=30.0)
     p.add_argument("--mock", action="store_true")
-    p.add_argument("--wowskin-root")
     p.add_argument("--speed", type=float, default=0.06)
     p.add_argument("--angular-speed", type=float, default=0.5)
     p.add_argument(
@@ -156,4 +148,4 @@ if __name__ == "__main__":
         help="session: left start, right stop, both pause; cut: left begin_cut, right end_cut (manual cut events)",
     )
     a = p.parse_args()
-    run(a.host, a.port, a.seconds, a.mock, a.wowskin_root, a.speed, a.angular_speed, a.buttons)
+    run(a.host, a.port, a.seconds, a.mock, a.speed, a.angular_speed, a.buttons)

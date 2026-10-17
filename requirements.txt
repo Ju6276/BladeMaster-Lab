@@ -10,3 +10,5 @@ imageio==2.37.2
 imageio-ffmpeg==0.6.0
 # Read-only surface / whole-arm replay; system ffmpeg is also required.
 vtk==9.6.0
+# SpaceMouse client only:
+hidapi==0.15.0

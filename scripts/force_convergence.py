@@ -10,13 +10,15 @@ are averaged per spacing. Material step: the banana default for the spacing.
 """
 
 import argparse
-from dataclasses import replace
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
+import sys
 import time
 import numpy as np
 from blademaster_warp.coupling import ExternalToolPort, ToolState
 from blademaster_warp.presets import banana_config, banana_dt
+from blademaster_warp.provenance import git_revision
 from blademaster_warp.solver import Solver
 from blademaster_warp.topology import components
 
@@ -65,6 +67,8 @@ def cut_trace(spacing, seed, blade_contact_radius=None):
         wall_s=wall,
         gpu_errors=s.errors.numpy().tolist(),
         min_det_F=float(np.linalg.det(s.F.numpy()).min()),
+        config=asdict(cfg),
+        revision=git_revision(),
     )
 
 
@@ -179,7 +183,7 @@ def main():
                 f"h={spacing*1000:g} mm seed={seed} n={run['particles']} wall={run['wall_s']:.1f}s",
                 flush=True,
             )
-    summary = summarize(runs)
+    summary = dict(summarize(runs), revision=git_revision(), command=" ".join(sys.argv))
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     for name, row in summary["by_spacing"].items():
         print(

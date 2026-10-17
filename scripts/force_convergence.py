@@ -65,6 +65,8 @@ def cache_identity(spacing, seed, blade_contact_radius, provenance):
 
 
 def validate_cache(run, expected, path):
+    # Fresh Config snapshots contain tuples; JSON checkpoints contain lists.
+    run = json.loads(json.dumps(run))
     for key, value in expected.items():
         if run.get("cache_identity", {}).get(key) != value:
             raise ValueError(f"Cache mismatch in {path}: {key}; use a separate output directory")

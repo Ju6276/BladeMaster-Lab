@@ -1,5 +1,6 @@
 import json
 import sys
+from dataclasses import asdict
 
 import pytest
 
@@ -41,6 +42,14 @@ def test_cache_rejects_mismatch(changed):
         run["cache_identity"][changed] = {}
     with pytest.raises(ValueError, match="Cache mismatch"):
         study.validate_cache(run, identity, "fixture.json")
+
+
+def test_fresh_config_and_json_checkpoint_have_the_same_identity():
+    identity = study.cache_identity(0.006, 1, None, study.git_revision())
+    run = fixture_run(identity)
+    run["config"] = asdict(study.effective_config(0.006, 1))
+    study.validate_cache(run, identity, "fresh.json")
+    study.validate_cache(json.loads(json.dumps(run)), identity, "loaded.json")
 
 
 def test_all_caches_validate_before_compute(tmp_path, monkeypatch):

@@ -210,9 +210,11 @@ def loop_mesh(s):
             for k in np.flatnonzero(s.corner_region[ci] == slot):
                 lookup[ci, s.cells[ci][k]] = len(vertices)
             vertices.append(s.region_point[ci, slot])
-    faces = []
+    polygons = []
+    changes = dict(dropped=0, reverted=0, switched=0)
     for e in np.flatnonzero(s.boundary | s.broken):
         a, b = s.edges[e]
+        ends = []
         for node in (a, b):
             if not s.inside[node]:
                 continue
@@ -221,12 +223,48 @@ def loop_mesh(s):
                 continue
             if (-1 if s.axes[e] == 1 else 1) * (1 if node == a else -1) < 0:
                 ring = ring[::-1]
-            if len(ring) == 4 and quad_agreement(vertices, ring[1:] + ring[:1]) > quad_agreement(
+            other = len(ring) == 4 and quad_agreement(vertices, ring[1:] + ring[:1]) > quad_agreement(
                 vertices, ring
-            ) + QUAD_SPLIT_MARGIN:
-                ring = ring[1:] + ring[:1]
+            ) + QUAD_SPLIT_MARGIN
+            ends.append([ring, other, len(ring) != 4])
+        # Both ends in one region all around the link: an internal double wall, no faces.
+        if len(ends) == 2 and sorted(ends[0][0]) == sorted(ends[1][0]):
+            changes["dropped"] += 1
+            continue
+        polygons += ends
+
+    def faces_of():
+        faces = []
+        for ring, other, _ in polygons:
+            ring = ring[1:] + ring[:1] if other else ring
             faces += [[ring[0], ring[j], ring[j + 1]] for j in range(1, len(ring) - 1)]
-    return np.array(vertices), np.array(faces).reshape(-1, 3)
+        return faces
+
+    # Rollback: a quad diagonal used by another polygon is non-manifold; take the other
+    # diagonal if it is unused, else go back to the default split (once).
+    while True:
+        uses = {}
+        for f in faces_of():
+            for i, j in ((0, 1), (1, 2), (2, 0)):
+                key = tuple(sorted((f[i], f[j])))
+                uses[key] = uses.get(key, 0) + 1
+        reverts, switches = [], []
+        for k, (ring, other, locked) in enumerate(polygons):
+            if locked:
+                continue
+            alternative = uses.get(tuple(sorted((ring[1], ring[3]))), 0)
+            default = uses.get(tuple(sorted((ring[0], ring[2]))), 0)
+            if other and alternative != 2:
+                reverts.append((k, False, True))
+            elif not other and default > 2 and alternative == 0:
+                switches.append((k, True, False))
+        moves = reverts or switches
+        if not moves:
+            break
+        for k, other, locked in moves:
+            polygons[k][1:] = [other, locked]
+            changes["switched" if other else "reverted"] += 1
+    return np.array(vertices), np.array(faces_of()).reshape(-1, 3), changes
 
 
 def test_vectorized_mesh_matches_the_loop_assembly_after_crossing_cuts():
@@ -236,10 +274,58 @@ def test_vectorized_mesh_matches_the_loop_assembly_after_crossing_cuts():
     )
     s.sweep([[-0.05, 0.0, 0.02], [0.05, 0.0, 0.02]], [[-0.05, 0.0, 0.008], [0.05, 0.0, 0.008]], cut_index=1)
     mesh = s.mesh()
-    vertices, faces = loop_mesh(s)
+    vertices, faces, _ = loop_mesh(s)
     np.testing.assert_array_equal(mesh.reference, vertices)
     np.testing.assert_array_equal(mesh.triangles, faces)
     assert len(faces) and (edge_incidence(mesh) == 2).all()
+
+
+def test_quad_split_rolls_back_in_both_directions_and_drops_internal_double_walls():
+    from blademaster_warp.surface import triangulate
+
+    polygons = [
+        ([0, 1, 2, 3], False),  # default diagonal 0-2 also used by the next two triangles
+        ([0, 2, 4, -1], False),
+        ([2, 0, 5, -1], False),
+        ([10, 11, 12, 13], True),  # other diagonal 11-13 also used by the next two triangles
+        ([11, 13, 14, -1], False),
+        ([13, 11, 15, -1], False),
+        ([20, 21, 22, 23], False),  # both diagonals taken: stays
+        ([20, 22, 24, -1], False),
+        ([22, 20, 25, -1], False),
+        ([21, 23, 26, -1], False),
+        ([23, 21, 27, -1], False),
+    ]
+    rings = np.full((len(polygons) + 1, 2, 4), -1)
+    others = np.zeros((len(polygons) + 1, 2), bool)
+    for k, (ring, other) in enumerate(polygons):
+        rings[k, 0], others[k, 0] = ring, other
+    # Same quad from both link ends, opposite winding.
+    rings[-1] = [[30, 31, 32, 33], [33, 32, 31, 30]]
+    faces, changes = triangulate(rings, others)
+    assert changes == dict(dropped=1, reverted=1, switched=1)
+    faces = {tuple(f) for f in faces.tolist()}
+    assert {(1, 2, 3), (1, 3, 0), (10, 11, 12), (10, 12, 13), (20, 21, 22), (20, 22, 23)} <= faces
+    assert not any(30 in f for f in faces)
+
+
+def test_isolated_severed_links_leave_a_closed_manifold_surface():
+    s = LinkedSurface((0.03, 0.03, 0.03), 0.003, "block")
+    strides = np.array([s.dims[1] * s.dims[2], s.dims[2], 1])
+    centre = int((s.dims // 2) @ strides)
+    # Two neighbouring x links severed with all the material around them intact, as
+    # band labels with opposite codes do (_sever_opposite).
+    for node in (centre, centre + strides[1]):
+        e = int(np.flatnonzero((s.edges[:, 0] == node) & (s.axes == 0))[0])
+        s.broken[e] = True
+        s.hermite[e] = (s.reference[s.edges[e]].mean(0), np.array([1.0, 0.0, 0.0]))
+    mesh = s.mesh()
+    assert s.split_changes["dropped"] == 2
+    assert (edge_incidence(mesh) == 2).all()
+    vertices, faces, changes = loop_mesh(s)
+    assert changes == s.split_changes
+    np.testing.assert_array_equal(mesh.reference, vertices)
+    np.testing.assert_array_equal(mesh.triangles, faces)
 
 
 def test_box_lstsq_matches_scipy_including_rank_deficient_normals():

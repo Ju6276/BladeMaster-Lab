@@ -518,35 +518,73 @@ class LinkedSurface:
 
             rings[:, end] = ring
             others[:, end] = (count == 4) & (agreement(1, 2, 3, 0) > agreement(0, 1, 2, 3) + QUAD_SPLIT_MARGIN)
-        quad = (rings >= 0).sum(2) == 4
-        triangle = (rings >= 0).sum(2) >= 3
-        key_base = int(rings.max()) + 1 if rings.size else 1
-        while True:
-            first = np.where(others[..., None], rings[..., [1, 2, 3]], rings[..., [0, 1, 2]])
-            second = np.where(others[..., None], rings[..., [1, 3, 0]], rings[..., [0, 2, 3]])
-            fans = np.stack(
-                [np.where(triangle[..., None], first, -1), np.where(quad[..., None], second, -1)], axis=2
-            )
-            faces = fans[fans[..., 0] >= 0]
-            # The alternative diagonal can coincide with an edge of a neighbouring
-            # polygon (several regions per cell); keep the default split there.
-            edges = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)
-            keys, uses = np.unique(edges[:, 0] * key_base + edges[:, 1], return_counts=True)
-            diagonal = np.sort(rings[..., [1, 3]], axis=2)
-            at = np.searchsorted(keys, diagonal[..., 0] * key_base + diagonal[..., 1])
-            bad = others & (uses[np.minimum(at, len(uses) - 1)] != 2)
-            if not bad.any():
-                break
-            others &= ~bad
+        faces, self.split_changes = triangulate(rings, others)
         owner = np.nonzero(valid)[0]
         self._mesh_cache = Mesh(
             region_points,
-            faces.reshape(-1, 3),
+            faces,
             self.region_code[valid],
             self.cells[owner].reshape(-1, 8),
             self.region_weights[valid],
         )
         return self._mesh_cache
+
+
+def _edge_uses(keys, uses, key_base, pair):
+    """Faces using each vertex pair (last axis), 0 if none."""
+    key = np.sort(pair, axis=-1)
+    key = key[..., 0] * key_base + key[..., 1]
+    if not len(keys):
+        return np.zeros(key.shape, int)
+    at = np.minimum(np.searchsorted(keys, key), len(keys) - 1)
+    return np.where(keys[at] == key, uses[at], 0)
+
+
+def triangulate(rings, others):
+    """Triangles of the dual polygons around each surface link.
+
+    rings: (links, 2, 4) vertex ids per link end, -1 padded on the right; others:
+    (links, 2) quads split along (1, 3) instead of (0, 2). Returns the (n, 3)
+    triangles and the number of split changes made to keep the mesh manifold.
+
+    A severed link whose two ends lie in the same region in every incident cell
+    separates nothing: both ends give the same polygon with opposite winding, an
+    internal double wall whose edges are shared with neighbouring walls. It gets no
+    faces. A quad diagonal can coincide with an edge of a neighbouring polygon
+    (several regions per cell); such a quad takes its other diagonal if that one is
+    unused, else goes back to the default split, once, so the loop ends.
+    """
+    count = (rings >= 0).sum(2)
+    double = (count[:, 0] >= 3) & np.all(np.sort(rings[:, 0]) == np.sort(rings[:, 1]), axis=1)
+    quad = (count == 4) & ~double[:, None]
+    triangle = (count >= 3) & ~double[:, None]
+    others = others & quad
+    key_base = int(rings.max()) + 1 if rings.size else 1
+    changes = dict(dropped=int(double.sum()), reverted=0, switched=0)
+    locked = ~quad
+    while True:
+        first = np.where(others[..., None], rings[..., [1, 2, 3]], rings[..., [0, 1, 2]])
+        second = np.where(others[..., None], rings[..., [1, 3, 0]], rings[..., [0, 2, 3]])
+        fans = np.stack(
+            [np.where(triangle[..., None], first, -1), np.where(quad[..., None], second, -1)], axis=2
+        )
+        faces = fans[fans[..., 0] >= 0]
+        edges = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)
+        keys, uses = np.unique(edges[:, 0] * key_base + edges[:, 1], return_counts=True)
+        alternative = _edge_uses(keys, uses, key_base, rings[..., [1, 3]])
+        default = _edge_uses(keys, uses, key_base, rings[..., [0, 2]])
+        # Reverts first: a reverted quad frees the edge that crowded its neighbour.
+        revert = others & ~locked & (alternative != 2)
+        if revert.any():
+            others &= ~revert
+            locked |= revert
+            changes["reverted"] += int(revert.sum())
+            continue
+        switch = ~others & ~locked & (default > 2) & (alternative == 0)
+        if not switch.any():
+            return faces.reshape(-1, 3), changes
+        others |= switch
+        changes["switched"] += int(switch.sum())
 
 
 @dataclass

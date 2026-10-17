@@ -67,6 +67,10 @@ def points(size, spacing, shape, seed=0):
         x = x[np.all(x - origin <= size, axis=1)]
     else:
         raise ValueError(shape)
+    if seed:
+        # The board contacts particles at distance h/4; a bottom particle jittered
+        # below it starts inside the board and the recovery impulse lifts the body.
+        x[:, 2] = spacing / 4 + np.abs(x[:, 2] - spacing / 4)
     return x, origin, cells
 
 

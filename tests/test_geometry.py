@@ -26,3 +26,13 @@ def test_spacing_that_does_not_divide_the_size_still_covers_the_banana(spacing):
     assert abs(np.ptp(x[:, 0]) - np.ptp(fine[:, 0])) < spacing / 2
     block, origin, _ = points((0.03, 0.03, 0.03), spacing, "block")
     assert np.all(block - origin <= 0.03)
+
+
+@pytest.mark.parametrize("shape", ["banana", "block"])
+def test_jittered_particles_start_clear_of_the_board(shape):
+    from blademaster_warp.geometry import BANANA_DEMO_SIZE_M
+
+    size = BANANA_DEMO_SIZE_M if shape == "banana" else (0.06, 0.03, 0.03)
+    for seed in (1, 2):
+        x, _, _ = points(size, 0.006, shape, seed)
+        assert x[:, 2].min() >= 0.006 / 4

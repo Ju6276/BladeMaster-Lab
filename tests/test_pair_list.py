@@ -25,10 +25,12 @@ def test_neighbour_list_matches_the_per_step_grid_query_during_a_cut():
     builds, checked = [], 0
     for i in range(1500):
         edge = max(0.036 - speed * i * interval, 0.0)
-        state = ToolState([0.0, 0.0, edge + half], [0, 0, 0, 1], [0.0, 0.0, -speed if edge > 0 else 0.0], [0, 0, 0])
+        state = ToolState(
+            [0.0, 0.0, edge + half], [0, 0, 0, 1], [0.0, 0.0, -speed if edge > 0 else 0.0], [0, 0, 0]
+        )
         port.advance(state, interval, cutting=True, graph=True)
         builds.append(int(s.pair_list_builds.numpy()[0]))
-        if i % 250 == 249:
+        if i % 50 == 49:
             listed, n_listed = pair_impulses(s, True)
             grid, n_grid = pair_impulses(s, False)
             s.pair_list = True

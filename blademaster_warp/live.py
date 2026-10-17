@@ -47,6 +47,7 @@ def scene_asset(robot):
         meshes=meshes,
         geoms=geoms,
         origin=robot.material_origin.tolist(),
+        base=robot.model.body("link0").pos.tolist(),
         geometry_source="Actual compiled MuJoCo visuals; material surface reconstructed from current particles",
     )
 

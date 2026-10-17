@@ -42,7 +42,10 @@ function installAsset(asset){
  if(surface){scene.remove(surface);surface.geometry.dispose();surface.material.dispose();surface=null}
  if(particles){scene.remove(particles);particles.geometry.dispose();particles.material.dispose();particles=null}
  const origin=new THREE.Vector3(...asset.origin);
- views.forEach((v,i)=>{v.controls.target.copy(i?origin.clone().add(new THREE.Vector3(0,0,.025)):new THREE.Vector3(.25,0,.38));v.camera.position.copy(v.controls.target).add(i?new THREE.Vector3(.18,-.21,.17):new THREE.Vector3(1,-1.3,.85));v.controls.update()});
+ // Paper Fig. 1 view: in front of the arm, looking back along its reach, slightly from above.
+ const base=new THREE.Vector3(...(asset.base||[0,0,0])),reach=origin.clone().sub(base).setZ(0),front=reach.clone().normalize();
+ const whole=base.clone().addScaledVector(reach,.6).setZ(.4);
+ views.forEach((v,i)=>{v.controls.target.copy(i?origin.clone().add(new THREE.Vector3(0,0,.025)):whole);v.camera.position.copy(v.controls.target).add(i?front.clone().multiplyScalar(.3).setZ(.1):front.clone().multiplyScalar(1.1).setZ(.25));v.controls.update()});
  assetGeneration=asset.generation;
 }
 function applyPacket(p){

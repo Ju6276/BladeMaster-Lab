@@ -173,6 +173,7 @@ class FrankaCuttingRun:
             controller=args.controller,
             attachment=args.attachment,
             grip_force_per_finger=args.grip_force_per_finger,
+            layout=getattr(args, "layout", "side"),
         )
         self.cycle = self._make_cycle()
         self.cfg = material_config(args)
@@ -213,6 +214,7 @@ class FrankaCuttingRun:
                 # presses with about stiffness x 2 mm instead of winding up.
                 floor_z=board[2] - 0.002,
                 max_tilt=np.radians(getattr(args, "teleop_max_tilt", 45.0)),
+                input_rotation=self.robot.base_rotation,
             )
             self._mock = dict(seq=0, phase=-1)
         self.strokes = ContactStrokes() if args.motion == "teleop" and args.cut_events == "auto" else None
@@ -624,12 +626,16 @@ def render(out):
     m = mj.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
     d = mj.MjData(m)
     renderer = mj.Renderer(m, height=540, width=720, max_geom=20000)
+    # Paper Fig. 1 view: in front of the arm, looking back along its reach.
+    base = m.body("link0").pos.copy()
+    reach = z["origin"] - base
+    azimuth = np.degrees(np.arctan2(-reach[1], -reach[0]))
     camera = mj.MjvCamera()
-    camera.lookat[:] = [0.27, 0, 0.4]
-    camera.distance, camera.azimuth, camera.elevation = 1.6, 135, -22
+    camera.lookat[:] = base + [*(0.5 * reach[:2]), 0.5]
+    camera.distance, camera.azimuth, camera.elevation = 1.5, azimuth, -24
     close = mj.MjvCamera()
     close.lookat[:] = z["origin"] + [0, 0, 0.035]
-    close.distance, close.azimuth, close.elevation = 0.27, 135, -20
+    close.distance, close.azimuth, close.elevation = 0.3, azimuth, -18
     option = mj.MjvOption()
     option.geomgroup[3] = 0
     palette = np.array([[0.96, 0.72, 0.22, 1], [0.35, 0.7, 0.9, 1], [0.7, 0.45, 0.8, 1]])
@@ -742,6 +748,15 @@ def parser():
             "feedback: one cut gated on the measured knife pose; sequence: several cuts, each followed by a push; "
             "teleop: knife twist and begin_cut/end_cut from /input (SpaceMouse client), or the fixed mock input "
             "sequence without --live"
+        ),
+    )
+    p.add_argument(
+        "--layout",
+        choices=["paper", "side"],
+        default="paper",
+        help=(
+            "paper: arm reaches across the banana with the blade in its reach plane (paper Fig. 1); "
+            "side: original layout, arm reaching along the banana (runs recorded before this flag)"
         ),
     )
     p.add_argument(

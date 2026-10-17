@@ -116,6 +116,9 @@ def quaternion_rotate(q, v):
 class PoseTarget:
     """Integrated tool pose target.
 
+    Operator twists are given in the robot base frame (x forward, y left, z up)
+    and turned into the world by `input_rotation`.
+
     Optional limits keep the operator inside what the arm and the scene allow:
     `workspace` (lo, hi) boxes the tool origin, `edge` (local edge end points)
     with `floor_z` keeps the target edge from sinking below the board, so the
@@ -131,6 +134,7 @@ class PoseTarget:
         edge=None,
         floor_z=None,
         max_tilt=None,
+        input_rotation=None,
     ):
         self.position = np.asarray(position, dtype=float).copy()
         self.orientation = np.asarray(orientation, dtype=float).copy()
@@ -142,6 +146,7 @@ class PoseTarget:
         self.floor_z = floor_z
         self.max_tilt = max_tilt
         self.axis0 = quaternion_rotate(self.orientation, np.array([0.0, 0.0, 1.0]))
+        self.input_rotation = np.eye(3) if input_rotation is None else np.asarray(input_rotation, dtype=float)
 
     def limit(self, position, orientation):
         """Pose clamped to the tilt cone, the workspace box and the floor."""
@@ -174,10 +179,12 @@ class PoseTarget:
             elif event == "hold":
                 command = Command(command.seq, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
         indices = np.arange(1, substeps + 1)
-        positions = self.position + indices[:, None] * dt * np.asarray(command.velocity)
+        velocity = self.input_rotation @ np.asarray(command.velocity)
+        omega = self.input_rotation @ np.asarray(command.omega)
+        positions = self.position + indices[:, None] * dt * velocity
         rotations = np.array(
             [
-                quaternion_product(rotation_increment(np.asarray(command.omega) * dt * i), self.orientation)
+                quaternion_product(rotation_increment(omega * dt * i), self.orientation)
                 for i in indices
             ]
         )

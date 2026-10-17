@@ -35,7 +35,18 @@ def numbers(x):
     return " ".join(format(float(v), ".14g") for v in np.asarray(x).ravel())
 
 
-def make_model(interval=0.001, blade_mass=0.1, attachment="fixed"):
+# Robot base yaw per scene layout. "paper": the arm reaches across the banana and
+# holds the blade in its reach plane, as in paper Fig. 1; "side": the original
+# layout with the arm reaching along the banana.
+LAYOUT_BASE_YAW = {"paper": np.pi / 2, "side": 0.0}
+
+
+def yaw_matrix(angle):
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def make_model(interval=0.001, blade_mass=0.1, attachment="fixed", base_yaw=0.0):
     if attachment not in ("fixed", "grasp"):
         raise ValueError("Unknown attachment")
     root = ET.parse(SOURCE).getroot()
@@ -49,7 +60,15 @@ def make_model(interval=0.001, blade_mass=0.1, attachment="fixed"):
     hand_r = initial.xmat[hand].reshape(3, 3)
     tool_origin = initial.xpos[hand] + hand_r @ np.array([0.0, 0.0, 0.16])
     material_origin = tool_origin - np.array([0.0, 0.0, HALF[2] + 0.04])
-    mounting_q = quat_wxyz(hand_r.T)
+    # Turning the base about the vertical through the tool origin keeps the tool,
+    # material and board in place; the mount keeps the knife world-aligned.
+    turn = yaw_matrix(base_yaw)
+    base = tool_origin - turn @ tool_origin
+    base[2] = 0.0
+    link0 = root.find(".//worldbody/body[@name='link0']")
+    link0.set("pos", numbers(base))
+    link0.set("quat", numbers(quat_wxyz(turn)))
+    mounting_q = quat_wxyz((turn @ hand_r).T)
     root.find("option").set("timestep", str(interval))
     if attachment == "grasp":
         # MuJoCo's default soft pyramidal friction lets the held knife creep about
@@ -164,6 +183,7 @@ class Franka:
         controller="libfranka",
         attachment="fixed",
         grip_force_per_finger=30.0,
+        layout="side",
     ):
         """translation/rotation_stiffness: libfranka Cartesian gains (default 150 N/m, 10 Nm/rad)."""
         if controller == "serl" and (translation_stiffness is not None or rotation_stiffness is not None):
@@ -172,7 +192,13 @@ class Franka:
         rotation_stiffness = 10.0 if rotation_stiffness is None else rotation_stiffness
         if interval <= 0 or min(translation_stiffness, rotation_stiffness) <= 0:
             raise ValueError("Positive integration interval and stiffness required")
-        self.model, self.material_origin, self.xml = make_model(interval, attachment=attachment)
+        if layout not in LAYOUT_BASE_YAW:
+            raise ValueError("Unknown scene layout")
+        self.layout = layout
+        self.base_rotation = yaw_matrix(LAYOUT_BASE_YAW[layout])
+        self.model, self.material_origin, self.xml = make_model(
+            interval, attachment=attachment, base_yaw=LAYOUT_BASE_YAW[layout]
+        )
         self.attachment = attachment
         self.grip_force_per_finger = float(grip_force_per_finger)
         if not 0 < self.grip_force_per_finger <= 50:

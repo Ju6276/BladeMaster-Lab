@@ -170,7 +170,9 @@ def test_franka_teleop_follows_operator_twist_and_cut_events():
     assert switches == [(1.7, False, 0), (3.2, True, 1)]
     target = run.teleop.position
     assert np.linalg.norm(run.robot.position - target) < 0.005
-    assert np.linalg.norm(target[:2] - start[:2] - [0.06 * 0.5, 0.006 * 0.5]) < 1.0e-6
+    # The mock twist is in the robot base frame.
+    moved = run.robot.base_rotation @ [0.06 * 0.5, 0.006 * 0.5, 0.0]
+    assert np.linalg.norm(target[:2] - start[:2] - moved[:2]) < 1.0e-6
 
     def angle(a, b):
         return np.degrees(np.arccos(np.clip((np.trace(a.T @ b) - 1) / 2, -1, 1)))

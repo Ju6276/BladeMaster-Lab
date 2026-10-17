@@ -66,6 +66,11 @@ class Config:
     rotational_damping: float = 0.003
     # Board half extents (x, y) around the material centre; 0 means an unbounded plane.
     board_half_extent: tuple = (0.0, 0.0)
+    # Per-step penalty factor of the board, not rescaled with dt; 0 uses the particle
+    # contact factor. With s_n < 1 a column of N particles sinks ~N g dt^2/s_n into the
+    # board (4 mm at 2 ms, s_n = 0.1); the static board can take 1, which removes the
+    # whole predicted penetration each step.
+    board_normal_scale: float = 0.0
     # Identical free knives (paper Fig. 6); knife k labels cut digit cut_index + k.
     tool_count: int = 1
 
@@ -107,6 +112,8 @@ class Config:
             raise ValueError("Negative damping/plasticity/reference step")
         if max(self.contact_scales()) > 1:
             raise ValueError("Rescaled contact factor exceeds 1 (one-step overshoot); reduce dt")
+        if not 0 <= self.board_normal_scale <= 1:
+            raise ValueError("Board normal scale must be in [0, 1]")
         if min(self.board_half_extent) < 0:
             raise ValueError("Board half extent must be non-negative")
         if not 0 <= self.blade_bevel_height < 2 * self.blade_half_size[2]:
@@ -166,6 +173,7 @@ class Solver:
         self.normal_scale, self.tangent_stiffness = cfg.contact_scales()
         self.half = wp.vec3(*cfg.blade_half_size)
         self.board_half = wp.vec2(*cfg.board_half_extent)
+        self.board_scale = cfg.board_normal_scale or self.normal_scale
         hx, hy, hz = cfg.blade_half_size
         self.inertia_inv = wp.vec3(
             *(3 / (cfg.blade_mass * np.array([hy * hy + hz * hz, hx * hx + hz * hz, hx * hx + hy * hy])))
@@ -512,6 +520,7 @@ class Solver:
                 self.tool_mobility,
                 self._tool_model(),
                 self.board_half,
+                self.board_scale,
                 cfg.dt,
                 self.normal_scale,
                 cfg.friction_static,

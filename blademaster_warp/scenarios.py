@@ -1,7 +1,7 @@
 """Cut-history scenarios after paper Figs. 4, 7, 8 with a prescribed tool."""
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import time
@@ -194,9 +194,13 @@ def scene_config(name, dt=None):
             size=(2 * FIG4_RADIUS, 2 * FIG4_RADIUS, FIG4_HEIGHT),
             shape="cylinder",
             grid_spacing=0.01,
-            # Table I uses 2 ms; there the per-step board penalty lets the bottom layer sink
-            # about 4 mm, below the knife edge, and the slice stays attached.
-            dt=dt or 0.0005,
+            dt=dt or 0.002,
+            # Table I step. With s_n = 0.1 at 2 ms the bottom layer sinks ~4 mm into the
+            # board (below the knife edge, the slice stays attached) and the slice weight
+            # pushes particles through the flat knife; s_n = 1 removes the whole predicted
+            # penetration each step.
+            normal_scale=1.0,
+            board_normal_scale=1.0,
             young_modulus=10000.0,
             poisson_ratio=0.4,
             density=1100.0,
@@ -214,8 +218,10 @@ def scene_config(name, dt=None):
             size=FIG7_SIZE,
             shape="block",
             grid_spacing=0.01,
-            # As Fig. 4: 0.5 ms keeps the board penetration well below a millimetre.
-            dt=dt or 0.0005,
+            # Table I step and contact factors as Fig. 4.
+            dt=dt or 0.002,
+            normal_scale=1.0,
+            board_normal_scale=1.0,
             young_modulus=6000.0,
             poisson_ratio=0.35,
             density=1100.0,
@@ -231,8 +237,11 @@ def scene_config(name, dt=None):
             size=FIG8_SIZE,
             shape="block",
             grid_spacing=0.006,
-            # Table I uses 1 ms, about the CFL limit of this material on a 6 mm grid.
-            dt=dt or 0.0005,
+            # Table I step, about the CFL limit of this material on a 6 mm grid; with
+            # s_n = 0.1 only 2 of the 4 slices separate at the bottom (board penetration).
+            dt=dt or 0.001,
+            normal_scale=1.0,
+            board_normal_scale=1.0,
             young_modulus=20000.0,
             poisson_ratio=0.4,
             density=1200.0,
@@ -291,6 +300,10 @@ def run(args):
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)
     cfg = scene_config(args.scenario, args.dt)
+    if getattr(args, "board_normal_scale", None) is not None:
+        cfg = replace(cfg, board_normal_scale=args.board_normal_scale)
+    if getattr(args, "normal_scale", None) is not None:
+        cfg = replace(cfg, normal_scale=args.normal_scale)
     keys = keyframes(args.scenario)
     interval = max(0.002, cfg.dt)
     duration = keys[-1][0]
@@ -406,6 +419,13 @@ if __name__ == "__main__":
         "--single-field",
         action="store_true",
         help="Paper Fig. 4 baseline: grid transfers ignore cut-side codes while the knife is not cutting",
+    )
+    p.add_argument("--normal-scale", type=float, default=None, help="Per-step contact penalty factor s_n")
+    p.add_argument(
+        "--board-normal-scale",
+        type=float,
+        default=None,
+        help="Per-step board penalty factor in [0, 1]; 0 uses the particle contact factor",
     )
     p.add_argument("--surface", action="store_true")
     p.add_argument(

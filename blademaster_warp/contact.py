@@ -350,6 +350,7 @@ def rigid_at(
     mobility: wp.array2d(dtype=float),
     tool_model: int,
     board_half: wp.vec2,
+    board_sn: float,
     dt: float,
     sn: float,
     mus: float,
@@ -377,7 +378,7 @@ def rigid_at(
     if board_half[1] > 0.0 and wp.abs(xp[1]) > board_half[1]:
         board_gap = 1.0e30
     j_board, h_board = penalty_impulse(
-        board_gap, v[p], wp.vec3(0.0, 0.0, 1.0), mass, histories[0, p], dt, sn, mus, mud, gk, gc
+        board_gap, v[p], wp.vec3(0.0, 0.0, 1.0), mass, histories[0, p], dt, board_sn, mus, mud, gk, gc
     )
     histories[0, p] = h_board
     if wp.length_sq(j_board) > 0.0:
@@ -439,6 +440,7 @@ def rigid_and_speed(
     mobility: wp.array2d(dtype=float),
     tool_model: int,
     board_half: wp.vec2,
+    board_sn: float,
     dt: float,
     sn: float,
     mus: float,
@@ -477,6 +479,7 @@ def rigid_and_speed(
         mobility,
         tool_model,
         board_half,
+        board_sn,
         dt,
         sn,
         mus,

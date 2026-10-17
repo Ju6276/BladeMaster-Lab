@@ -6,6 +6,7 @@ mean force in the 0.4-1.4 s window, peak force, and the RMS particle speed after
 withdrawal (how long the pieces keep wobbling).
 
     python -m scripts.viscosity_feel --spacing 0.003 --viscosities 0 2 5 20 50
+    python -m scripts.viscosity_feel --spacing 0.003 --viscosities 0 --maxwell-tau 2.5 --maxwell-fraction 0.2
 """
 
 import argparse
@@ -33,7 +34,7 @@ def edge_command(t):
     return WITHDRAW_SPEED * WITHDRAW_S, 0.0
 
 
-def run(spacing, viscosity, seed=1):
+def run(spacing, viscosity, seed=1, maxwell_tau=0.0, maxwell_fraction=0.0):
     base = banana_config()
     cfg = replace(
         base,
@@ -44,6 +45,8 @@ def run(spacing, viscosity, seed=1):
         grid_storage="compact",
         cache_topology=True,
         dynamic_viscosity=viscosity,
+        maxwell_tau=maxwell_tau,
+        maxwell_fraction=maxwell_fraction,
     )
     s = Solver(cfg)
     port, half = ExternalToolPort(s), cfg.blade_half_size[2]
@@ -79,11 +82,13 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--spacing", type=float, default=0.003)
     p.add_argument("--viscosities", type=float, nargs="+", default=[0.0, 2.0, 5.0, 20.0, 50.0])
+    p.add_argument("--maxwell-tau", type=float, default=0.0, help="Config.maxwell_tau, s")
+    p.add_argument("--maxwell-fraction", type=float, default=0.0, help="Config.maxwell_fraction")
     p.add_argument("--output", help="Optional JSON path")
     a = p.parse_args()
     results = []
     for eta in a.viscosities:
-        r = run(a.spacing, eta)
+        r = run(a.spacing, eta, maxwell_tau=a.maxwell_tau, maxwell_fraction=a.maxwell_fraction)
         results.append(r)
         print(
             f"eta={eta:g} Pa s: steady {r['steady_force_n']:.3f} N, peak {r['peak_force_n']:.2f} N, "

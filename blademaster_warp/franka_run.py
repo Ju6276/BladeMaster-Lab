@@ -47,7 +47,9 @@ def material_config(args):
         )
     )
     overrides = {
-        name: getattr(args, name) for name in ("dt", "cutting_energy") if getattr(args, name) is not None
+        name: getattr(args, name)
+        for name in ("dt", "cutting_energy", "maxwell_tau", "maxwell_fraction")
+        if getattr(args, name, None) is not None
     }
     if args.spacing is not None:
         overrides["grid_spacing"] = args.spacing
@@ -765,6 +767,15 @@ def parser():
         "--grip-force-per-finger", type=float, default=30.0, help="Grasp actuator command, N per finger"
     )
     p.add_argument("--cutting-energy", type=float, default=None)
+    p.add_argument(
+        "--maxwell-tau",
+        type=float,
+        default=None,
+        help="Maxwell relaxation time, s (0: off); see docs/PARAMETERS.md for banana values",
+    )
+    p.add_argument(
+        "--maxwell-fraction", type=float, default=None, help="Share of the shear modulus that relaxes"
+    )
     p.add_argument("--no-material", action="store_true")
     p.add_argument("--no-cutting", action="store_true")
     p.add_argument("--video", action="store_true")

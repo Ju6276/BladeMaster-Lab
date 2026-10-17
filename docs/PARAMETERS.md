@@ -35,8 +35,13 @@
 | Finney 等 1967，*J. Food Sci.* | 声学共振，Valery 品种 | E 从浅绿时 2.72 MPa 降到黄熟时 0.85 MPa |
 | Cavendish Valery 压缩试验（Univ. Nacional de Colombia） | 20 mm × 40 mm 圆柱，2 mm/s | 采后第 1 天 1.75 MPa，第 12 天 1.09 MPa |
 | 香蕉成熟期应力松弛研究（*J. Jpn. Soc. Food Sci. Technol.*） | 探针插入 + 应力松弛 | 果肉为多 Maxwell 单元黏弹性，成熟后松弛时间显著缩短 |
+| [Torres 等 2012](https://doi.org/10.4067/S0718-07642012000500012)，*Inf. Tecnol.* 23(5) 表 3 | Cavendish，Ø20×30 mm 圆柱，1 mm/s 压到 10%，松弛 1200 s，三项广义 Maxwell 拟合归一化松弛模量 | 熟果（成熟度 3–7，纵向）：快支 0.15–0.18、\(\tau\) = 2.3–2.9 s；慢支 0.15–0.18、\(\tau\) = 21–24 s；残余 0.42–0.47（横向 0.37–0.41）。三项之和约 0.8，另约 20% 在 1 s 内松弛 |
+| [Abedi & Takhar 2022](https://doi.org/10.1111/jtxs.12637)，*J. Texture Stud.* 53:146 表 1 | 全熟香蕉，2% 应变，松弛 3 min，两项广义 Maxwell（40 / 60 °C 下测，未干燥样品） | 40 °C：\(E_0\) = 0.010、\(E_1\) = 0.006（105 s）、\(E_2\) = 0.006 MPa（11 s），残余比 0.45；60 °C：0.29 |
+| [Kajuna 等 1998](https://doi.org/10.13031/2013.19356)，*Appl. Eng. Agric.* 14(1):55 | 斜坡—保持压缩，松弛 8 min，广义 Maxwell / Peleg | 越硬松弛时间越长；乙烯催熟果松弛更快 |
 
-论文的 E = 0.4 MPa 低于这些测量（相当于过熟香蕉）。熟香蕉的"软"主要来自黏弹性松弛和低断裂强度，而不只是低弹性模量；本项目目前是共旋弹性 + von Mises 塑性，黏性项可选（`dynamic_viscosity`），默认为 0。
+论文的 E = 0.4 MPa 低于这些测量（相当于过熟香蕉）。熟香蕉的"软"主要来自黏弹性松弛和低断裂强度，而不只是低弹性模量；本项目是共旋弹性 + von Mises 塑性，可选牛顿黏性（`dynamic_viscosity`）和 Maxwell 黏弹性分支（`maxwell_tau`、`maxwell_fraction`），默认都为 0。
+
+Maxwell 分支只有一个时间常数，按需要模拟的保持时长从 Torres 2012 的熟果数据取：秒级（压住几秒）用 \(\tau\) = 2.5 s、`maxwell_fraction` = 0.2（快支 0.165 / 三项和 0.80）；几十秒用 \(\tau\) = 22 s、0.4（两支 0.33 / 0.80）。1 s 内的约 20% 没有时间常数可依。论文材料预设不启用（论文模型没有黏弹性，Fig. 9 对照保持论文设置）；`franka_run --maxwell-tau --maxwell-fraction` 和 `scripts/indentation.py` 的同名参数打开。
 
 ## 参考文献里的标定方法
 

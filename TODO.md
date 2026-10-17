@@ -46,7 +46,8 @@
 ## 5b. 材料手感
 - [x] 压入（不切割，`scripts/indentation.py`）：没有体积锁死的迹象；6 mm 反而偏软且波动大（压入 6 mm：0.80±0.59 N，3 mm 与 2 mm 网格为 2.16 / 2.13 N），原因是粒子间距 3 mm 大于刀厚，刀刃挤进粒子之间。3 mm 网格的压入力已收敛。
 - [x] 牛顿黏性 0–50 Pa·s（`scripts/viscosity_feel.py`）：切削力不变，退刀后切块本来就几乎不晃（50 ms 后均方根速度约 1 mm/s）。
-- [ ] 若需要香蕉的应力松弛（秒级），应加 Maxwell 型黏弹性（弹性应变按时间常数松弛），而不是加大牛顿黏性：等效 \(\eta\sim E\tau\sim10^5\) Pa·s 时显式积分不稳定。
+- [x] Maxwell 黏弹性（`maxwell_tau`、`maxwell_fraction`，默认关闭）：偏 Hencky 应变每步乘 \(e^{-\Delta t/\tau}\)，\(\tau/\Delta t\) 从 0.01 到 \(3.5\times10^5\) 都与精确解一致；压入保持后力按 1.1–1.3\(\tau\) 衰减（`scripts/indentation.py --hold`），见 RESULTS。论文材料预设不启用；文献值（熟香蕉秒级 \(\tau\) = 2.5 s、0.2）见 PARAMETERS。
+- [ ] 多个 Maxwell 支（文献为两到三项 Prony 级数，1 s 内还有约 20% 的快速松弛）；需要秒级以下的松弛数据。
 - [ ] 用真机力曲线标定 E、屈服应力、\(G_c\)、ζ（DiSECt 的做法：力曲线误差 + 梯度优化或贝叶斯后验）。
 
 ## 6. 实时（连续三刀 + Franka，无录制、无表面：6 mm 0.80×，3 mm 0.306×）

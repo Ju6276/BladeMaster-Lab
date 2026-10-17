@@ -7,7 +7,7 @@
 | 论文 | 内容 | 代码 |
 |---|---|---|
 | 式 1–2 | 参考构型 TLMPM P2G，固定三线性权重 | `geometry.stencil`，`material.p2g` |
-| §III-B | fixed-corotated + von Mises 塑性（Hencky 返回映射），可选牛顿黏性 | `material.p2g`，`material.plastic_at`，`material.viscous_impulse` |
+| §III-B | fixed-corotated + von Mises 塑性（Hencky 返回映射），可选牛顿黏性、Maxwell 黏弹性 | `material.p2g`，`material.plastic_at`，`material.viscous_impulse`，`material.maxwell_at` |
 | 式 3–6 | 切割带、方向接触功、侧标签 | `contact.rigid_at`（D 更新），`contact.assign`（标签） |
 | 式 7 | 三进制切割码 | `Solver._set_cut`，`material.compatible` |
 | 式 8–9 | 逻辑网格反对称交换、网格速度 | `material.couple_and_velocity_at`，`material.couple_at` |
@@ -38,12 +38,17 @@
 
 `Config.contact_reference_dt > 0` 时，`normal_scale` 和 `tangent_stiffness` 视为该参考步长下的值，并按 \((\Delta t/\Delta t_\text{ref})^2\) 缩放，从而保持 \(k\) 不变。缩放后的因子必须 ≤ 1（否则单步过冲），对香蕉（参考 25 μs，\(s_n=0.1\)）这意味着 \(\Delta t \le 79\) μs；默认 62.5 μs 时 \(s_n = 0.625\)。预设默认启用；`franka_run --contact-scaling per-step` 恢复论文的固定 \(s_n\) 写法。
 
+## Maxwell 黏弹性
+
+`Config.maxwell_tau` \(\tau\) > 0 且 `maxwell_fraction` \(\beta\) > 0 时启用（广义标准线性固体）。弹性变形 \(f = F F_p^{-1}\) 分两支：平衡支为共旋弹性，\(\mu_\infty = (1-\beta)\mu\)、\(\lambda + \tfrac23\beta\mu\)；Maxwell 支 \(f_m = f F_v^{-1}\)，Kirchhoff 应力 \(2\beta\mu\,\mathrm{dev}\log V_m\)。两支之和的小应变剪切、体积模量与关闭时相同，长期剪切模量为 \((1-\beta)\mu\)，体积部分不松弛。每步在塑性投影之后把 \(f_m\) 的偏 Hencky 应变乘以 \(e^{-\Delta t/\tau}\)（应变保持不变时是精确解，对任意 \(\Delta t/\tau\) 稳定；\(\tau \ll \Delta t\) 时该支每步归零），\(F_v\) 按等容增量更新。每步增量 \((\Delta t/\tau)\,\varepsilon\) 远小于 \(F_v\) 在 float32 下的分辨率，所以 \(F_v - I\) 存为 float64。屈服仍按瞬时模量的 Hencky 应变判定，加载慢于 \(\tau\) 时流动应力为 \((1-\beta)\sigma_y\)。关闭时调用原来的 kernel。
+
 ## 与论文的差异
 
 | 项 | 论文 | 这里 |
 |---|---|---|
 | 粒子位置更新 | 未写明 | 用插值网格速度推进（de Vaucorbeil 2020 TLMPM 式 13），速度用 PIC/FLIP |
 | 接触刚度 | 每步常数 \(s_n\) | 默认按参考步长固定物理刚度，见上节 |
+| 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |
 | 耦合区间内的刀具 | 位姿与速度保持不变 | 默认相同；`tool_substep='predict'` 用 6×6 移动性矩阵逐子步更新刀速并推进位姿 |
 | 接触检测 | 未写明 | n ≤ 2048 时全对检测（每粒子 64 线程），否则 Warp HashGrid；接触集合相同 |
 | 切割次数 | 不限 | int64 三进制码，上限由 \(3^{k+1}\cdot\)节点数 \(< 2^{63}\) 决定（香蕉 6 mm 网格 33 刀，3 mm 31 刀，2 mm 30 刀） |

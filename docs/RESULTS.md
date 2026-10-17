@@ -490,7 +490,7 @@ Fig. 7 浅划的差别：两次刀最低点都在 60.5 mm，第二层粒子在�
 
 ## 2026-10-17 在线遥操作路径的延迟
 
-`python -m scripts.live_latency --port <port>` 以 60 Hz 推送模拟操作输入（与 SpaceMouse 客户端相同的分块 `POST /input`），并像浏览器一样轮询 `GET /state`。状态包新增 `input_seq`（生成这一帧的最后一步所用的操作命令序号），对每条命令记录它第一次出现在收到的帧里的时间。场景：论文材料香蕉 6 mm，`--motion teleop --surface --surface-embedding cuda --surface-ccd cuda`，实时倍率约 0.65（每 40 ms 仿真一帧，即约 61 ms 墙钟一帧），RTX 4060。
+`python -m scripts.live_latency --port <port> --start` 以 60 Hz 推送模拟操作输入（与 SpaceMouse 客户端相同的分块 `POST /input`），并像浏览器一样轮询 `GET /state`。状态包新增 `input_seq`（生成这一帧的最后一步所用的操作命令序号），对每条命令记录它第一次出现在收到的帧里的时间。场景：论文材料香蕉 6 mm，`--motion teleop --surface --surface-embedding cuda --surface-ccd cuda`，实时倍率约 0.65（每 40 ms 仿真一帧，即约 61 ms 墙钟一帧），RTX 4060。
 
 | | 命令 → 首次出现在帧中：中位 / p95 | 帧间隔中位 | 每帧（gzip） |
 |---|---|---|---|

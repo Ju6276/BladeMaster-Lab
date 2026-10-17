@@ -101,7 +101,7 @@ SpaceMouse 六轴给刀的世界系线速度和角速度；左键 `begin_cut` �
 | `scripts/probe_substep.py` | 单子步耗时测量 |
 | `scripts/topocut_compare.py` | 同一刀路下 BladeMaster 与 TopoCut 式单场 MLS-MPM（`mlsmpm.py` + `topocut_topology.py`）对比，谱奖励评价 |
 | `scripts/surface_deformed.py` | 已知变形下的表面嵌入误差与自交 |
-| `scripts/live_latency.py` | 在线遥操作路径延迟（对运行中的 `franka_run --live --motion teleop`） |
+| `scripts/live_latency.py` | 在线遥操作路径延迟（对运行中的 `franka_run --live --motion teleop`；只有给 `--start`、`--restart`、`--stop` 才改变运行状态） |
 
 ## 测试
 

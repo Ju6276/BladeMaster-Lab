@@ -3,6 +3,7 @@
 Streams the mock operator input at 60 Hz over the same chunked POST /input as the SpaceMouse client,
 polls GET /state like the browser and measures, per command, the delay until the first frame that
 reflects it (packet field input_seq: the command the frame's last step used). Run against `franka_run --live --motion teleop`.
+The script changes the run state only when asked: --start, --restart, --stop.
 """
 
 import argparse
@@ -19,14 +20,14 @@ from blademaster_warp.spacemouse_client import body
 from blademaster_warp.teleop_input import mock_command
 
 
-def wait_ready(host, port, timeout=300.0):
+def wait_ready(host, port, restart=False, timeout=300.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         try:
             conn = http.client.HTTPConnection(host, port, timeout=2.0)
             conn.request("GET", "/state")
             status = json.loads(body(conn.getresponse()))
-            if status.get("state") in ("completed", "stopped", "failed"):
+            if restart and status.get("state") in ("completed", "stopped", "failed"):
                 # Restart a finished run; it starts playing as soon as it is ready.
                 conn.request("POST", "/command/start")
                 conn.getresponse().read()
@@ -70,9 +71,12 @@ def main():
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--seconds", type=float, default=20.0)
     p.add_argument("--rate", type=float, default=60.0, help="Operator input rate, Hz")
+    p.add_argument("--start", action="store_true", help="Start the run if it is ready or paused")
+    p.add_argument("--restart", action="store_true", help="Restart a finished run")
+    p.add_argument("--stop", action="store_true", help="Stop the run at the end")
     a = p.parse_args()
 
-    status = wait_ready(a.host, a.port)
+    status = wait_ready(a.host, a.port, a.restart)
     sent, stop = {}, threading.Event()
     sender = threading.Thread(
         target=stream_input, args=(a.host, a.port, status.get("last_seq", -1) + 1, sent, stop, a.rate)
@@ -80,7 +84,7 @@ def main():
     sender.start()
     time.sleep(0.2)
     conn = http.client.HTTPConnection(a.host, a.port, timeout=5.0)
-    if status["state"] == "ready":
+    if a.start and status["state"] in ("ready", "paused"):
         conn.request("POST", "/command/start")
         conn.getresponse().read()
 
@@ -115,8 +119,9 @@ def main():
             break
     stop.set()
     sender.join()
-    conn.request("POST", "/command/stop")
-    conn.getresponse().read()
+    if a.stop:
+        conn.request("POST", "/command/stop")
+        conn.getresponse().read()
     conn.close()
     if len(frames) < 3:
         raise RuntimeError(f"Only {len(frames)} running frames with a known input_seq")

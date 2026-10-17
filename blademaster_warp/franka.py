@@ -312,7 +312,7 @@ class Franka:
             qr = quat_xyzw(self.control_rotation.T @ rotation)
             if qr[3] < 0:
                 qr = -qr
-            error = np.r_[self.control_position - target, -self.control_rotation @ qr[:3]]
+            error = np.concatenate((self.control_position - target, -self.control_rotation @ qr[:3]))
             j = self.control_jacobian()
             requested = (j.T @ (-self.k * error - self.damping * (j @ self.data.qvel)) + self.data.qfrc_bias)[
                 :7
@@ -330,6 +330,6 @@ class Franka:
         mj.mj_step(self.model, self.data)
         # Derived body states must correspond to the newly integrated qpos.
         mj.mj_forward(self.model, self.data)
-        if not np.isfinite(np.r_[self.data.qpos, self.data.qvel]).all() or self.data.warning.number.any():
+        if not (np.isfinite(self.data.qpos).all() and np.isfinite(self.data.qvel).all()) or self.data.warning.number.any():
             raise RuntimeError(f"MuJoCo invalid state/warnings: {self.data.warning.number}")
         return requested, applied

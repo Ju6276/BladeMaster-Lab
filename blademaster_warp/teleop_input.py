@@ -9,14 +9,14 @@ import numpy as np
 
 def quaternion_product(a, b):
     a_vec, b_vec = np.asarray(a[:3]), np.asarray(b[:3])
-    return np.r_[a[3] * b_vec + b[3] * a_vec + np.cross(a_vec, b_vec), a[3] * b[3] - a_vec @ b_vec]
+    return np.concatenate((a[3] * b_vec + b[3] * a_vec + np.cross(a_vec, b_vec), (a[3] * b[3] - a_vec @ b_vec,)))
 
 
 def rotation_increment(vector):
     angle = float(np.linalg.norm(vector))
     if angle < 1.0e-12:
-        return np.r_[np.asarray(vector) / 2, 1.0]
-    return np.r_[np.asarray(vector) * np.sin(angle / 2) / angle, np.cos(angle / 2)]
+        return np.concatenate((np.asarray(vector) / 2, (1.0,)))
+    return np.concatenate((np.asarray(vector) * np.sin(angle / 2) / angle, (np.cos(angle / 2),)))
 
 
 @dataclass(frozen=True)

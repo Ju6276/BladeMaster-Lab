@@ -346,22 +346,24 @@ class FrankaCuttingRun:
         self._timed("material", tick)
         if self.strokes is not None:
             self.strokes.update(self.solver.embedded_particles_previous() > 0, self.args.interval)
-        return np.r_[reaction.force_n, reaction.torque_nm]
+        return np.concatenate((reaction.force_n, reaction.torque_nm))
 
     def _log_step(self, target, tool_target, wrench, requested, applied):
         robot, data = self.robot, self.data
         data.logs.append(
-            np.r_[
-                robot.data.time,
-                target,
-                robot.position,
-                wrench,
-                robot.data.qpos,
-                robot.data.qvel,
-                requested,
-                robot.data.ctrl[:7],
-                applied,
-            ]
+            np.concatenate(
+                (
+                    (robot.data.time,),
+                    target,
+                    robot.position,
+                    wrench,
+                    robot.data.qpos,
+                    robot.data.qvel,
+                    requested,
+                    robot.data.ctrl[:7],
+                    applied,
+                )
+            )
         )
         heights = robot.edge_points[:, 2] - robot.material_origin[2]
         data.edge_heights.append(heights)

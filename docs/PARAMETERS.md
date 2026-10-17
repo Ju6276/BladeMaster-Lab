@@ -2,7 +2,7 @@
 
 ## 论文给出的实验与参数
 
-[BladeMaster v2](https://arxiv.org/html/2609.27342v2) §IV。论文没有给出网格间距、粒子采样、接触系数 \(s_n, \gamma_k, \gamma_c\)、PIC/FLIP 比例和刀具尺寸（Fig. 5 的 0.5 mm 刀厚除外）；切割带宽给的是 \(h_k = 6\Delta x\)。
+[BladeMaster v2](https://arxiv.org/html/2609.27342v2) §IV。论文没有给出网格间距、粒子采样、接触系数 \(s_n, \gamma_k, \gamma_c\)、PIC/FLIP 比例和刀具尺寸（Fig. 5 的 0.5 mm 刀厚除外）；切割带宽给的是 \(h_k = 6\Delta x\)，刃前/后长度 \(b_\text{lead}, b_\text{back}\) 和最小推进速度 \(u_\text{min}\) 未给数值。
 
 | 实验 | 图 | 材料 | 其他 | Table I（RTX 5090） |
 |---|---|---|---|---|

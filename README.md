@@ -99,7 +99,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | `--dt` | 材料步长，必须整除 1 ms；香蕉默认 \(\min(62.5\,\mu s,\ 0.5\,\Delta x/c)\)，6 mm 为 62.5 μs，3 mm 为 40 μs |
 | `--contact-scaling per-step` | 使用论文的固定 \(s_n\)（接触刚度随步长变化） |
 | `--tool-substep predict` | 耦合区间内用移动性矩阵更新刀具状态 |
-| `--pair-search {auto,hash,all}` | 接触检测方式；auto 在 ≤ 2048 粒子时用全对检测 |
+| `--pair-search {auto,list,hash,all}` | 接触检测方式；auto 使用带位移余量的邻居表，hash 每子步重建，all 完整搜索 |
 | `--controller {serl,libfranka}` | 笛卡尔阻抗控制器 |
 
 `report.json` 里的 `time_s` 给出材料、机器人、观测各阶段耗时，`task_evaluation` 给出切割结果。
@@ -110,7 +110,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 | 模块 | 用途 |
 |---|---|
-| `blademaster_warp.paper_freefall` | 论文 Fig. 3 / Table I 重力刀 |
+| `blademaster_warp.paper_freefall` | Fig. 3 / Table I 重力刀；`--grid-spacing`、`--dt`、`--contact-reference-dt` 扫描分辨率和步长，结果包含刃口高度、方向功与损伤计数 |
 | `blademaster_warp.paper_impact` | 论文 Fig. 6 三把自由刀（`Config.tool_count`），默认按论文图从前侧面水平射入（`--launch side`，20 g）：刀被减速停住，初速越大越深；`--launch top` 为竖直射入 |
 | `blademaster_warp.scenarios` | 论文 Fig. 4/7/8 的切割历史场景（规定刀路）；`fig4`（`--single-field` 为单场对照）、`fig7-shallow`/`fig7-deep`、`fig8` |
 | `blademaster_warp.convergence` | 步长、耦合间隔、分辨率扫描 |

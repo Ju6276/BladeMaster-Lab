@@ -549,14 +549,67 @@ class LinkedSurface:
         return self._mesh_cache
 
 
-def tent_supports(tree, nodes, points, radius):
-    """Per node, the points with nonzero tent weight prod(max(1 - |p - node| / radius, 0))."""
-    result = []
-    for node, ids in zip(nodes, tree.query_ball_point(nodes, radius * np.sqrt(3) + 1.0e-10)):
-        ids = np.array(ids, int)
-        w = np.maximum(1 - np.abs(points[ids] - node) / radius, 0).prod(axis=1)
-        result.append((ids[w > 1.0e-12], w[w > 1.0e-12]))
-    return result
+@dataclass
+class Supports:
+    """Per-node (point ids, weights) in CSR form; ids ascending within a node."""
+
+    offsets: np.ndarray
+    indices: np.ndarray
+    weights: np.ndarray
+
+    def __len__(self):
+        return len(self.offsets) - 1
+
+    def __getitem__(self, i):
+        a, b = self.offsets[i], self.offsets[i + 1]
+        return self.indices[a:b], self.weights[a:b]
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
+
+
+NEIGHBOUR_CELLS = np.array(list(product((-1, 0, 1), repeat=3)), int)
+
+
+def tent_supports(nodes, points, radius, chunk=4096):
+    """Per node, the points with nonzero tent weight prod(max(1 - |p - node| / radius, 0)).
+
+    Points are bucketed in cells of edge `radius`, so a node's support lies in the
+    27 cells around the node's cell.
+    """
+    nodes, points = np.asarray(nodes, float), np.asarray(points, float)
+    low = points.min(0)
+    dims = np.floor((points.max(0) - low) / radius).astype(np.int64) + 3
+    key = np.ravel_multi_index((np.floor((points - low) / radius).astype(np.int64) + 1).T, dims)
+    order = np.argsort(key, kind="stable")
+    sorted_key = key[order]
+    counts, indices, weights = [], [], []
+    for start in range(0, len(nodes), chunk):
+        block = nodes[start : start + chunk]
+        cell = np.floor((block - low) / radius).astype(np.int64) + 1
+        around = cell[:, None, :] + NEIGHBOUR_CELLS[None]
+        inside = np.all((around >= 0) & (around < dims), axis=2)
+        keys = np.ravel_multi_index(np.clip(around, 0, dims - 1).transpose(2, 0, 1), dims)
+        first = np.searchsorted(sorted_key, keys, "left").ravel()
+        size = np.where(inside, np.searchsorted(sorted_key, keys, "right") - first.reshape(keys.shape), 0)
+        size = size.ravel()
+        offset = np.cumsum(size) - size
+        position = np.repeat(first - offset, size) + np.arange(size.sum())
+        node = np.repeat(np.arange(len(block)), size.reshape(len(block), -1).sum(1))
+        ids = order[position]
+        w = np.maximum(1 - np.abs(points[ids] - block[node]) / radius, 0).prod(axis=1)
+        keep = w > 1.0e-12
+        node, ids, w = node[keep], ids[keep], w[keep]
+        sort = np.lexsort((ids, node))
+        counts.append(np.bincount(node, minlength=len(block)))
+        indices.append(ids[sort])
+        weights.append(w[sort])
+    counts = np.concatenate(counts) if counts else np.zeros(0, np.int64)
+    return Supports(
+        np.r_[0, np.cumsum(counts)],
+        np.concatenate(indices) if indices else np.zeros(0, np.int64),
+        np.concatenate(weights) if weights else np.zeros(0),
+    )
 
 
 class MaterialEmbedding:
@@ -582,16 +635,8 @@ class MaterialEmbedding:
         self.extension_nodes = 0
 
     @cached_property
-    def _tree(self):
-        from scipy.spatial import cKDTree
-
-        return cKDTree(self.ref)
-
-    # With a material grid, vertices() embeds through the grid's supports;
-    # surface-node supports are only built if field()/node_state() are called.
-    @cached_property
     def support(self):
-        return tent_supports(self._tree, self.nodes, self.ref, self.h)
+        return tent_supports(self.nodes, self.ref, self.h)
 
     @cached_property
     def extension_support(self):
@@ -599,7 +644,7 @@ class MaterialEmbedding:
         # cut side. Define its one-sided affine continuation from the next
         # reference support ring. This changes visualization only; it does
         # not populate an MPM state or transfer force across a cut.
-        return tent_supports(self._tree, self.nodes, self.ref, 2 * self.h)
+        return tent_supports(self.nodes, self.ref, 2 * self.h)
 
     def field(self, x, F, particle_codes, code):
         result = np.full_like(self.nodes, np.nan, dtype=float)

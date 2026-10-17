@@ -181,10 +181,11 @@ class CudaMaterialEmbedding(MaterialEmbedding):
         return wp.array(np.asarray(data), dtype=dtype, device=self.device)
 
     def _support_arrays(self, support):
-        offsets = np.r_[0, np.cumsum([len(ids) for ids, _ in support])]
-        indices = np.concatenate([ids for ids, _ in support]).astype(np.int32)
-        weights = np.concatenate([w for _, w in support])
-        return self._upload(offsets, int), self._upload(indices, int), self._upload(weights, wp.float64)
+        return (
+            self._upload(support.offsets.astype(np.int32), int),
+            self._upload(support.indices.astype(np.int32), int),
+            self._upload(support.weights, wp.float64),
+        )
 
     @cached_property
     def g_support(self):
@@ -215,8 +216,10 @@ class CudaMaterialEmbedding(MaterialEmbedding):
         self.g_f.assign(F)
         self.g_codes.assign(self._codes(particle_codes, len(self.ref)))
 
-    def _support_inputs(self):
-        return [self.g_nodes, self.g_ref, *self.g_support, *self.g_extra, self.g_x, self.g_f, self.g_codes]
+    def _support_inputs(self, extend=True):
+        # Without extension the kernels never read the second ring; skip building it.
+        extra = self.g_extra if extend else self.g_support
+        return [self.g_nodes, self.g_ref, *self.g_support, *extra, self.g_x, self.g_f, self.g_codes]
 
     def _evaluate(self, x, F, particle_codes, node_codes=None, code=0, extend=False):
         self._upload_particles(x, F, particle_codes)
@@ -227,7 +230,7 @@ class CudaMaterialEmbedding(MaterialEmbedding):
             evaluate_nodes,
             len(self.nodes),
             [
-                *self._support_inputs(),
+                *self._support_inputs(extend),
                 self.g_node_codes,
                 wp.int64(int(code)),
                 int(node_codes is not None),

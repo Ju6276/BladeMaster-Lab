@@ -267,3 +267,20 @@ def test_cut_pieces_match_the_analytic_pieces_and_stay_closed():
         result = accuracy(0.003, cuts)
         assert result["open_edges"] == 0
         assert result["mean_error_cells"] < 0.05 and result["max_error_cells"] < 0.5
+
+
+def test_bucketed_tent_supports_match_brute_force():
+    from blademaster_warp.surface import tent_supports
+
+    rng = np.random.default_rng(3)
+    particles = rng.uniform(-0.02, 0.02, (700, 3))
+    # Nodes inside, on the edge of and far outside the particle cloud.
+    nodes = np.r_[rng.uniform(-0.03, 0.03, (300, 3)), [[0.5, 0.0, 0.0]]]
+    for radius in (0.004, 0.008):
+        support = tent_supports(nodes, particles, radius, chunk=64)
+        assert len(support) == len(nodes)
+        for node, (ids, w) in zip(nodes, support):
+            expected = np.maximum(1 - np.abs(particles - node) / radius, 0).prod(axis=1)
+            want = np.flatnonzero(expected > 1.0e-12)
+            np.testing.assert_array_equal(ids, want)
+            np.testing.assert_allclose(w, expected[want], rtol=0, atol=1.0e-15)

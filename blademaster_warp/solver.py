@@ -952,12 +952,17 @@ class Solver:
         wp.capture_launch(captured)
         self.step_count += len(targets)
 
-    def prepare(self, targets, cutting=True, cut_index=0, orientations=None):
-        """Capture scheduling without advancing physics or changing cut state."""
+    def prepare(self, targets, cutting=True, cut_index=0, orientations=None, before=(), after=(), tag=None):
+        """Capture scheduling without advancing physics or changing cut state.
+
+        `before` and `after` are (kernel, dim, inputs) launches captured around the
+        substeps; their arrays must stay the same between replays. `tag` names
+        that wrapping in the cache key.
+        """
         targets = np.ascontiguousarray(targets, dtype=np.float32)
         if orientations is None:
             orientations = np.tile([0.0, 0.0, 0.0, 1.0], (len(targets), 1))
-        key = (len(targets), bool(cutting), cut_index, self.step_count % 2, self.single_field)
+        key = (len(targets), bool(cutting), cut_index, self.step_count % 2, self.single_field, tag)
         if key not in self._batches:
             start = time.perf_counter()
             # Eager warmup must have loaded all modules before capture.
@@ -969,8 +974,12 @@ class Solver:
             count = self.step_count
             try:
                 with wp.ScopedCapture(device=self.device) as capture:
+                    for kernel, dim, inputs in before:
+                        self.launch(kernel, dim, inputs)
                     for i in range(len(targets)):
                         self._step_kernels(targets[i], cutting, cut_index, buffer, i, rotations)
+                    for kernel, dim, inputs in after:
+                        self.launch(kernel, dim, inputs)
             finally:
                 self.step_count = count
             self._batches[key] = buffer, rotations, capture.graph

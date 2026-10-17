@@ -84,7 +84,7 @@ class ExternalToolPort:
         if not np.isfinite(duration_s) or duration_s <= 0:
             raise ValueError("Coupling duration must be positive and finite")
         steps = int(round(duration_s / s.config.dt))
-        if steps < 1 or not np.isclose(steps * s.config.dt, duration_s, rtol=1.0e-10, atol=1.0e-12):
+        if steps < 1 or abs(steps * s.config.dt - duration_s) > 1.0e-12 + 1.0e-10 * abs(duration_s):
             raise ValueError("Coupling duration must be an integer number of material substeps")
         # Validate before mutating state. No interpolation, trajectory limits,
         # local PD controller, or table clamp is applied to the external tool.
@@ -100,7 +100,7 @@ class ExternalToolPort:
                 ]
             ).astype(np.float32)
         )
-        s.launch(
+        load = (
             tool.load_external_state,
             1,
             [
@@ -114,21 +114,28 @@ class ExternalToolPort:
                 s.interval_angular_impulse,
             ],
         )
+        finish = [
+            (validate_interval, s.n, [s.x, s.v, s.F, s.errors]),
+            (tool.store_interval, 1, [s.interval_impulse, s.interval_angular_impulse, s.errors, self.result]),
+        ]
         if graph:
+            # One replay per interval: loading the tool state and storing the result are in the graph.
             unused_targets = np.zeros((steps, 3), dtype=np.float32)
-            _, _, captured = s.prepare(unused_targets, cutting, cut_index)
+            _, _, captured = s.prepare(
+                unused_targets, cutting, cut_index, before=[load], after=finish, tag=("external", id(self))
+            )
             wp.capture_launch(captured)
             s.step_count += steps
         else:
+            s.launch(*load)
             for _ in range(steps):
                 s._step_kernels((0.0, 0.0, 0.0), cutting, cut_index)
-        s.launch(validate_interval, s.n, [s.x, s.v, s.F, s.errors])
-        s.launch(
-            tool.store_interval, 1, [s.interval_impulse, s.interval_angular_impulse, s.errors, self.result]
-        )
+            for launch in finish:
+                s.launch(*launch)
         out = self.result.numpy().astype(np.float64)
         impulse, angular, errors = out[:3], out[3:6], out[6:]
-        angular -= np.cross(state.position, impulse)
+        (px, py, pz), (ix, iy, iz) = state.position, impulse
+        angular -= (py * iz - pz * iy, pz * ix - px * iz, px * iy - py * ix)
         if errors.any() or not np.isfinite([impulse, angular]).all():
             raise RuntimeError(
                 f"Invalid material coupling interval: GPU errors {errors.astype(int).tolist()}"

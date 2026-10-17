@@ -186,7 +186,18 @@ def keyframes(name):
 
 
 def scene_config(name, dt=None):
-    """Material, geometry and knife of a scene; dt defaults to the paper's Table I step."""
+    """Material, geometry and knife of a scene; dt defaults to the paper's Table I step.
+
+    Another dt keeps the contact stiffness of the default step (contact_reference_dt):
+    with a fixed per-step factor s_n the stiffness s_n m / dt^2 would grow as 1/dt^2.
+    """
+    cfg = _scene_config(name)
+    if dt is None or dt == cfg.dt:
+        return cfg
+    return replace(cfg, dt=dt, contact_reference_dt=cfg.dt)
+
+
+def _scene_config(name, dt=None):
     from .solver import Config
 
     if name == "fig4":
@@ -270,7 +281,7 @@ PROVENANCE = {
     "fig4": "Paper Fig. 4 E/nu/rho; local cylinder size, knife, path, Gc=10, 0.5 ms step and contact numerics",
     "fig7-shallow": "Paper Fig. 7 E/nu/rho; local block size, knife, roll, path, depth, Gc=10 and step",
     "fig7-deep": "Paper Fig. 7 E/nu/rho; local block size, knife, roll, path, depth, Gc=10 and step",
-        "fig8": "Paper Fig. 6/8 E/nu/rho/yield; local block size, knife, slice width, tip-over push, Gc=10, step and contact",
+    "fig8": "Paper Fig. 6/8 E/nu/rho/yield; local block size, knife, slice width, tip-over push, Gc=10, step and contact",
 }
 
 

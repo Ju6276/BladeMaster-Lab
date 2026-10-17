@@ -197,7 +197,9 @@ class SurfaceRecorder:
             for a, b in zip(samples, samples[1:]):
                 if not a.cutting:
                     continue
-                if a.time_s == b.time_s and np.array_equal(a.edge, b.edge):
+                # Adjacent intervals and observations may supply different poses
+                # at one timestamp. That reset is not a material substep.
+                if b.time_s <= a.time_s:
                     continue
                 a_nodes = (
                     interpolated_nodes

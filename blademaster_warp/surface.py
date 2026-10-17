@@ -83,6 +83,15 @@ def moving_segment_hits(a0, b0, a1, b1, edge0, edge1):
                 (u0 - w0, du - dw, v0, dv),
             ]:
                 cc = np.array([np.cross(p0, q0), np.cross(dp, q0) + np.cross(p0, dq), np.cross(dp, dq)])
+                if np.max(abs(cc)) <= 1.0e-25:
+                    # An endpoint stays on the supporting line: overlap can
+                    # change only when it reaches one of the segment endpoints.
+                    for offset, velocity in ((p0, dp), (p0 - q0, dp - dq)):
+                        for axis in np.flatnonzero(abs(velocity) > 1.0e-25):
+                            root = -offset[axis] / velocity[axis]
+                            if 0 <= root <= 1:
+                                candidates.append(float(root))
+                    continue
                 for axis in range(3):
                     nz = np.flatnonzero(abs(cc[:, axis]) > 1.0e-25)
                     if len(nz):
@@ -97,7 +106,13 @@ def moving_segment_hits(a0, b0, a1, b1, edge0, edge1):
             v = v0 + t * dv
             w = w0 + t * dw
             matrix = np.column_stack([u, -v])
-            uv = np.linalg.lstsq(matrix, w, rcond=None)[0]
+            uv, _, rank, _ = np.linalg.lstsq(matrix, w, rcond=None)
+            if rank < 2:
+                # A minimum-norm line solution can lie outside both segments
+                # even when their finite collinear intervals overlap.
+                uu, vv = u @ u, v @ v
+                uv[0] = np.clip(min(u @ w, u @ (w + v)) / uu, 0, 1) if uu > 0 else 0
+                uv[1] = v @ (u * uv[0] - w) / vv if vv > 0 else 0
             if (
                 np.linalg.norm(matrix @ uv - w) <= 1.0e-9
                 and np.all(uv >= -1.0e-8)

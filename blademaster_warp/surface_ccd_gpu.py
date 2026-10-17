@@ -124,17 +124,22 @@ def add_candidate(values: Candidates, count: int, value: wp.float64):
 
 @wp.func
 def segment_coordinates(u: wp.vec3d, v: wp.vec3d, w: wp.vec3d):
-    # Least squares for [u,-v] @ [alpha,beta] == w, including rank-one lines.
+    # Least squares for [u,-v] @ [alpha,beta] == w, with bounded collinear overlap.
     a, b, c = wp.dot(u, u), -wp.dot(u, v), wp.dot(v, v)
     d, e = wp.dot(u, w), -wp.dot(v, w)
-    determinant = a * c - b * b
+    # Cross products avoid cancellation of parallel Gram terms under GPU FMA.
+    normal = wp.cross(u, v)
+    determinant = wp.dot(normal, normal)
     alpha, beta = wp.float64(0.0), wp.float64(0.0)
     trace = a + c
     if determinant > wp.float64(1.0e-28) * trace * trace:
-        alpha, beta = (c * d - b * e) / determinant, (a * e - b * d) / determinant
-    elif trace > wp.float64(0.0):
-        # For rank one, G^+ = G / trace(G)^2.
-        alpha, beta = (a * d + b * e) / (trace * trace), (b * d + c * e) / (trace * trace)
+        alpha = wp.dot(wp.cross(w, v), normal) / determinant
+        beta = wp.dot(wp.cross(w, u), normal) / determinant
+    else:
+        if a > wp.float64(0.0):
+            alpha = wp.clamp(wp.min(d, d - b) / a, wp.float64(0.0), wp.float64(1.0))
+        if c > wp.float64(0.0):
+            beta = (-b * alpha + e) / c
     return alpha, beta
 
 
@@ -192,11 +197,29 @@ def moving_hits(
             elif pair == 3:
                 p0, dp, q0, dq = u0 - w0, du - dw, v0, dv
             cc0, cc1, cc2 = wp.cross(p0, q0), wp.cross(dp, q0) + wp.cross(p0, dq), wp.cross(dp, dq)
+            collinear = bool(True)
             for axis in range(3):
-                values, n = roots(wp.vec4d(cc0[axis], cc1[axis], cc2[axis], wp.float64(0.0)), wp.float64(0.0))
-                for j in range(n):
-                    candidates, count = add_candidate(candidates, count, values[j])
-        # At most 2 + 4*3*2 = 26 candidates; adding interval middles fits 64.
+                if wp.max(wp.max(wp.abs(cc0[axis]), wp.abs(cc1[axis])), wp.abs(cc2[axis])) > wp.float64(
+                    1.0e-25
+                ):
+                    collinear = False
+            if collinear:
+                # Persistent line coincidence needs longitudinal endpoint events.
+                for axis in range(3):
+                    if wp.abs(dp[axis]) > wp.float64(1.0e-25):
+                        candidates, count = add_candidate(candidates, count, -p0[axis] / dp[axis])
+                    if wp.abs(dp[axis] - dq[axis]) > wp.float64(1.0e-25):
+                        candidates, count = add_candidate(
+                            candidates, count, (q0[axis] - p0[axis]) / (dp[axis] - dq[axis])
+                        )
+            else:
+                for axis in range(3):
+                    values, n = roots(
+                        wp.vec4d(cc0[axis], cc1[axis], cc2[axis], wp.float64(0.0)), wp.float64(0.0)
+                    )
+                    for j in range(n):
+                        candidates, count = add_candidate(candidates, count, values[j])
+        # Each endpoint pair contributes at most six events: 26 total, 51 with middles.
         for j in range(1, count):
             value = candidates[j]
             k = j

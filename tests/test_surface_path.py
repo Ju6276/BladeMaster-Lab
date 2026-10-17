@@ -108,3 +108,73 @@ def test_compressed_stationary_tool_still_cuts_material_moving_past_it():
     surface.update(0.04, ref + [0, 0, 0.025], F, codes, tool(p), False)
     assert surface.surface.broken.any()
     assert count_components(surface) == 2
+
+
+def test_observation_pose_does_not_add_motion_after_the_last_real_substep():
+    solver, F = scene()
+    ref, codes = solver.reference, np.zeros(len(solver.reference), np.int64)
+    surface = SurfaceRecorder(solver, None)
+    above = pose(0.02)
+    surface.update(0, ref, F, codes, tool(above), False)
+    surface.record_trajectory([0, 0.01], np.array([above, above]), True, 0)
+    surface.update(0.01, ref, F, codes, tool(pose(-0.003)), False)
+    assert not surface.surface.broken.any()
+    assert not surface.surface.codes.any()
+    assert count_components(surface) == 1
+
+
+def test_cut_switch_at_frame_boundary_does_not_sweep_the_pose_reset():
+    solver, F = scene()
+    ref, codes = solver.reference, np.zeros(len(solver.reference), np.int64)
+    surface = SurfaceRecorder(solver, None)
+    left, right = pose(0.006, x=-0.06), pose(0.006, x=0.06)
+    surface.update(0, ref, F, codes, tool(left), True, 0)
+    surface.record_trajectory([0, 0.01], np.array([right, right]), True, 1)
+    surface.update(0.01, ref, F, codes, tool(right), True, 1)
+    assert not surface.surface.broken.any()
+    assert not surface.surface.codes.any()
+    assert surface._tool_samples[0].cut_index == 1
+    consumed = surface.last_path.copy()
+    surface.update(0.02, ref, F, codes, tool(right), False, 1)
+    assert not surface.surface.broken.any()
+    np.testing.assert_array_equal(surface.last_path[:, 0], [0.01, 0.02])
+    np.testing.assert_array_equal(consumed[:, 9], [0, 1, 1])
+
+
+@pytest.mark.parametrize("observation_cutting", [False, True])
+def test_stationary_cut_switch_interpolates_nodes_at_material_observation_times(
+    monkeypatch, observation_cutting
+):
+    solver, F = scene()
+    ref, codes = solver.reference, np.zeros(len(solver.reference), np.int64)
+    surface = SurfaceRecorder(solver, None)
+    p = pose(0.02)
+    surface.update(0, ref, F, codes, tool(p), observation_cutting)
+    surface.update(1, ref + [0, 0, 0.001], F, codes, tool(p), observation_cutting, record_frame=False)
+    start_nodes, start_F = surface.previous_nodes.copy(), surface.previous_deformation.copy()
+    assert len(surface._tool_samples) == 1
+    assert surface._tool_samples[0].time_s == 1
+    surface.record_trajectory([1, 1.25, 1.5], np.tile(p, (3, 1)), True, 0)
+    surface.record_trajectory([1.5, 1.75, 2], np.tile(p, (3, 1)), True, 1)
+    assert surface._tool_samples[0].time_s == 1
+    end_x, end_F = ref + [0, 0, 0.005], F * 1.2
+    end_nodes, end_node_F = surface.embedding.node_state(end_x, end_F, codes, surface.surface.codes)
+    sweeps = []
+
+    def capture(edge_before, edge_after, nodes, cut_index, normal, deformation, **kwargs):
+        sweeps.append(
+            (cut_index, kwargs["previous_nodes"], nodes, kwargs["previous_deformation"], deformation)
+        )
+
+    monkeypatch.setattr(surface.surface, "sweep", capture)
+    surface.update(2, end_x, end_F, codes, tool(p), False, 1)
+    assert len(surface._tool_samples) == 1
+    assert surface._tool_samples[0].time_s == 2
+    assert [s[0] for s in sweeps] == [0, 1]
+    mid_nodes, mid_F = (start_nodes + end_nodes) / 2, (start_F + end_node_F) / 2
+    for actual, expected in zip(
+        [sweeps[0][1:], sweeps[1][1:]],
+        [(start_nodes, mid_nodes, start_F, mid_F), (mid_nodes, end_nodes, mid_F, end_node_F)],
+    ):
+        for a, b in zip(actual, expected):
+            np.testing.assert_allclose(a, b, atol=1e-14, equal_nan=True)

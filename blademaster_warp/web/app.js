@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import {OrbitControls} from './vendor/OrbitControls.js';
 const $ = id => document.getElementById(id);
+// Pieces below 1% of the particles count as debris, not as a separated piece.
+function showPieces(sizes){const out=$('pieces');if(!sizes.length){out.textContent='—';out.className='';return}
+ const total=sizes.reduce((a,b)=>a+b,0),big=sizes.filter(s=>s>=Math.max(5,0.01*total)),debris=sizes.length-big.length;
+ out.textContent=big.length+' 块'+(big.length===1?'（未切断）':'')+(debris?` · 碎粒 ${debris}`:'');
+ out.className=big.length>1?'good':'';out.title='各块粒子数：'+sizes.join(' / ')}
 const renderer = new THREE.WebGLRenderer({canvas:$('canvas'),antialias:true,alpha:false});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
 renderer.setClearColor(0xf2f5f1); renderer.setScissorTest(true);
@@ -52,7 +57,7 @@ function applyPacket(p){
   const colors=[new THREE.Color(0xe9bc58),new THREE.Color(0x3698c0),new THREE.Color(0xdf8b4b)];
   p.codes.forEach((code,i)=>{dummy.position.fromArray(p.particles,3*i);dummy.updateMatrix();particles.setMatrixAt(i,dummy.matrix);particles.setColorAt(i,colors[code%3])});particles.instanceMatrix.needsUpdate=true;particles.instanceColor.needsUpdate=true;particles.computeBoundingSphere();
  }
- $('sim').textContent=p.sim_s.toFixed(3)+' s';$('wall').textContent=p.wall_s.toFixed(2)+' s';$('ratio').textContent=p.ratio.toFixed(3)+' ×';$('ratio').className=p.ratio>=1?'good':'slow';$('force').textContent=Math.hypot(...p.wrench.slice(0,3)).toFixed(3)+' N';
+ $('sim').textContent=p.sim_s.toFixed(3)+' s';$('wall').textContent=p.wall_s.toFixed(2)+' s';$('ratio').textContent=p.ratio.toFixed(3)+' ×';$('ratio').className=p.ratio>=1?'good':'slow';$('force').textContent=Math.hypot(...p.wrench.slice(0,3)).toFixed(3)+' N';showPieces(p.pieces||[]);
 }
 const states={loading:'正在初始化 GPU…',ready:'已就绪 · 点击开始计算',running:'在线计算中',paused:'已暂停 · 点击继续',completed:'本次运行已结束',stopped:'已结束',failed:'运行出错'};
 async function poll(){

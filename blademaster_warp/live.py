@@ -100,7 +100,9 @@ class LiveState:
         self.play.wait()
         return time.perf_counter() - begin
 
-    def publish(self, robot, solver, surface, x, codes, wall_s, phase, wrench, state="running", input_seq=None):
+    def publish(
+        self, robot, solver, surface, x, codes, wall_s, phase, wrench, state="running", input_seq=None, pieces=None
+    ):
         ids = self.ids
         if state == "running" and not self.play.is_set() and not self.stop_requested:
             state = "paused"
@@ -119,6 +121,8 @@ class LiveState:
             radius=float(solver.radius) if solver else 0.0,
             # Sequence number of the operator command the frame's last step used.
             input_seq=input_seq,
+            # Particle counts of the connected pieces, largest first.
+            pieces=sorted(pieces, reverse=True) if pieces is not None else [],
         )
         if surface and surface.current:
             packet["vertices"] = display(surface.current["vertices"] + robot.material_origin)

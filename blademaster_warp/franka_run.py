@@ -402,6 +402,7 @@ class FrankaCuttingRun:
                 self._phase_name(),
                 wrench,
                 input_seq=getattr(self, "input_seq", None),
+                pieces=self._component_sizes(data.codes[-1]) if s else None,
             )
         if not self.record:
             # Live mode keeps only the current state, no history.

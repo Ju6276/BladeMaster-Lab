@@ -185,19 +185,23 @@ def keyframes(name):
     raise ValueError(name)
 
 
-def scene_config(name, dt=None):
+def scene_config(name, dt=None, normal_scale=None):
     """Material, geometry and knife of a scene; dt defaults to the paper's Table I step.
 
     Another dt keeps the contact stiffness of the default step (contact_reference_dt):
     with a fixed per-step factor s_n the stiffness s_n m / dt^2 would grow as 1/dt^2.
+    An explicit normal_scale is the per-step s_n at the actual dt.
     """
     cfg = _scene_config(name)
-    if dt is None or dt == cfg.dt:
-        return cfg
-    return replace(cfg, dt=dt, contact_reference_dt=cfg.dt)
+    if dt is not None and dt != cfg.dt:
+        cfg = replace(cfg, dt=dt, contact_reference_dt=cfg.dt)
+    if normal_scale is not None:
+        ratio = cfg.contact_scales()[0] / cfg.normal_scale
+        cfg = replace(cfg, normal_scale=normal_scale / ratio)
+    return cfg
 
 
-def _scene_config(name, dt=None):
+def _scene_config(name):
     from .solver import Config
 
     if name == "fig4":
@@ -205,7 +209,7 @@ def _scene_config(name, dt=None):
             size=(2 * FIG4_RADIUS, 2 * FIG4_RADIUS, FIG4_HEIGHT),
             shape="cylinder",
             grid_spacing=0.01,
-            dt=dt or 0.002,
+            dt=0.002,
             # Table I step. With s_n = 0.1 at 2 ms the bottom layer sinks ~4 mm into the
             # board (below the knife edge, the slice stays attached) and the slice weight
             # pushes particles through the flat knife; s_n = 1 removes the whole predicted
@@ -230,7 +234,7 @@ def _scene_config(name, dt=None):
             shape="block",
             grid_spacing=0.01,
             # Table I step and contact factors as Fig. 4.
-            dt=dt or 0.002,
+            dt=0.002,
             normal_scale=1.0,
             board_normal_scale=1.0,
             young_modulus=6000.0,
@@ -250,7 +254,7 @@ def _scene_config(name, dt=None):
             grid_spacing=0.006,
             # Table I step, about the CFL limit of this material on a 6 mm grid; with
             # s_n = 0.1 only 2 of the 4 slices separate at the bottom (board penetration).
-            dt=dt or 0.001,
+            dt=0.001,
             normal_scale=1.0,
             board_normal_scale=1.0,
             young_modulus=20000.0,
@@ -268,7 +272,7 @@ def _scene_config(name, dt=None):
     return Config(
         size=(0.06, 0.03, 0.03),
         grid_spacing=0.006,
-        dt=dt or 0.00025,
+        dt=0.00025,
         young_modulus=6000,
         poisson_ratio=0.35,
         external_tool=True,
@@ -278,7 +282,7 @@ def _scene_config(name, dt=None):
 
 
 PROVENANCE = {
-    "fig4": "Paper Fig. 4 E/nu/rho; local cylinder size, knife, path, Gc=10, 0.5 ms step and contact numerics",
+    "fig4": "Paper Fig. 4 E/nu/rho and Table I step; local cylinder size, knife, path, Gc=10 and contact numerics",
     "fig7-shallow": "Paper Fig. 7 E/nu/rho; local block size, knife, roll, path, depth, Gc=10 and step",
     "fig7-deep": "Paper Fig. 7 E/nu/rho; local block size, knife, roll, path, depth, Gc=10 and step",
     "fig8": "Paper Fig. 6/8 E/nu/rho/yield; local block size, knife, slice width, tip-over push, Gc=10, step and contact",
@@ -310,11 +314,11 @@ def run(args):
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)
-    cfg = scene_config(args.scenario, args.dt)
+    cfg = scene_config(args.scenario, args.dt, getattr(args, "normal_scale", None))
     if getattr(args, "board_normal_scale", None) is not None:
         cfg = replace(cfg, board_normal_scale=args.board_normal_scale)
-    if getattr(args, "normal_scale", None) is not None:
-        cfg = replace(cfg, normal_scale=args.normal_scale)
+    normal, tangent = cfg.contact_scales()
+    print(f"{args.scenario}: dt {cfg.dt:g} s, per-step s_n {normal:.4g}, gamma_k {tangent:.4g}", flush=True)
     keys = keyframes(args.scenario)
     interval = max(0.002, cfg.dt)
     duration = keys[-1][0]
@@ -338,6 +342,7 @@ def run(args):
     meta = {
         "scenario": args.scenario,
         "config": asdict(cfg),
+        "contact_scales_at_dt": dict(normal=normal, tangent=tangent),
         "particles": s.n,
         "keyframes": keys,
         "driver": "prescribed tool (infinite effective mass)",
@@ -431,7 +436,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Paper Fig. 4 baseline: grid transfers ignore cut-side codes while the knife is not cutting",
     )
-    p.add_argument("--normal-scale", type=float, default=None, help="Per-step contact penalty factor s_n")
+    p.add_argument(
+        "--normal-scale",
+        type=float,
+        default=None,
+        help="Per-step contact penalty factor s_n at the actual --dt (default: the scene's stiffness)",
+    )
     p.add_argument(
         "--board-normal-scale",
         type=float,

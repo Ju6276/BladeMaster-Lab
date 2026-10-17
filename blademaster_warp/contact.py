@@ -288,9 +288,11 @@ def blade_at(
             and damage[p] < 1.0
             and wp.abs(local[0]) <= half[0] + blade_offset
             and wp.abs(local[1]) <= half[1]
-            and front >= -(half[0] + blade_offset)
+            and front >= 0.0
         ):
-            # Push along the cutting direction only, against the edge line.
+            # Push along the cutting direction only, against the edge line. Particles
+            # already past the edge keep the ordinary contact: pushing them back out
+            # by their full depth at once flings a free knife at s_n = 1.
             closest_local = wp.vec3(local[0], local[1], -half[2])
             normal_local = wp.vec3(0.0, 0.0, -1.0)
             distance = front

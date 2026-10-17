@@ -16,11 +16,18 @@ from .geometry import DEMO_KNIFE_BEVEL_HEIGHT_M
 
 SPEEDS = (0.5, 0.8, 1.1)
 KNIFE_X = (-0.03, 0.0, 0.03)
-# Not given in the paper (Fig. 3's knife is 0.1 kg).
-KNIFE_MASS = 0.1
+# Not given in the paper. With Fig. 3's 0.1 kg the two faster knives leave through
+# the back face; with 20 g all three stop inside the block (see docs/RESULTS.md).
+KNIFE_MASS = 0.02
+# Fig. 6 shows the knives entering the long front face flat, tip first. With the edge
+# leading, a 24 mm wide, 60 mm long blade keeps the three knives 30 mm apart clear.
+SIDE_KNIFE_HALF_SIZE = (0.0005, 0.012, 0.03)
+# Tool axes in world axes for the side launch: edge along x, cut direction (-z) along +y,
+# blade plane horizontal.
+SIDE_ROTATION = Rotation.from_matrix([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [-1.0, 0.0, 0.0]])
 
 
-def config(dt, cutting_energy, cut_work="relative", cut_hold=False, knife_mass=KNIFE_MASS):
+def config(dt, cutting_energy, cut_work="relative", cut_hold=False, knife_mass=KNIFE_MASS, launch="side"):
     return Config(
         size=FIG8_SIZE,
         grid_spacing=0.006,
@@ -36,12 +43,23 @@ def config(dt, cutting_energy, cut_work="relative", cut_hold=False, knife_mass=K
         # still touch them (see Solver's slipping warning).
         blade_contact_radius=0.0,
         blade_mass=knife_mass,
-        blade_half_size=FIG8_KNIFE_HALF_SIZE,
+        blade_half_size=SIDE_KNIFE_HALF_SIZE if launch == "side" else FIG8_KNIFE_HALF_SIZE,
         blade_bevel_height=DEMO_KNIFE_BEVEL_HEIGHT_M,
         free_blade=True,
         tool_count=len(SPEEDS),
         grid_storage="compact",
     )
+
+
+def penetration(position, orientation, half, direction, entry):
+    """Furthest edge point past the entry face along the launch direction and the angle
+    between the cut direction and the launch direction, per frame and knife."""
+    position, orientation = np.asarray(position), np.asarray(orientation)
+    rotation = Rotation.from_quat(orientation.reshape(-1, 4))
+    ends = [rotation.apply([0.0, y, -half[2]]) @ direction for y in (-half[1], half[1])]
+    ahead = np.maximum(*ends).reshape(position.shape[:2]) + position @ direction - entry
+    cut = rotation.apply([0.0, 0.0, -1.0]) @ direction
+    return ahead, np.degrees(np.arccos(np.clip(cut, -1.0, 1.0))).reshape(position.shape[:2])
 
 
 def edge_height(position, orientation, half):
@@ -62,19 +80,30 @@ def run(
     cut_work="relative",
     cut_hold=False,
     knife_mass=KNIFE_MASS,
+    launch="side",
 ):
-    cfg = config(dt, cutting_energy, cut_work, cut_hold, knife_mass)
+    if launch not in ("top", "side"):
+        raise ValueError(launch)
+    cfg = config(dt, cutting_energy, cut_work, cut_hold, knife_mass, launch)
     steps = round(duration / dt)
     if steps < 1 or not np.isclose(steps * dt, duration):
         raise ValueError("Invalid duration")
     out = Path(output)
     out.mkdir(parents=True, exist_ok=False)
     hz = cfg.blade_half_size[2]
-    start = [[x, 0.0, FIG8_SIZE[2] + 0.002 + hz] for x in KNIFE_X]
-    velocity = [[0.0, 0.0, -v] for v in SPEEDS]
+    if launch == "side":
+        direction, entry = np.array([0.0, 1.0, 0.0]), -FIG8_SIZE[1] / 2
+        start = [[x, entry - 0.002 - hz, FIG8_SIZE[2] / 2] for x in KNIFE_X]
+        orientation = [SIDE_ROTATION.as_quat().tolist()] * len(KNIFE_X)
+    else:
+        direction, entry = np.array([0.0, 0.0, -1.0]), -FIG8_SIZE[2]
+        start = [[x, 0.0, FIG8_SIZE[2] + 0.002 + hz] for x in KNIFE_X]
+        orientation = [[0.0, 0.0, 0.0, 1.0]] * len(KNIFE_X)
+    velocity = [(v * direction).tolist() for v in SPEEDS]
 
     def place(s):
         s.tool_pos.assign(start)
+        s.tool_rot.assign(orientation)
         s.tool_vel.assign(velocity)
 
     warm = Solver(cfg)
@@ -101,7 +130,7 @@ def run(
         "independent_choices": [
             "block 100x50x42mm on a 6mm grid",
             "knife geometry and 0.1kg mass",
-            "vertical launch 2mm above the block, 30mm apart",
+            f"{launch} launch 2mm outside the block, 30mm apart",
             "Gc",
             "contact/transfer coefficients",
         ],
@@ -136,8 +165,10 @@ def run(
         )
         write(out / "manifest.json", meta)
     t = np.asarray(saved["time"])
-    edge, tilt = edge_height(saved["blade_position"], saved["blade_orientation"], cfg.blade_half_size)
-    speed = np.asarray(saved["blade_velocity"])[:, :, 2]
+    depth, tilt = penetration(
+        saved["blade_position"], saved["blade_orientation"], cfg.blade_half_size, direction, entry
+    )
+    speed = np.asarray(saved["blade_velocity"]) @ direction
     _, counts = components(s.node_numpy, s.weight_numpy, saved["sides"][-1])
     knives = []
     for k, v0 in enumerate(SPEEDS):
@@ -145,8 +176,8 @@ def run(
         knives.append(
             dict(
                 initial_speed_m_s=v0,
-                max_penetration_m=float(FIG8_SIZE[2] - edge[:, k].min()),
-                final_edge_height_m=float(edge[-1, k]),
+                max_penetration_m=float(depth[:, k].max()),
+                final_penetration_m=float(depth[-1, k]),
                 final_tilt_deg=float(tilt[-1, k]),
                 final_speed_m_s=float(speed[-1, k]),
                 stopped_at_s=float(t[moving[-1] + 1]) if len(moving) and moving[-1] + 1 < len(t) else None,
@@ -171,5 +202,11 @@ if __name__ == "__main__":
     p.add_argument("--cut-work", choices=("relative", "advance"), default="relative")
     p.add_argument("--cut-hold", action="store_true")
     p.add_argument("--knife-mass", type=float, default=KNIFE_MASS, help="kg; not given in the paper")
+    p.add_argument(
+        "--launch",
+        choices=("top", "side"),
+        default="side",
+        help="side: flat into the front face as drawn in Fig. 6; top: vertically down",
+    )
     a = p.parse_args()
-    run(a.output, a.dt, a.duration, a.cutting_energy, a.cut_work, a.cut_hold, a.knife_mass)
+    run(a.output, a.dt, a.duration, a.cutting_energy, a.cut_work, a.cut_hold, a.knife_mass, a.launch)

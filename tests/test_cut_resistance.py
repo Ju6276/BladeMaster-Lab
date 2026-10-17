@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 from blademaster_warp.coupling import ExternalToolPort, ToolState
-from blademaster_warp.paper_impact import edge_height
+from blademaster_warp.paper_impact import SIDE_ROTATION, edge_height, penetration
 from blademaster_warp.solver import Config, Solver
 
 SIZE = (0.04, 0.02, 0.024)
@@ -61,3 +61,14 @@ def test_edge_height_follows_the_rotated_edge():
     lowest, tilt = edge_height([[[0.0, 0.0, 0.05], [0.0, 0.0, 0.0005]]], [[upright, flat]], half)
     np.testing.assert_allclose(lowest, [[0.05 - 0.03, 0.0005]], atol=1.0e-12)
     np.testing.assert_allclose(tilt, [[0.0, 90.0]], atol=1.0e-9)
+
+
+def test_side_launch_axes_and_penetration():
+    # Cut direction (tool -z) along +y, edge along x, blade plane horizontal.
+    np.testing.assert_allclose(SIDE_ROTATION.apply([0.0, 0.0, -1.0]), [0.0, 1.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(SIDE_ROTATION.apply([0.0, 1.0, 0.0]), [1.0, 0.0, 0.0], atol=1e-12)
+    half = (0.0005, 0.012, 0.03)
+    q = SIDE_ROTATION.as_quat()
+    depth, angle = penetration([[[0.0, -0.025, 0.02]]], [[q]], half, np.array([0.0, 1.0, 0.0]), -0.025)
+    np.testing.assert_allclose(depth, [[0.03]], atol=1e-12)
+    np.testing.assert_allclose(angle, [[0.0]], atol=1e-6)

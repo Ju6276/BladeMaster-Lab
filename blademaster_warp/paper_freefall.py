@@ -29,6 +29,7 @@ def run(
     board_normal_scale=1.0,
     cut_hold=False,
     tilt_axis="thickness",
+    cut_work="relative",
 ):
     if tilt_axis not in ("length", "thickness"):
         raise ValueError(tilt_axis)
@@ -48,6 +49,7 @@ def run(
         normal_scale=normal_scale,
         board_normal_scale=board_normal_scale,
         cut_hold=cut_hold,
+        cut_work=cut_work,
     )
     steps = round(duration / dt)
     if steps < 1 or not np.isclose(steps * dt, duration):
@@ -154,6 +156,12 @@ if __name__ == "__main__":
         "--cut-hold", action="store_true", help="Config.cut_hold (not the paper's Eq. 5 behaviour)"
     )
     p.add_argument("--tilt-axis", choices=["length", "thickness"], default="thickness")
+    p.add_argument(
+        "--cut-work",
+        choices=["relative", "advance"],
+        default="relative",
+        help="Config.cut_work: Eq. 5 with the edge speed relative to the particle (paper) or its own advance",
+    )
     a = p.parse_args()
     run(
         a.output,
@@ -166,4 +174,5 @@ if __name__ == "__main__":
         a.board_normal_scale,
         a.cut_hold,
         a.tilt_axis,
+        a.cut_work,
     )

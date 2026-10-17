@@ -112,7 +112,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | `blademaster_warp.paper_impact` | 论文 Fig. 6 三把自由刀（`Config.tool_count`），默认按论文图从前侧面水平射入（`--launch side`，20 g）：刀被减速停住，初速越大越深；`--launch top` 为竖直射入 |
 | `blademaster_warp.scenarios` | 论文 Fig. 4/7/8 的切割历史场景（规定刀路）；`fig4`（`--single-field` 为单场对照）、`fig7-shallow`/`fig7-deep`、`fig8` |
 | `blademaster_warp.convergence` | 步长、耦合间隔、分辨率扫描 |
-| `blademaster_warp.run`，`blademaster_warp.teleop` | 独立导向刀与不带机械臂的刀遥操作（刀—板接触待统一到 Franka 路径） |
+| `blademaster_warp.run`，`blademaster_warp.teleop` | 不带机械臂的导向刀与刀遥操作；刀—砧板接触与 Franka 路径相同，由 `tool.step` 处理 |
 | `scripts/probe_substep.py` | 单子步耗时测量 |
 | `scripts/topocut_compare.py` | 同一刀路下 BladeMaster 与 TopoCut 式单场 MLS-MPM（`mlsmpm.py` + `topocut_topology.py`）对比，谱奖励评价；`scripts/render_compare.py` 把结果渲染成三栏对比视频 |
 | `scripts/surface_deformed.py` | 已知变形下的表面嵌入误差与自交 |

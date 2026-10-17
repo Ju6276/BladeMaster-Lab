@@ -241,7 +241,7 @@ class ContactStrokes:
 
 
 def hid_twist(raw, speed=0.06, angular_speed=0.5, deadzone=0.08):
-    """Exactly the existing WowSkin fixed-base HID axis convention.
+    """SpaceMouse axis convention for a fixed-base tool.
 
     Raw signs [1,-1,-1,1,-1,1], then (forward,-right,up). X forward,
     Y left, Z up; rotations are right-handed world-axis angular velocities.

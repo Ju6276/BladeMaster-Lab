@@ -44,8 +44,8 @@ function installAsset(asset){
  const origin=new THREE.Vector3(...asset.origin);
  // Paper Fig. 1 view: in front of the arm, looking back along its reach, slightly from above.
  const base=new THREE.Vector3(...(asset.base||[0,0,0])),reach=origin.clone().sub(base).setZ(0),front=reach.clone().normalize();
- const whole=base.clone().addScaledVector(reach,.6).setZ(.4);
- views.forEach((v,i)=>{v.controls.target.copy(i?origin.clone().add(new THREE.Vector3(0,0,.025)):whole);v.camera.position.copy(v.controls.target).add(i?front.clone().multiplyScalar(.3).setZ(.1):front.clone().multiplyScalar(1.1).setZ(.25));v.controls.update()});
+ const whole=base.clone().addScaledVector(reach,.5).setZ(.52);
+ views.forEach((v,i)=>{v.controls.target.copy(i?origin.clone().add(new THREE.Vector3(0,0,.025)):whole);v.camera.position.copy(v.controls.target).add(i?front.clone().multiplyScalar(.3).setZ(.1):front.clone().multiplyScalar(1.45).setZ(.6));v.controls.update()});
  assetGeneration=asset.generation;
 }
 function applyPacket(p){

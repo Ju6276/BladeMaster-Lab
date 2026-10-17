@@ -27,7 +27,7 @@ DESCENT_S, HOLD_S, SPEED = 1.8, 0.2, 0.02
 START_EDGE = DESCENT_S * SPEED
 
 
-def cut_trace(spacing, seed, blade_contact_radius=None):
+def effective_config(spacing, seed, blade_contact_radius=None):
     base = banana_config()
     cfg = replace(
         base,
@@ -40,6 +40,49 @@ def cut_trace(spacing, seed, blade_contact_radius=None):
     )
     if blade_contact_radius is not None:
         cfg = replace(cfg, blade_contact_radius=blade_contact_radius)
+    return cfg
+
+
+def clean_revision():
+    revision = git_revision()
+    if not revision.get("commit") or revision.get("dirty") is not False:
+        raise ValueError("Numeric study caches require a clean Git commit; commit changes before running")
+    return revision
+
+
+def cache_identity(spacing, seed, blade_contact_radius, provenance):
+    return json.loads(
+        json.dumps(
+            dict(
+                config=asdict(effective_config(spacing, seed, blade_contact_radius)),
+                provenance=provenance,
+                protocol=dict(
+                    interval=INTERVAL, descent_s=DESCENT_S, hold_s=HOLD_S, speed=SPEED, start_edge=START_EDGE
+                ),
+            )
+        )
+    )
+
+
+def validate_cache(run, expected, path):
+    for key, value in expected.items():
+        if run.get("cache_identity", {}).get(key) != value:
+            raise ValueError(f"Cache mismatch in {path}: {key}; use a separate output directory")
+    config = expected["config"]
+    for key, value in dict(
+        config=config,
+        spacing=config["grid_spacing"],
+        seed=config["sampling_seed"],
+        dt=config["dt"],
+        blade_contact_radius=config["blade_contact_radius"],
+        revision=expected["provenance"],
+    ).items():
+        if run.get(key) != value:
+            raise ValueError(f"Cache mismatch in {path}: {key}; use a separate output directory")
+
+
+def cut_trace(spacing, seed, blade_contact_radius=None):
+    cfg = effective_config(spacing, seed, blade_contact_radius)
     s = Solver(cfg)
     port = ExternalToolPort(s)
     half = cfg.blade_half_size[2]
@@ -166,24 +209,41 @@ def main():
         ]
         plot(studies, a.output)
         return
+    provenance = clean_revision()
     out = Path(a.output)
     out.mkdir(parents=True, exist_ok=True)
     counts = {round(s, 6): int(n) for s, n in a.seeds_for}
-    runs = []
+    requests = []
+    # Validate every existing cache before launching any simulations.
     for spacing in a.spacings:
         for seed in range(1, counts.get(round(spacing, 6), a.seeds) + 1):
             path = out / f"h{spacing * 1000:g}mm_seed{seed}.json"
+            identity = cache_identity(spacing, seed, a.blade_contact_radius, provenance)
+            run = None
             if path.exists():
-                run = json.loads(path.read_text())
-            else:
-                run = cut_trace(spacing, seed, a.blade_contact_radius)
-                path.write_text(json.dumps(run))
-            runs.append(run)
-            print(
-                f"h={spacing*1000:g} mm seed={seed} n={run['particles']} wall={run['wall_s']:.1f}s",
-                flush=True,
-            )
-    summary = dict(summarize(runs), revision=git_revision(), command=" ".join(sys.argv))
+                try:
+                    run = json.loads(path.read_text())
+                    validate_cache(run, identity, path)
+                except (ValueError, TypeError, AttributeError) as exc:
+                    raise ValueError(f"Cannot reuse cache {path}: {exc}") from exc
+            requests.append((spacing, seed, path, identity, run))
+    runs = []
+    for spacing, seed, path, identity, run in requests:
+        if run is None:
+            run = cut_trace(spacing, seed, a.blade_contact_radius)
+            if git_revision() != provenance:
+                raise ValueError("Code changed during computation; results were not cached")
+            run["cache_identity"] = identity
+            validate_cache(run, identity, path)
+            path.write_text(json.dumps(run))
+        runs.append(run)
+        print(
+            f"h={spacing*1000:g} mm seed={seed} n={run['particles']} wall={run['wall_s']:.1f}s",
+            flush=True,
+        )
+    if git_revision() != provenance:
+        raise ValueError("Code changed during the study; summary was not written")
+    summary = dict(summarize(runs), revision=provenance, command=" ".join(sys.argv))
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     for name, row in summary["by_spacing"].items():
         print(

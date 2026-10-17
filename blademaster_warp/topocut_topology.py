@@ -192,11 +192,13 @@ class TopologyTracker:
                         support_winding_number=True,
                     )
                 )
+            # All particles and smoothed surface vertices lie within these bounds.
+            query_reach = float(np.linalg.norm(upper - lower)) + prm.tau * s
             labels = wp.empty(len(x), dtype=int)
             wp.launch(
                 nearest_cluster,
                 len(x),
-                [wp.array([m.id for m in meshes], dtype=wp.uint64), gx, prm.tau * s, 10 * reach, labels],
+                [wp.array([m.id for m in meshes], dtype=wp.uint64), gx, prm.tau * s, query_reach, labels],
             )
             cluster = labels.numpy()
         self.meshes = [(m.points.numpy(), m.indices.numpy().reshape(-1, 3)) for m in meshes]

@@ -61,3 +61,75 @@ def test_a_piece_that_needs_two_cuts_is_carved_by_both():
     t.reconstruct(x, second)
     assert len(t.pieces()) == 2
     assert not t.pending
+
+
+def test_deep_interior_assignment_survives_refinement(monkeypatch):
+    import warp as wp
+    from blademaster_warp.topocut_topology import TopologyParams, nearest_cluster
+
+    vertices = np.array(
+        [
+            [-1, -1, -1],
+            [-1, -1, 1],
+            [-1, 1, -1],
+            [-1, 1, 1],
+            [1, -1, -1],
+            [1, -1, 1],
+            [1, 1, -1],
+            [1, 1, 1],
+        ],
+        dtype=np.float32,
+    ) * 0.03 + [0, 0, 0.03]
+    faces = np.array(
+        [
+            [0, 3, 2],
+            [0, 1, 3],
+            [4, 6, 7],
+            [4, 7, 5],
+            [0, 4, 5],
+            [0, 5, 1],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 2, 6],
+            [0, 6, 4],
+            [1, 5, 7],
+            [1, 7, 3],
+        ],
+        dtype=np.int32,
+    )
+    # Supply a closed reconstructed surface to isolate assignment from meshing.
+    from blademaster_warp.topocut_topology import particle_sdf
+
+    class CubeSurface:
+        def __init__(self, *args, **kwargs):
+            self.verts = wp.array(vertices, dtype=wp.vec3, device="cpu")
+            self.indices = wp.array(faces.ravel(), dtype=int, device="cpu")
+
+        def surface(self, field, level):
+            pass
+
+    launch = wp.launch
+
+    def assignment_only(kernel, *args, **kwargs):
+        if kernel is not particle_sdf:
+            return launch(kernel, *args, **kwargs)
+
+    monkeypatch.setattr(wp, "MarchingCubes", CubeSurface)
+    monkeypatch.setattr(wp, "launch", assignment_only)
+    with wp.ScopedDevice("cpu"):
+        mesh = wp.Mesh(
+            points=wp.array(vertices, dtype=wp.vec3),
+            indices=wp.array(faces.ravel(), dtype=int),
+            support_winding_number=True,
+        )
+        positions = wp.array([[0, 0, 0.03], [0.025, 0, 0.03], [0.04, 0, 0.03]], dtype=wp.vec3)
+        labels = wp.empty(3, dtype=int)
+        for spacing in (0.002, 0.001, 0.0005):
+            tau = TopologyParams().tau * spacing / 2
+            reach = float(np.linalg.norm(vertices.max(0) - vertices.min(0))) + tau
+            wp.launch(
+                nearest_cluster, 3, [wp.array([mesh.id], dtype=wp.uint64), positions, tau, reach, labels]
+            )
+            np.testing.assert_array_equal(labels.numpy(), [0, 0, -1])
+            tracker = TopologyTracker(3, spacing, HALF, TopologyParams(smoothing_steps=0), device="cpu")
+            np.testing.assert_array_equal(tracker.reconstruct(positions.numpy()), [0, 0, -1])

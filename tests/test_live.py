@@ -246,3 +246,20 @@ def test_live_preview_does_not_insert_unpaired_recorded_frame(tmp_path):
     frames = json.loads((out / "surface/frames.json").read_text())
     assert len(trajectory["qpos"]) == len(trajectory["particles"]) == len(frames) == 3
     np.testing.assert_allclose([f["time_s"] for f in frames], trajectory["control_tcp"][:, 0])
+
+
+def test_piece_ids_survive_later_cuts():
+    from types import SimpleNamespace
+
+    from blademaster_warp.franka_run import FrankaCuttingRun
+
+    run = SimpleNamespace(_piece_ids=None, _next_piece=1)
+    stable = lambda labels: FrankaCuttingRun._stable_pieces(run, np.array(labels))
+    np.testing.assert_array_equal(stable([0, 0, 0, 0, 0, 0]), [0] * 6)
+    np.testing.assert_array_equal(stable([0, 0, 0, 1, 1, 1]), [0, 0, 0, 1, 1, 1])
+    # Cutting the first piece renumbers the old piece 1 as component 2; the larger
+    # half keeps id 0 and the smaller one gets a new id.
+    np.testing.assert_array_equal(stable([0, 1, 1, 2, 2, 2]), [2, 0, 0, 1, 1, 1])
+    np.testing.assert_array_equal(stable([0, 1, 1, 2, 3, 3]), [2, 0, 0, 3, 1, 1])
+    # A fresh run starts from one piece again.
+    np.testing.assert_array_equal(stable([0, 0, 0, 0, 0, 0]), [0] * 6)

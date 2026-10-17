@@ -224,6 +224,8 @@ class FrankaCuttingRun:
         self._last_codes = None
         self._last_component_sizes = None
         self._last_component_labels = None
+        self._piece_ids = None
+        self._next_piece = 1
 
     def _make_cycle(self):
         if self.args.motion == "sequence":
@@ -335,7 +337,7 @@ class FrankaCuttingRun:
         )
         self._timed("material", tick)
         if self.strokes is not None:
-            self.strokes.update(self.solver.embedded_particles() > 0, self.args.interval)
+            self.strokes.update(self.solver.embedded_particles_previous() > 0, self.args.interval)
         return np.r_[reaction.force_n, reaction.torque_nm]
 
     def _log_step(self, target, tool_target, wrench, requested, applied):
@@ -372,9 +374,36 @@ class FrankaCuttingRun:
         if self._last_codes is None or not np.array_equal(codes, self._last_codes):
             labels, sizes = components(self.solver.node_numpy, self.solver.weight_numpy, codes)
             self._last_codes = codes
-            self._last_component_labels = labels
+            self._last_component_labels = self._stable_pieces(labels)
             self._last_component_sizes = sizes.tolist()
         return self._last_component_sizes
+
+    def _stable_pieces(self, labels):
+        """Piece id per particle that survives later cuts.
+
+        Component labels are renumbered whenever a cut adds a piece. Each previous
+        piece passes its id to the new component sharing most particles with it;
+        the other components get ids never used before.
+        """
+        previous = self._piece_ids
+        if labels.max() == 0 or previous is None or len(previous) != len(labels):
+            self._next_piece = int(labels.max()) + 1
+            self._piece_ids = labels.copy()
+            return self._piece_ids
+        base = int(previous.max()) + 1
+        pairs, counts = np.unique(labels.astype(np.int64) * base + previous, return_counts=True)
+        mapping = np.full(int(labels.max()) + 1, -1)
+        taken = set()
+        for i in np.argsort(-counts, kind="stable"):
+            component, old = divmod(int(pairs[i]), base)
+            if mapping[component] < 0 and old not in taken:
+                mapping[component] = old
+                taken.add(old)
+        for component in np.flatnonzero(mapping < 0):
+            mapping[component] = self._next_piece
+            self._next_piece += 1
+        self._piece_ids = mapping[labels]
+        return self._piece_ids
 
     def _snapshot(self, heights, wrench, begin):
         """Frame sample: material readback, task observation, surface, live display."""

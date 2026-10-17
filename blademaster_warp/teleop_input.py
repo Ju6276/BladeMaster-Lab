@@ -150,12 +150,15 @@ class PoseTarget:
         self.axis0 = quaternion_rotate(self.orientation, np.array([0.0, 0.0, 1.0]))
         self.input_rotation = np.eye(3) if input_rotation is None else np.asarray(input_rotation, dtype=float)
         self.yaw_only = yaw_only
+        # The current pose has passed `limit`, so an idle input may keep it as is.
+        self._limited = False
 
     def limit(self, position, orientation):
         """Pose clamped to the tilt cone, the workspace box and the floor."""
         q = orientation / np.linalg.norm(orientation)
         if self.max_tilt is not None:
-            axis = quaternion_rotate(q, np.array([0.0, 0.0, 1.0]))
+            x, y, z, w = (float(v) for v in q)
+            axis = np.array([2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y)])
             tilt = np.arccos(np.clip(axis @ self.axis0, -1.0, 1.0))
             if tilt > self.max_tilt:
                 hinge = np.cross(axis, self.axis0)
@@ -168,7 +171,9 @@ class PoseTarget:
         if self.workspace is not None:
             p = np.clip(p, self.workspace[0], self.workspace[1])
         if self.edge is not None and self.floor_z is not None:
-            lowest = min(quaternion_rotate(q, e)[2] for e in self.edge)
+            x, y, z, w = (float(v) for v in q)
+            row = (2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y))
+            lowest = min(row[0] * e[0] + row[1] * e[1] + row[2] * e[2] for e in self.edge)
             p[2] = max(p[2], self.floor_z - lowest)
         return p, q
 
@@ -181,6 +186,8 @@ class PoseTarget:
                 self.cutting = False
             elif event == "hold":
                 command = Command(command.seq, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        if self._limited and not any(command.velocity) and not any(command.omega):
+            return np.repeat(self.position[None], substeps, 0), np.repeat(self.orientation[None], substeps, 0)
         indices = np.arange(1, substeps + 1)
         velocity = self.input_rotation @ np.asarray(command.velocity)
         omega = self.input_rotation @ np.asarray(command.omega)
@@ -198,6 +205,7 @@ class PoseTarget:
             positions[i], rotations[i] = self.limit(positions[i], rotations[i])
         self.position = positions[-1].copy()
         self.orientation = rotations[-1].copy()
+        self._limited = True
         return positions, rotations
 
 

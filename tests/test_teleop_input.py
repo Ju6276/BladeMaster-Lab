@@ -96,3 +96,12 @@ def test_yaw_only_keeps_the_blade_upright_and_operator_frame_turns_input():
     # Operator facing the arm: their forward is world -x for an arm reaching along +x.
     np.testing.assert_allclose(target.position, [-0.01, 0.0, 0.1], atol=1e-12)
     assert abs(target.orientation[2]) == pytest.approx(np.sin(0.25))
+
+
+def test_idle_input_keeps_the_limited_pose():
+    target = PoseTarget((0.0, 0.0, 0.1), workspace=((-0.1, -0.1, 0.0), (0.1, 0.1, 0.05)))
+    first, _ = target.integrate(Command(0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)), [], 0.001, 1)
+    np.testing.assert_allclose(first[-1], [0.0, 0.0, 0.05])
+    again, rotations = target.integrate(Command(1, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)), [], 0.001, 1)
+    np.testing.assert_allclose(again[-1], [0.0, 0.0, 0.05])
+    np.testing.assert_allclose(rotations[-1], target.orientation)

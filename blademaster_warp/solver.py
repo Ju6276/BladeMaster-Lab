@@ -879,6 +879,24 @@ class Solver:
         )
         return int(count.numpy()[0])
 
+    def embedded_particles_previous(self):
+        """`embedded_particles` of the previous call; this call's count is copied back asynchronously.
+
+        The next `advance` synchronizes the stream, so the copy is complete when read.
+        """
+        if not hasattr(self, "_embedded"):
+            self._embedded = wp.zeros(1, dtype=int, device=self.device)
+            self._embedded_host = wp.zeros(1, dtype=int, device="cpu", pinned=self.device.is_cuda)
+        previous = int(self._embedded_host.numpy()[0])
+        self._embedded.zero_()
+        self.launch(
+            c.count_embedded,
+            self.n,
+            [self.x, self.tool_pos, self.tool_rot, self.half, self.config.grid_spacing, self._embedded],
+        )
+        wp.copy(self._embedded_host, self._embedded)
+        return previous
+
     def _step_kernels(
         self, target_edge, cutting, cut_index, buffer=None, index=0, rotations=None, orientation=None
     ):

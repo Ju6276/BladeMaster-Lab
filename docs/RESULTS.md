@@ -111,6 +111,29 @@ commit `872c633`；89 项测试通过（16.73 s）。三刀重跑命令：
 
 两者都含逐帧记录。6 mm 时香蕉直径只有约 4 格，截面呈梯形、外皮发块；3 mm 下截面圆润，切面平整。峰值力随网格变化很大（6 mm 的 7.7 N 主要是触板尖峰），力的收敛仍待按论文 Fig. 9 的做法（20 次采样平均 + 加密）检查。
 
+## 2026-10-17 论文 Fig. 7（刀尖十字划痕）与 Fig. 8（连续薄切）
+
+`python -m blademaster_warp.scenarios --scenario fig7-shallow|fig7-deep|fig8 --surface --surface-embedding cuda --surface-ccd cuda`；图 `python -m scripts.scene_surfaces ...`（Fig. 7 用 `--surface-spacing 0.0025`）。两者都是规定刀路（论文用 Franka），\(G_c\) = 10 J/m² 为本地取值。
+
+**Fig. 7**：块 80 × 80 × 70 mm，1 cm 网格，3584 粒子（与 Table I 相同）；E = 6 kPa、ν = 0.35、ρ = 1100（论文）。刀绕厚度轴倾斜 30°，最低的刀角在前，先沿 x、再沿 y 各划 60 mm。重力下顶面先沉降到 66.5 mm（6 kPa 很软，\(\rho g H^2/2E\) ≈ 4.4 mm），深度从沉降后的顶面算：浅 6 mm、深 20 mm。两次都保持一块（不切透）；浅划只切开顶层粒子（粒子间距 5 mm），表面上是细痕；深划切开 4 层，表面是明显切口，两刀在中心相交。
+
+![Fig. 7](media/fig7_cross_scores.png)
+
+**Fig. 8**：块 100 × 50 × 42 mm，6 mm 网格，7854 粒子（Table I 7922）；Fig. 6 材料 E = 20 kPa、ν = 0.4、ρ = 1200、屈服应力 2 kPa（论文）。从 +x 端每隔 12 mm 切一刀，共 4 刀；6 mm 网格与香蕉相同，刀接触距离用 0.5 mm。每刀切到板后刀升到顶面下 12 mm 再向外推 20 mm 帮助倾倒（论文未说明薄片如何倒下）。结果：4 片各 952 粒子；第 1 片在刀推之前、底部刚切开时就自己向外倒下（刀楔使薄片略外倾），落地后滑约 25 mm（落地水平速度约 0.3 m/s、动摩擦 0.2 时 \(v^2/2\mu g\) ≈ 23 mm），3.3 s 后静止；最终倾角 90°、86°、61°、43°，后两片斜靠在前一片上，形成叠堆。
+
+![Fig. 8](media/fig8_sequential_slicing.png)
+
+## 2026-10-17 Table I 计时（RTX 4060，只计 `ExternalToolPort.advance`）
+
+| 场景 | 粒子 | 本仓库步长 | wall/sim | 论文步长下 wall/sim | 论文（RTX 5090） |
+|---|---|---|---|---|---|
+| 重力刀（Fig. 3） | 8960 | 2 ms | 0.47 | 0.47 | 0.33 |
+| 中间片抬升（Fig. 4） | 8932 | 0.5 ms | 0.49 | 0.21（2 ms，片未切开） | 0.36 |
+| 刀尖划痕（Fig. 7） | 3584 | 0.5 ms | 0.36 | 0.17（2 ms） | 0.30 |
+| 连续薄切（Fig. 8） | 7854 | 0.5 ms | 0.47 | 0.31（1 ms，4 片只切开 3 片） | 0.56 |
+
+论文步长下的问题都来自砧板接触：每步罚函数刚度 \(s_n m/\Delta t^2\)，柱高 N 个粒子时底层穿透约 \(N g \Delta t^2/s_n\)，在 1–2 ms 达到 1.4–4.3 mm，与底层粒子高度相当，最底层落到刀刃以下而切不开。Fig. 7 不切到底，2 ms 下结果不受影响。
+
 ## 2026-10-17 论文 Fig. 4：中间片抬升与单场对照
 
 `python -m blademaster_warp.scenarios --scenario fig4 [--single-field]`，对比图 `python -m scripts.fig4_compare runs/fig4_bm runs/fig4_sf --output ...`。

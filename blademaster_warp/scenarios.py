@@ -21,6 +21,77 @@ FIG4_CUT_ANGLES_DEG = (60.0, -60.0)
 FIG4_CUT_CENTRE_RADIUS = 0.04
 
 
+# Paper Fig. 7 block: 80 x 80 x 70 mm on a 1 cm grid is the 3584 particles of Table I.
+FIG7_SIZE = (0.08, 0.08, 0.07)
+# Settled top surface the depths are measured from: under gravity the top particle
+# centres drop from 67.5 to 64.0 mm, plus the 2.5 mm particle radius.
+FIG7_TOP = 0.0665
+FIG7_ROLL_DEG = -30.0
+FIG7_DEPTHS = {"fig7-shallow": 0.006, "fig7-deep": 0.020}
+
+
+def _tip_offset(rotation):
+    """Lowest blade corner relative to the tool origin, in world axes."""
+    hx, hy, hz = FIG4_KNIFE_HALF_SIZE
+    corners = np.array([[0.0, sy * hy, -hz] for sy in (-1, 1)])
+    world = Rotation.from_euler("ZYX", rotation, degrees=True).apply(corners)
+    return world[np.argmin(world[:, 2])]
+
+
+def _score(t0, start, end, index, depth, speed=0.02, clearance=0.01):
+    """Tilted knife whose tip plunges at start, follows the line to end and withdraws."""
+    start, end = np.asarray(start, float), np.asarray(end, float)
+    direction = (end - start) / np.linalg.norm(end - start)
+    # Knife length along the path, tip leading.
+    rotation = [np.degrees(np.arctan2(-direction[0], direction[1])), 0.0, FIG7_ROLL_DEG]
+    tip = _tip_offset(rotation)
+    top = FIG7_TOP
+
+    def at(xy, z):
+        return (np.array([*xy, z]) - tip).tolist()
+
+    t1 = t0 + 0.2
+    t2 = t1 + (clearance + depth) / speed
+    t3 = t2 + np.linalg.norm(end - start) / speed
+    return [
+        (t0, at(start, top + clearance), rotation, index),
+        (t1, at(start, top + clearance), rotation, index),
+        (t2, at(start, top - depth), rotation, index),
+        (t3, at(end, top - depth), rotation, -1),
+        (t3 + 1.0, at(end, top + clearance + 0.02), rotation, -1),
+    ]
+
+
+# Paper Fig. 8 block on a 6 mm grid: 7854 particles (Table I: 7922).
+FIG8_SIZE = (0.10, 0.05, 0.042)
+FIG8_KNIFE_HALF_SIZE = (0.0005, 0.04, 0.03)
+FIG8_SLICE = 0.012
+FIG8_CUTS = 4
+
+
+def _slice(t0, x, index, speed=0.03, push=0.02):
+    """Cut through at x, rise to 12 mm below the top and tip the slice over towards +x."""
+    hz = FIG8_KNIFE_HALF_SIZE[2]
+    height = FIG8_SIZE[2]
+    top, bottom, tip_over = height + 0.01 + hz, 0.0003 + hz, height - 0.012 + hz
+    t1 = t0 + 0.2
+    t2 = t1 + (top - bottom) / speed
+    t3 = t2 + 0.2
+    t4 = t3 + 0.6
+    t5 = t4 + push / 0.025
+    t6 = t5 + 0.6
+    return [
+        (t0, [x, 0, top], [0, 0, 0], index),
+        (t1, [x, 0, top], [0, 0, 0], index),
+        (t2, [x, 0, bottom], [0, 0, 0], index),
+        (t3, [x, 0, bottom], [0, 0, 0], -1),
+        (t4, [x, 0, tip_over], [0, 0, 0], -1),
+        (t5, [x + push, 0, tip_over], [0, 0, 0], -1),
+        (t6, [x + push, 0, top + 0.01], [0, 0, 0], -1),
+        (t6 + 0.8, [x + push, 0, top + 0.01], [0, 0, 0], -1),
+    ]
+
+
 def _radial_cut(t0, angle_deg, index, top, bottom, descend_s, hold_s=0.2, withdraw_s=1.0):
     """Vertical stroke whose knife length lies along the radius at angle_deg."""
     a = np.deg2rad(angle_deg)
@@ -100,6 +171,17 @@ def keyframes(name):
                 (t + 6.8, [0.07, 0, low + 0.04], flat, -1),
             ]
         )
+    if name in FIG7_DEPTHS:
+        depth = FIG7_DEPTHS[name]
+        first = _score(0.0, [-0.03, 0.0], [0.03, 0.0], 0, depth)
+        second = _score(first[-1][0] + 1.0, [0.0, -0.03], [0.0, 0.03], 1, depth)
+        return first + second + [(second[-1][0] + 0.5, second[-1][1], second[-1][2], -1)]
+    if name == "fig8":
+        keys = []
+        for k in range(FIG8_CUTS):
+            t0 = keys[-1][0] + 0.6 if keys else 0.0
+            keys += _slice(t0, FIG8_SIZE[0] / 2 - (k + 1) * FIG8_SLICE, k)
+        return keys + [(keys[-1][0] + 1.5, keys[-1][1], keys[-1][2], -1)]
     raise ValueError(name)
 
 
@@ -127,6 +209,43 @@ def scene_config(name, dt=None):
             blade_half_size=FIG4_KNIFE_HALF_SIZE,
             blade_bevel_height=DEMO_KNIFE_BEVEL_HEIGHT_M,
         )
+    if name in FIG7_DEPTHS:
+        return Config(
+            size=FIG7_SIZE,
+            shape="block",
+            grid_spacing=0.01,
+            # As Fig. 4: 0.5 ms keeps the board penetration well below a millimetre.
+            dt=dt or 0.0005,
+            young_modulus=6000.0,
+            poisson_ratio=0.35,
+            density=1100.0,
+            cutting_energy=10.0,
+            blade_contact_radius=0.0,
+            external_tool=True,
+            grid_storage="compact",
+            blade_half_size=FIG4_KNIFE_HALF_SIZE,
+            blade_bevel_height=DEMO_KNIFE_BEVEL_HEIGHT_M,
+        )
+    if name == "fig8":
+        return Config(
+            size=FIG8_SIZE,
+            shape="block",
+            grid_spacing=0.006,
+            # Table I uses 1 ms, about the CFL limit of this material on a 6 mm grid.
+            dt=dt or 0.0005,
+            young_modulus=20000.0,
+            poisson_ratio=0.4,
+            density=1200.0,
+            yield_stress=2000.0,
+            cutting_energy=10.0,
+            # 6 mm grid as the banana runs; a particle-radius contact would make the kerf
+            # 4 mm of a 12 mm slice.
+            blade_contact_radius=0.0005,
+            external_tool=True,
+            grid_storage="compact",
+            blade_half_size=FIG8_KNIFE_HALF_SIZE,
+            blade_bevel_height=DEMO_KNIFE_BEVEL_HEIGHT_M,
+        )
     return Config(
         size=(0.06, 0.03, 0.03),
         grid_spacing=0.006,
@@ -140,7 +259,10 @@ def scene_config(name, dt=None):
 
 
 PROVENANCE = {
-    "fig4": "Paper Fig. 4 E/nu/rho and Table I step; local cylinder size, knife, path, Gc=10 and contact numerics",
+    "fig4": "Paper Fig. 4 E/nu/rho; local cylinder size, knife, path, Gc=10, 0.5 ms step and contact numerics",
+    "fig7-shallow": "Paper Fig. 7 E/nu/rho; local block size, knife, roll, path, depth, Gc=10 and step",
+    "fig7-deep": "Paper Fig. 7 E/nu/rho; local block size, knife, roll, path, depth, Gc=10 and step",
+    "fig8": "Paper Fig. 6/8 E/nu/rho/yield; local block size, knife, slice width, tip-over push, Gc=10 and step",
 }
 
 
@@ -274,7 +396,7 @@ def run(args):
         raise RuntimeError(error)
 
 
-SCENARIOS = ["parallel", "cross-shallow", "slice-lift", "fig4"]
+SCENARIOS = ["parallel", "cross-shallow", "slice-lift", "fig4", *FIG7_DEPTHS, "fig8"]
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)

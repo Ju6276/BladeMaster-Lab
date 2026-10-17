@@ -34,6 +34,33 @@ def test_block_rests_on_the_board_without_damage():
     assert not st["damage"].any()
 
 
+def test_soft_block_settling_under_gravity_is_not_damage():
+    # Fig. 4 material: rho g H / E is about 6 % strain at the bottom, beyond Eq. 6's 2.5 %.
+    soft = Config(
+        size=(0.06, 0.06, 0.056),
+        grid_spacing=0.01,
+        dt=0.002,
+        young_modulus=10000.0,
+        poisson_ratio=0.4,
+        density=1100.0,
+        normal_scale=1.0,
+        board_normal_scale=1.0,
+        blade_half_size=(0.0005, 0.05, 0.04),
+    )
+    literal = MlsSolver(soft)
+    settled = MlsSolver(soft, damage_from_start=False)
+    for _ in range(250):
+        literal.advance(parked(), 0.002)
+        settled.advance(parked(), 0.002)
+    settled.start_damage()
+    for _ in range(250):
+        literal.advance(parked(), 0.002)
+        settled.advance(parked(), 0.002)
+    assert literal.damage.numpy().sum() > 0.05 * literal.n
+    assert not settled.damage.numpy().any()
+    assert settled.x.numpy()[:, 2].max() < 0.056
+
+
 def test_inverted_particle_is_clamped_like_plasticinelab_not_fatal():
     s = MlsSolver(config())
     F = s.F.numpy()
@@ -58,9 +85,10 @@ def test_diverged_particle_is_reported_without_out_of_bounds_access():
 
 
 def test_knife_damages_material_at_its_plane_and_feels_the_reaction():
-    s = MlsSolver(config())
+    s = MlsSolver(config(), damage_from_start=False)
     for _ in range(25):
         s.advance(parked(), 0.002)
+    s.start_damage()
     half, speed, interval = 0.02, 0.05, 0.002
     lift = []
     for i in range(int(0.024 / speed / interval)):

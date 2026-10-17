@@ -10,11 +10,15 @@ python -m scripts.topocut_compare --plot runs/topocut_fig8 --output fig.png
 """
 
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
+import sys
 import time
 import numpy as np
 from blademaster_warp import spectral
+from blademaster_warp.coupling import ToolState
+from blademaster_warp.provenance import git_revision
 from blademaster_warp.scenarios import FIG4_CUT_ANGLES_DEG, FIG8_CUTS, FIG8_SIZE, FIG8_SLICE
 from blademaster_warp.scenarios import command_at, keyframes, scene_config
 
@@ -62,12 +66,16 @@ class BladeMasterRun:
         return components(self.solver.node_numpy, self.solver.weight_numpy, self.solver.codes.numpy())[0]
 
 
+    def settled(self):
+        pass
+
+
 class TopoCutRun:
     def __init__(self, cfg, damaged_shear=0.0):
         from blademaster_warp.mlsmpm import MlsSolver, TopoCutParams
         from blademaster_warp.topocut_topology import TopologyTracker
 
-        self.solver = MlsSolver(cfg, TopoCutParams(damaged_shear=damaged_shear))
+        self.solver = MlsSolver(cfg, TopoCutParams(damaged_shear=damaged_shear), damage_from_start=False)
         self.reference = self.solver.reference
         self.tracker = TopologyTracker(self.solver.n, cfg.grid_spacing, cfg.blade_half_size)
         self.damaged = 0
@@ -82,6 +90,9 @@ class TopoCutRun:
     def damage_count(self):
         return int((self.solver.damage.numpy() > 0).sum())
 
+    def settled(self):
+        self.solver.start_damage()
+
     def end_of_cut(self, poses):
         tick = time.perf_counter()
         self.tracker.reconstruct(self.positions(), poses)
@@ -91,7 +102,9 @@ class TopoCutRun:
         return self.tracker.labels
 
 
-def run(name, method, interval, dt=None, damaged_shear=0.0):
+def run(name, method, interval, dt=None, damaged_shear=0.0, settle_s=1.0):
+    """Both solvers first settle under gravity for settle_s with the knife parked at its
+    first pose and not cutting; TopoCut's Eq. 6 then measures J from the settled state."""
     cfg = scene_config(name, dt)
     keys = keyframes(name)
     sim = BladeMasterRun(cfg) if method == "blademaster" else TopoCutRun(cfg, damaged_shear)
@@ -102,6 +115,11 @@ def run(name, method, interval, dt=None, damaged_shear=0.0):
     status, error = "completed", None
     begin = time.perf_counter()
     try:
+        parked = command_at(0.0, keys)[0]
+        parked = ToolState(parked.position, parked.orientation_xyzw, [0, 0, 0], [0, 0, 0])
+        for _ in range(round(settle_s / interval)):
+            sim.advance(parked, interval, False, 0)
+        sim.settled()
         for i in range(steps):
             t = i * interval
             tool, active, index = command_at(t, keys)
@@ -232,6 +250,9 @@ def main():
         default=[0.0],
         help="TopoCut runs: shear modulus factor of damaged particles (the paper leaves the change open)",
     )
+    p.add_argument(
+        "--settle", type=float, default=1.0, help="Gravity settling before the knife path, s (both solvers)"
+    )
     p.add_argument("--plot", default=None, help="Plot a finished run directory to --output")
     a = p.parse_args()
     if a.plot:
@@ -244,9 +265,18 @@ def main():
     runs = [("blademaster", "blademaster", None)] + [
         (f"topocut_shear{v:g}", "topocut", v) for v in a.damaged_shear
     ]
-    summary = dict(scenario=a.scenario, dt=cfg.dt, interval=interval, runs=[r[0] for r in runs])
+    summary = dict(
+        scenario=a.scenario,
+        dt=cfg.dt,
+        interval=interval,
+        settle_s=a.settle,
+        runs=[r[0] for r in runs],
+        config=asdict(cfg),
+        revision=git_revision(),
+        command=" ".join(sys.argv),
+    )
     for run_name, method, shear in runs:
-        result = run(a.scenario, method, interval, a.dt, shear or 0.0)
+        result = run(a.scenario, method, interval, a.dt, shear or 0.0, a.settle)
         np.savez_compressed(
             out / f"{run_name}.npz",
             **{k: result[k] for k in ("times", "positions", "labels", "reference")},

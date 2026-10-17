@@ -163,6 +163,7 @@ def g2p(
     F: wp.array(dtype=wp.mat33),
     yield_stress: wp.array(dtype=float),
     damage: wp.array(dtype=float),
+    damage_reference: wp.array(dtype=float),
     plastic: int,
     mu: float,
     softening: float,
@@ -204,6 +205,9 @@ def g2p(
             wp.max(s[0], MIN_SINGULAR_VALUE), wp.max(s[1], MIN_SINGULAR_VALUE), wp.max(s[2], MIN_SINGULAR_VALUE)
         )
         f = U * wp.diag(s) * wp.transpose(V)
+    # 0 until damage is enabled; then J at that moment, so Eq. 6 measures the volume
+    # change from the settled state and gravity settling is not damage.
+    reference_J = damage_reference[p]
     if plastic != 0:
         # Hencky von Mises return map; Eq. 7 softens the yield stress by the plastic increment.
         e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
@@ -214,18 +218,23 @@ def g2p(
             e = e - (1.0 - limit / norm) * dev
             s = wp.vec3(wp.exp(e[0]), wp.exp(e[1]), wp.exp(e[2]))
             f = U * wp.diag(s) * wp.transpose(V)
-            if softening > 0.0:
+            if softening > 0.0 and reference_J > 0.0:
                 yield_stress[p] = wp.max(0.0, yield_stress[p] - softening * (norm - limit))
                 if yield_stress[p] <= 0.0:
                     damage[p] = 1.0
     F[p] = f
-    J = s[0] * s[1] * s[2]
-    if J <= compressed or J >= stretched:
-        damage[p] = 1.0
+    if reference_J > 0.0:
+        J = s[0] * s[1] * s[2] / reference_J
+        if J <= compressed or J >= stretched:
+            damage[p] = 1.0
 
 
 class MlsSolver:
-    def __init__(self, cfg, params=TopoCutParams(), device=None):
+    """damage_from_start=True applies Eq. 6 to J of the reference configuration from the
+    first step (the literal reading); False leaves damage off until `start_damage`, which
+    takes the current configuration (e.g. settled under gravity) as the reference."""
+
+    def __init__(self, cfg, params=TopoCutParams(), device=None, damage_from_start=True):
         self.config, self.params = cfg, params
         self.device = wp.get_device(device)
         dx = cfg.grid_spacing
@@ -257,6 +266,7 @@ class MlsSolver:
             self.F = wp.array(np.tile(np.eye(3), (self.n, 1, 1)), dtype=wp.mat33)
             self.yield_stress = wp.full(self.n, cfg.yield_stress, dtype=float)
             self.damage = wp.zeros(self.n, dtype=float)
+            self.damage_reference = wp.full(self.n, 1.0 if damage_from_start else 0.0, dtype=float)
             shape = tuple(int(d) for d in self.dims)
             self.grid_m = wp.zeros(shape, dtype=float)
             self.grid_p = wp.zeros(shape, dtype=wp.vec3)
@@ -368,6 +378,7 @@ class MlsSolver:
                 self.F,
                 self.yield_stress,
                 self.damage,
+                self.damage_reference,
                 int(cfg.yield_stress > 0),
                 self.mu,
                 self.params.softening,
@@ -413,6 +424,10 @@ class MlsSolver:
             angular_impulse_nms=self.angular_impulse.numpy()[0].astype(float),
             origin_world_m=np.asarray(state.position, dtype=float),
         )
+
+    def start_damage(self):
+        """Enable Eq. 6 with each particle's current J as its reference volume."""
+        self.damage_reference.assign(np.linalg.det(self.F.numpy()))
 
     def diagnostics(self):
         """Particles non-finite or outside the grid, and clamped inversions (particle-steps)."""

@@ -111,6 +111,18 @@ class SurfaceRecorder:
             "topology_cache": "reference mesh reused only while no cut-dependent cell is dirty; world-space vertex deformation still recomputed every observation",
             "surface_spacing_m": surface_spacing,
             "material_grid_spacing_m": cfg.grid_spacing,
+            "tool_path_columns": [
+                "time_s",
+                "x_m",
+                "y_m",
+                "z_m",
+                "qx",
+                "qy",
+                "qz",
+                "qw",
+                "cutting",
+                "cut_index",
+            ],
             "embedding": "fixed trilinear weights on original MPM grid, compatible affine-extrapolated position fields",
             "empty_node_extension": "one reference-grid support ring, same compatible cut side, affine",
             "sampling": "all supplied tool substeps; material-link motion interpolated between observations; path retained in each recorded frame",
@@ -170,6 +182,12 @@ class SurfaceRecorder:
         if self.previous_nodes is not None:
             start = samples[0].time_s
             span = t - start
+            blade_points = [p.edge for a, b in zip(samples, samples[1:]) if a.cutting for p in (a, b)]
+            candidates = (
+                s.swept_candidates(self.previous_nodes, nodes, np.concatenate(blade_points))
+                if blade_points
+                else np.empty(0, int)
+            )
 
             def interpolate(previous, current, time_s):
                 a = np.clip((time_s - start) / span, 0.0, 1.0) if span > 0 else 1.0
@@ -206,6 +224,7 @@ class SurfaceRecorder:
                     previous_deformation=a_F,
                     ccd=self.ccd,
                     band=self.band,
+                    candidate_edges=candidates,
                 )
                 previous_time, interpolated_nodes, interpolated_F = b.time_s, b_nodes, b_F
         self.timing_s["link_sweep"] += time.perf_counter() - phase

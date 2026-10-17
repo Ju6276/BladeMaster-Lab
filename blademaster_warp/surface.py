@@ -235,10 +235,25 @@ class LinkedSurface:
         self.dirty = set(range(len(self.cells)))
         self.updated_cells = 0
         self._mesh_cache = None
+        self._opposite_edges = {}
 
     def cells_around(self, e):
         row = self.incident_cells[e]
         return row[row >= 0].tolist()
+
+    def swept_candidates(self, old, current, blade_points, candidates=None):
+        """Conservative link AABBs for linear material motion and a complete tool path."""
+        if candidates is None:
+            candidates = np.flatnonzero(self.inside[self.edges].all(axis=1))
+        candidates = np.asarray(candidates, dtype=int)
+        candidates = candidates[~self.broken[candidates]]
+        a, b = self.edges[candidates].T
+        lower = np.minimum(np.minimum(old[a], old[b]), np.minimum(current[a], current[b]))
+        upper = np.maximum(np.maximum(old[a], old[b]), np.maximum(current[a], current[b]))
+        blade_lower = np.min(blade_points, axis=0) - 1e-10
+        blade_upper = np.max(blade_points, axis=0) + 1e-10
+        overlaps = np.all(upper >= blade_lower, axis=1) & np.all(lower <= blade_upper, axis=1)
+        return candidates[overlaps]
 
     def sweep(
         self,
@@ -252,6 +267,7 @@ class LinkedSurface:
         previous_deformation=None,
         ccd=moving_segment_hits,
         band=None,
+        candidate_edges=None,
     ):
         """Sever links hit by the actual swept edge; returning to a cut cannot heal it.
 
@@ -264,17 +280,10 @@ class LinkedSurface:
             raise ValueError(f"int64 side codes hold at most {CODE_DIGITS} cuts")
         x = self.reference if current_nodes is None else np.asarray(current_nodes)
         quad = np.asarray([edge_before[0], edge_before[1], edge_after[1], edge_after[0]])
-        candidates = np.flatnonzero(self.inside[self.edges].all(axis=1) & ~self.broken)
-        if previous_nodes is not None and len(candidates):
-            # Reject disjoint swept AABBs before uploading a short substep to
-            # CCD. The same 1e-10 m bound is used by the CUDA narrow phase.
-            old = np.asarray(previous_nodes)
-            endpoints = self.edges[candidates]
-            lower = np.minimum(old[endpoints].min(axis=1), x[endpoints].min(axis=1))
-            upper = np.maximum(old[endpoints].max(axis=1), x[endpoints].max(axis=1))
-            blade_lower, blade_upper = quad.min(axis=0) - 1e-10, quad.max(axis=0) + 1e-10
-            overlaps = np.all(upper >= blade_lower, axis=1) & np.all(lower <= blade_upper, axis=1)
-            candidates = candidates[overlaps]
+        if previous_nodes is not None:
+            candidates = self.swept_candidates(np.asarray(previous_nodes), x, quad, candidate_edges)
+        else:
+            candidates = np.flatnonzero(self.inside[self.edges].all(axis=1) & ~self.broken)
         aa, bb = x[self.edges[candidates, 0]], x[self.edges[candidates, 1]]
         hits = []
         batches = []
@@ -343,7 +352,9 @@ class LinkedSurface:
         changed = set(self.edges[hits].ravel()) if hits else set()
         if band is not None and normal_world is not None:
             changed |= self._assign_band(x, edge_before, edge_after, normal_world, cut_index, band)
-            changed |= self._sever_opposite(x, edge_after, normal_world, cut_index, node_deformation)
+            changed |= self._sever_opposite(
+                x, edge_after, normal_world, cut_index, node_deformation, refresh=bool(changed)
+            )
         # A node's new code changes every incident region using that node, not
         # just cells adjacent to the severed edge.
         for node in changed:
@@ -364,30 +375,38 @@ class LinkedSurface:
         n = np.asarray(normal, float) / np.linalg.norm(normal)
         up = np.cross(n, along)
         travel = np.linalg.norm(np.asarray(edge_after) - np.asarray(edge_before), axis=1).max()
-        rel = x - edge.mean(0)
+        nodes = np.flatnonzero(self.inside & (self.codes // 3**cut_index % 3 == 0))
+        if not len(nodes):
+            return set()
+        rel = x[nodes] - edge.mean(0)
         lateral, length, height = rel @ n, rel @ along, rel @ up
-        unassigned = self.codes // 3**cut_index % 3 == 0
-        nodes = np.flatnonzero(
-            self.inside
-            & unassigned
-            & (np.abs(lateral) <= half_width)
+        selected = (
+            (np.abs(lateral) <= half_width)
             & (np.abs(length) <= half_length)
             & (height >= 0)
             & (height <= depth + travel)
         )
-        self.codes[nodes] += np.where(lateral[nodes] < 0, 1, 2) * 3**cut_index
+        nodes = nodes[selected]
+        self.codes[nodes] += np.where(lateral[selected] < 0, 1, 2) * 3**cut_index
         return set(nodes.tolist())
 
-    def _sever_opposite(self, x, edge, normal, cut_index, node_deformation):
+    def _sever_opposite(self, x, edge, normal, cut_index, node_deformation, refresh=True):
         """Sever intact links whose ends lie on opposite sides of this cut.
 
         Opposite sides never exchange momentum in the material, so such a link must not
         join one surface region. Without this, a link the swept-edge test just misses
         gives a region both side digits, and its vertex follows both pieces.
         """
-        digit = self.codes // 3**cut_index % 3
+        # Fixed reference links gain opposing sides only when a label changes.
+        # Retain the full opposing set so a missed sever is still repaired.
         a, b = self.edges[:, 0], self.edges[:, 1]
-        crossing = np.flatnonzero(~self.broken & self.inside[a] & self.inside[b] & (digit[a] * digit[b] == 2))
+        if refresh or cut_index not in self._opposite_edges:
+            digit = self.codes // 3**cut_index % 3
+            self._opposite_edges[cut_index] = np.flatnonzero(
+                self.inside[a] & self.inside[b] & (digit[a] * digit[b] == 2)
+            )
+        opposing = self._opposite_edges[cut_index]
+        crossing = opposing[~self.broken[opposing]]
         if not len(crossing):
             return set()
         n = np.asarray(normal, float) / np.linalg.norm(normal)

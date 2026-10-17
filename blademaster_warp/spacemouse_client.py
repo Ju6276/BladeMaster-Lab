@@ -49,7 +49,13 @@ def run(
             response = conn.getresponse()
             status = json.loads(body(response))
             ready = status.get("ready", False)
-            if ready:
+            terminal_session = (
+                buttons == "session"
+                and status.get("state") in ("completed", "stopped", "failed")
+                and status.get("can_restart", False)
+                and "last_seq" in status
+            )
+            if ready or terminal_session:
                 break
         except (OSError, http.client.HTTPException):
             conn.close()
@@ -100,13 +106,18 @@ def run(
                         else (np.zeros(3), np.zeros(3))
                     )
                     event = ""
-                    if buttons == "session":
-                        # Left starts the run, right ends it, both pause; same as the page buttons.
-                        for press in snapshot.presses:
-                            session_command(host, port, {"close": "start", "open": "stop", "hold": "pause"}[press])
-                    elif snapshot.presses and armed:
-                        events = {"close": "begin_cut", "open": "end_cut", "hold": "hold"}
-                        event = events.get(snapshot.presses[-1], "")
+                # Button edges are independent of motion freshness. Only beginning a
+                # manual cut requires an armed, healthy motion device.
+                if buttons == "session":
+                    for press in snapshot.presses:
+                        session_command(
+                            host, port, {"close": "start", "open": "stop", "hold": "pause"}[press]
+                        )
+                elif snapshot.presses:
+                    events = {"close": "begin_cut", "open": "end_cut", "hold": "hold"}
+                    requested = events.get(snapshot.presses[-1], "")
+                    if requested in ("end_cut", "hold") or (armed and not snapshot.error and not stale):
+                        event = requested
                 command = Command(seq, tuple(v), tuple(w), event)
             send(command)
             seq += 1

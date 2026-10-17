@@ -105,3 +105,16 @@ def test_idle_input_keeps_the_limited_pose():
     again, rotations = target.integrate(Command(1, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)), [], 0.001, 1)
     np.testing.assert_allclose(again[-1], [0.0, 0.0, 0.05])
     np.testing.assert_allclose(rotations[-1], target.orientation)
+
+
+def test_session_reset_discards_motion_and_events_but_keeps_sequence():
+    data = LatestInput()
+    data.feed(Command(10, (0.1, 0, 0), (0, 0, 1), "begin_cut").packet(), now=1.0)
+    data.reset_session()
+    command, events, stale = data.sample(now=1.0)
+    assert stale and command.seq == 10 and not events
+    assert not any(command.velocity) and not any(command.omega)
+    with pytest.raises(ValueError, match="sequence"):
+        data.feed(Command(10, (0, 0, 0), (0, 0, 0)).packet())
+    data.feed(Command(11, (0, 0, 0), (0, 0, 0), "begin_cut").packet(), now=2.0)
+    assert data.sample(now=2.0)[1:] == ([(11, "begin_cut")], False)

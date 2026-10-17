@@ -63,6 +63,7 @@ def scene_asset(robot):
 
 
 LONG_POLL_S = 0.5
+TERMINAL_STATES = ("completed", "stopped", "failed")
 # Larger bodies on command routes close the connection instead of being read.
 MAX_DISCARD_BYTES = 1 << 20
 
@@ -92,16 +93,16 @@ class LiveState:
         self.generation += 1
         asset["generation"] = self.generation
         self.asset = asset
-        self.stop_requested = False
-        self.play.clear()
         if solver:
             x, F, codes = solver.x.numpy(), solver.F.numpy(), solver.codes.numpy()
             surface.update(0.0, x, F, codes, robot.state(), cutting=False, record_frame=False)
         else:
             x = codes = None
-        self.publish(robot, solver, surface, x, codes, 0.0, "ready", np.zeros(6), state="ready")
-        if self.autostart:
-            self.play.set()
+        with self.lock:
+            if self.autostart or self.stop_requested:
+                self.play.set()
+            state = "running" if self.play.is_set() else "ready"
+            self.publish(robot, solver, surface, x, codes, 0.0, "ready", np.zeros(6), state=state)
             self.autostart = False
         self.setup_s = time.perf_counter() - setup_begin
         self.play.wait()  # Startup wait is outside the physics timing.
@@ -114,7 +115,18 @@ class LiveState:
         return time.perf_counter() - begin
 
     def publish(
-        self, robot, solver, surface, x, codes, wall_s, phase, wrench, state="running", input_seq=None, pieces=None,
+        self,
+        robot,
+        solver,
+        surface,
+        x,
+        codes,
+        wall_s,
+        phase,
+        wrench,
+        state="running",
+        input_seq=None,
+        pieces=None,
         piece_labels=None,
     ):
         ids = self.ids
@@ -153,27 +165,40 @@ class LiveState:
 
     def finish(self, report):
         with self.lock:
-            self._set(dict(self.snapshot, state=report["status"], report=report, can_restart=self.can_restart))
+            self._set(
+                dict(self.snapshot, state=report["status"], report=report, can_restart=self.can_restart)
+            )
 
     def command(self, command):
         # The lock (reentrant) keeps a frame published meanwhile from being overwritten
         # by a copy of the previous snapshot.
         with self.lock:
             if command == "start":
-                if self.snapshot["state"] in ("completed", "stopped", "failed"):
+                if self.snapshot["state"] in TERMINAL_STATES:
                     if not self.can_restart:
                         raise ValueError(
                             "Choose a new --output directory in a new process before recording again"
                         )
+                    self.stop_requested = False
+                    self.play.clear()
+                    if self.teleop is not None:
+                        self.teleop.reset_session()
                     self.autostart = True
                     self._set(dict(self.snapshot, state="loading"))
                     self.restart.set()
-                else:
+                elif self.snapshot["state"] == "loading":
+                    if not self.stop_requested:
+                        self.autostart = True
+                elif not self.stop_requested:
                     self.play.set()
                     self._set(dict(self.snapshot, state="running"))
             elif command == "pause":
+                if self.snapshot["state"] in TERMINAL_STATES or self.stop_requested:
+                    return
+                self.autostart = False
                 self.play.clear()
-                self._set(dict(self.snapshot, state="paused"))
+                if self.snapshot["state"] != "loading":
+                    self._set(dict(self.snapshot, state="paused"))
             elif command == "stop":
                 self.stop_requested = True
                 self.play.set()
@@ -239,6 +264,7 @@ def make_server(live, port):
                     packet = dict(
                         packet,
                         ready=packet["state"] in ("ready", "running", "paused"),
+                        can_restart=live.can_restart,
                         last_seq=-1 if last is None else last.seq,
                     )
                 self.send(json.dumps(packet, allow_nan=False).encode(), "application/json")

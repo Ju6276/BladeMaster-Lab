@@ -9,7 +9,9 @@ import numpy as np
 
 def quaternion_product(a, b):
     a_vec, b_vec = np.asarray(a[:3]), np.asarray(b[:3])
-    return np.concatenate((a[3] * b_vec + b[3] * a_vec + np.cross(a_vec, b_vec), (a[3] * b[3] - a_vec @ b_vec,)))
+    return np.concatenate(
+        (a[3] * b_vec + b[3] * a_vec + np.cross(a_vec, b_vec), (a[3] * b[3] - a_vec @ b_vec,))
+    )
 
 
 def rotation_increment(vector):
@@ -70,6 +72,14 @@ class LatestInput:
             self.received = time.monotonic() if now is None else now
             if cmd.event:
                 self.events.append((cmd.seq, cmd.event))
+
+    def reset_session(self):
+        """Discard previous motion/events while retaining the stream sequence watermark."""
+        with self.lock:
+            if self.latest is not None:
+                self.latest = Command(self.latest.seq, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+            self.received = -np.inf
+            self.events.clear()
 
     def sample(self, now=None):
         now = time.monotonic() if now is None else now
@@ -195,10 +205,7 @@ class PoseTarget:
             omega = np.array([0.0, 0.0, omega[2]])
         positions = self.position + indices[:, None] * dt * velocity
         rotations = np.array(
-            [
-                quaternion_product(rotation_increment(omega * dt * i), self.orientation)
-                for i in indices
-            ]
+            [quaternion_product(rotation_increment(omega * dt * i), self.orientation) for i in indices]
         )
         rotations /= np.linalg.norm(rotations, axis=1)[:, None]
         for i in range(len(positions)):

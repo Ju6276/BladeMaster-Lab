@@ -475,6 +475,149 @@ def update_F_plastic(
         stress_at(p, F, Fp, mu, lam, stress, errors)
 
 
+@wp.func
+def expm1(x: float):
+    if wp.abs(x) < 1.0e-3:
+        return x * (1.0 + 0.5 * x * (1.0 + x / 3.0))
+    return wp.exp(x) - 1.0
+
+
+@wp.func
+def maxwell_at(
+    p: int,
+    U: wp.mat33,
+    sigma: wp.vec3,
+    V: wp.mat33,
+    F: wp.array(dtype=wp.mat33),
+    Fp: wp.array(dtype=wp.mat33),
+    viscous: wp.array(dtype=wp.mat33d),
+    mu: float,
+    lam: float,
+    mu_maxwell: float,
+    relax: float,
+    stress: wp.array(dtype=wp.mat33),
+    errors: wp.array(dtype=int),
+):
+    """Generalized standard linear solid on the elastic deformation f = U diag(sigma) V^T = F Fp^-1.
+
+    Equilibrium branch: fixed corotated with mu - mu_maxwell and lam + 2/3 mu_maxwell, so
+    the instantaneous small-strain shear and bulk moduli equal those of (mu, lam).
+    Maxwell branch: f_m = f Fv^-1 with Fv = I + viscous[p], Kirchhoff stress
+    2 mu_maxwell dev(log V_m). Its deviatoric Hencky strain is reduced by the factor
+    relax = 1 - exp(-dt/tau) (exact for a held strain, stable for any dt/tau); the update of
+    Fv is isochoric, so the branch carries no volumetric stress. relax = 0 only evaluates
+    the stress. The increment (dt/tau) * strain is far below the float32 resolution of Fv,
+    so Fv - I is accumulated in float64.
+    """
+    f = U * wp.diag(sigma) * wp.transpose(V)
+    D = viscous[p]
+    fm = f * wp.inverse(wp.identity(n=3, dtype=float) + wp.mat33(D))
+    Um, sm, Vm = wp.svd3(fm)
+    if wp.min(sm) <= 0.0:
+        wp.atomic_add(errors, 1, 1)
+        stress[p] = wp.mat33(0.0)
+        return
+    e = wp.vec3(wp.log(sm[0]), wp.log(sm[1]), wp.log(sm[2]))
+    dev = e - wp.vec3((e[0] + e[1] + e[2]) / 3.0)
+    if relax > 0.0:
+        step = relax * dev
+        dev = dev - step
+        # f_m <- f_m W with W = Vm diag(exp(-step)) Vm^T, i.e. Fv <- W^-1 Fv.
+        growth = wp.vec3(expm1(step[0]), expm1(step[1]), expm1(step[2]))
+        delta = wp.mat33d(Vm * wp.diag(growth) * wp.transpose(Vm))
+        viscous[p] = D + delta + delta * D
+    kirchhoff = Um * wp.diag(2.0 * mu_maxwell * dev) * wp.transpose(Um)
+    mu_eq = mu - mu_maxwell
+    lam_eq = lam + 2.0 / 3.0 * mu_maxwell
+    equilibrium = corotated_stress(U, sigma, V, wp.inverse(Fp[p]), mu_eq, lam_eq)
+    stress[p] = equilibrium + kirchhoff * wp.transpose(wp.inverse(F[p]))
+
+
+@wp.func
+def maxwell_stress_at(
+    p: int,
+    F: wp.array(dtype=wp.mat33),
+    Fp: wp.array(dtype=wp.mat33),
+    viscous: wp.array(dtype=wp.mat33d),
+    mu: float,
+    lam: float,
+    mu_maxwell: float,
+    relax: float,
+    yield_stress: float,
+    stress: wp.array(dtype=wp.mat33),
+    errors: wp.array(dtype=int),
+):
+    if yield_stress > 0.0:
+        # The return map uses the instantaneous modulus: yield is a strain criterion, so under
+        # loading slower than tau the flow stress is (1 - maxwell_fraction) * yield_stress.
+        U, sigma, V, valid = plastic_at(p, F, Fp, mu, yield_stress, errors)
+        if not valid:
+            stress[p] = wp.mat33(0.0)
+            return
+        maxwell_at(p, U, sigma, V, F, Fp, viscous, mu, lam, mu_maxwell, relax, stress, errors)
+    else:
+        f = F[p] * wp.inverse(Fp[p])
+        J = wp.determinant(f)
+        if J <= 0.0 or not wp.isfinite(J):
+            wp.atomic_add(errors, 1, 1)
+            stress[p] = wp.mat33(0.0)
+            return
+        U, sigma, V = wp.svd3(f)
+        maxwell_at(p, U, sigma, V, F, Fp, viscous, mu, lam, mu_maxwell, relax, stress, errors)
+
+
+@wp.kernel
+def compute_stress_maxwell(
+    F: wp.array(dtype=wp.mat33),
+    Fp: wp.array(dtype=wp.mat33),
+    viscous: wp.array(dtype=wp.mat33d),
+    mu: float,
+    lam: float,
+    mu_maxwell: float,
+    stress: wp.array(dtype=wp.mat33),
+    errors: wp.array(dtype=int),
+):
+    """Stress of the current F, Fp, Fv without plastic projection or relaxation."""
+    p = wp.tid()
+    f = F[p] * wp.inverse(Fp[p])
+    J = wp.determinant(f)
+    if J <= 0.0 or not wp.isfinite(J):
+        wp.atomic_add(errors, 1, 1)
+        stress[p] = wp.mat33(0.0)
+        return
+    U, sigma, V = wp.svd3(f)
+    maxwell_at(p, U, sigma, V, F, Fp, viscous, mu, lam, mu_maxwell, 0.0, stress, errors)
+
+
+@wp.kernel
+def update_F_maxwell(
+    F: wp.array(dtype=wp.mat33),
+    Fp: wp.array(dtype=wp.mat33),
+    viscous: wp.array(dtype=wp.mat33d),
+    slots: wp.array2d(dtype=int),
+    gradients: wp.array2d(dtype=wp.vec3),
+    grid_mass: wp.array(dtype=float),
+    momentum: wp.array(dtype=wp.vec3),
+    dt: float,
+    mu: float,
+    lam: float,
+    mu_maxwell: float,
+    relax: float,
+    yield_stress: float,
+    stress: wp.array(dtype=wp.mat33),
+    errors: wp.array(dtype=int),
+):
+    """update_F_plastic followed by relaxation of the Maxwell branch."""
+    p = wp.tid()
+    rate = wp.mat33(0.0)
+    for a in range(8):
+        s = slots[p, a]
+        if grid_mass[s] > 0.0:
+            rate += wp.outer(momentum[s] / grid_mass[s], gradients[p, a])
+    F[p] += dt * rate
+    maxwell_stress_at(p, F, Fp, viscous, mu, lam, mu_maxwell, relax, yield_stress, stress, errors)
+
+
 @wp.kernel
 def compact_keys(
     keys: wp.array(dtype=wp.int64),

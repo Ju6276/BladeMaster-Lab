@@ -17,6 +17,11 @@ class Config:
     young_modulus: float = 6000.0
     poisson_ratio: float = 0.35
     dynamic_viscosity: float = 0.0
+    # Maxwell branch (generalized standard linear solid): maxwell_fraction of the shear
+    # modulus relaxes with time constant maxwell_tau seconds; the bulk modulus and the
+    # remaining shear stay elastic. Off when either is 0.
+    maxwell_tau: float = 0.0
+    maxwell_fraction: float = 0.0
     yield_stress: float = 0.0  # Disabled, not zero-strength plasticity.
     flip_fraction: float = 0.95
     normal_scale: float = 0.1
@@ -116,6 +121,8 @@ class Config:
             < 0
         ):
             raise ValueError("Negative damping/plasticity/reference step")
+        if self.maxwell_tau < 0 or not 0 <= self.maxwell_fraction <= 1:
+            raise ValueError("maxwell_tau must be non-negative and maxwell_fraction in [0, 1]")
         if max(self.contact_scales()) > 1:
             raise ValueError("Rescaled contact factor exceeds 1 (one-step overshoot); reduce dt")
         if not 0 <= self.board_normal_scale <= 1:
@@ -176,6 +183,9 @@ class Solver:
         self.lam = (
             cfg.young_modulus * cfg.poisson_ratio / ((1 + cfg.poisson_ratio) * (1 - 2 * cfg.poisson_ratio))
         )
+        self.maxwell = cfg.maxwell_tau > 0 and cfg.maxwell_fraction > 0
+        self.mu_maxwell = cfg.maxwell_fraction * self.mu
+        self.maxwell_relax = float(-np.expm1(-cfg.dt / cfg.maxwell_tau)) if self.maxwell else 0.0
         self.threshold = cfg.cutting_energy * self.volume ** (2 / 3) * (1 - cfg.sharpness) / cfg.sharpness
         self.normal_scale, self.tangent_stiffness = cfg.contact_scales()
         self.half = wp.vec3(*cfg.blade_half_size)
@@ -197,7 +207,9 @@ class Solver:
         self.v = zeros(self.n, wp.vec3)
         self.F = array(np.tile(np.eye(3), (self.n, 1, 1)), wp.mat33)
         self.Fp = array(np.tile(np.eye(3), (self.n, 1, 1)), wp.mat33)
-        # First Piola stress of the current F, Fp; written by every material step.
+        # Fv - I of the Maxwell branch, f_maxwell = F Fp^-1 Fv^-1 (float64, see material.maxwell_at).
+        self.viscous = zeros(self.n, wp.mat33d)
+        # First Piola stress of the current F, Fp (and Fv); written by every material step.
         self.stress = zeros(self.n, wp.mat33)
         self.codes, self.damage = zeros(self.n, wp.int64), zeros(self.n, float)
         # Codes used for particle-grid transfers; all zero in the single-field baseline.
@@ -296,8 +308,17 @@ class Solver:
         self.refresh_stress()
 
     def refresh_stress(self):
-        """Recompute the stored stress; needed after writing F or Fp from the host."""
-        self.launch(m.compute_stress, self.n, [self.F, self.Fp, self.mu, self.lam, self.stress, self.errors])
+        """Recompute the stored stress; needed after writing F, Fp or viscous from the host."""
+        if self.maxwell:
+            self.launch(
+                m.compute_stress_maxwell,
+                self.n,
+                [self.F, self.Fp, self.viscous, self.mu, self.lam, self.mu_maxwell, self.stress, self.errors],
+            )
+        else:
+            self.launch(
+                m.compute_stress, self.n, [self.F, self.Fp, self.mu, self.lam, self.stress, self.errors]
+            )
 
     def launch(self, kernel, dim, args):
         wp.launch(kernel, dim, args, device=self.device)
@@ -461,6 +482,29 @@ class Solver:
             ],
         )
         self._couple(self.remapped, self.coupled_remapped)
+        if self.maxwell:
+            self.launch(
+                m.update_F_maxwell,
+                self.n,
+                [
+                    self.F,
+                    self.Fp,
+                    self.viscous,
+                    self.slots,
+                    self.gradients,
+                    self.grid_mass,
+                    self.coupled_remapped,
+                    cfg.dt,
+                    self.mu,
+                    self.lam,
+                    self.mu_maxwell,
+                    self.maxwell_relax,
+                    cfg.yield_stress,
+                    self.stress,
+                    self.errors,
+                ],
+            )
+            return
         self.launch(
             m.update_F_plastic,
             self.n,
@@ -936,6 +980,8 @@ class Solver:
                 ("blade_omega", "tool_omega"),
             ]
         }
+        if self.maxwell:
+            state["viscous_deformation"] = np.eye(3) + self.viscous.numpy()
         state["time"] = self.step_count * self.config.dt
         if any(not np.isfinite(v).all() for v in state.values()):
             raise RuntimeError("Nonfinite state; run is invalid")

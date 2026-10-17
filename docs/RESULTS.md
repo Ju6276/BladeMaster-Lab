@@ -2,6 +2,29 @@
 
 硬件：tams61，RTX 4060 8 GB，Warp 1.18.0，MuJoCo 3.3.7。运行目录在 tams61 的 `runs/` 下（不进仓库）。
 
+## 2026-10-18 复查：遥操作事件与表面退化情形
+
+commit `e2fc014`。tams61 全套 **294 项测试、18 个子用例通过（56.08 s）**，Ruff、Black（修改文件）与差异空白检查通过。
+
+- SpaceMouse 重复双键报告只生成一次事件；手动切割保留同次采样里的全部按键边沿。`hold` 只停止对应序号及其后续重复采样，新序号速度正常生效。
+- HTTP 输入按 NDJSON 行解析，兼容命令跨 chunk 和一个 chunk 内多条命令；包长度限制按命令累计。
+- 表面忽略同一时间戳的位姿复位，观测位姿不再补出未执行的切割段。静止刀、压缩样本、换刀时材料节点插值有回归。
+- CPU/CUDA CCD 修复共线有限段重叠与首碰时间：固定段 `[0,2]`、刀刃 `[1,3]` 的首碰为 0；刀刃 `[3,5]` 移至 `[-3,-1]` 的首碰为 1/6。CUDA 段坐标改用叉积，避免平行 Gram 项在 FMA 下的消减；三种尺度、端点和反向测试通过。
+- 重力刀新增 `--grid-spacing`、`--contact-reference-dt`，结果增加最低刃口高度、方向接触功和损伤计数。材料、接触距离、默认步长与切割公式保持原设置。
+
+**香蕉复跑**（同一干净提交）：
+
+- `franka_run --output runs/recheck_sequence_e2fc014_20261018 --motion sequence --controller libfranka --stiffness 1000 --material paper-banana --duration 30 --surface --surface-embedding cuda --surface-ccd cuda --record`：21.246 s / 35.908 s，**0.592×**；四块 811 / 293 / 225 / 110，峰值力 4.927 N，min det F = 0.9555，GPU 错误和 MuJoCo 警告均为零。532 帧全部闭合、定向一致且坐标有限（`surface_recheck.json`）。
+- `franka_run --output runs/recheck_teleop_e2fc014_20261018 --motion teleop --cut-events auto --controller libfranka --stiffness 1000 --material paper-banana --duration 8 --surface --surface-embedding cuda --surface-ccd cuda --surface-precision float32`：8 s / 22.506 s，**0.355×**；两块 1435 / 4，峰值力 4.560 N，GPU 错误和 MuJoCo 警告均为零。材料阶段 13.863 s、表面 5.297 s。同参数重复运行 `runs/recheck_teleop_repeat_e2fc014_20261018` 为 16.871 s、**0.474×**，材料 9.022 s、表面 4.648 s；分块相同，错误和警告均为零。
+
+**Fig. 3(d) 分辨率与步长复测**：`paper_freefall --output runs/recheck_freefall_e2fc014_20261018/<case> --duration 1 --sharpness <0.9|0.5>`；Gc = 100 J/m²，seed = 1。三种配置各两种锋利度，均来自干净提交：
+
+- 10 mm / 2 ms（默认）：均为两块 4308 / 4652，最低刃口约 0.105 mm；达到损伤阈值的粒子为 42 / 0。
+- 10 mm / 0.5 ms（`--dt 0.0005 --contact-reference-dt 0.002`）：均为两块 4324 / 4636，刃口约 0.0975 mm；达到阈值为 1 / 0。
+- 5 mm / 0.5 ms（再加 `--grid-spacing 0.005`）：均为两块 35708 / 35972，刃口约 0.00294 mm；两种锋利度均无粒子达到阈值，方向接触功约 0.00688 J。
+
+六组 GPU 错误均为零。降低步长时保持刀接触的物理刚度，砧板每步因子仍为 1。加密网格和缩小步长后仍未得到低锋利度刀停在材料内部；下一步检查接触几何、绕刃和侧标签，见 TODO 第 1 项。完整数字在 `runs/recheck_freefall_e2fc014_20261018/summary.json`。
+
 ## 2026-10-18 双向审查修复与复测
 
 commit `d4b0635`。212 项测试、18 个子用例通过；Ruff 与差异空白检查通过。香蕉材料、接触参数与步长保持原设置（6 mm：62.5 μs；3 mm：40 μs）。
@@ -464,7 +487,7 @@ Fig. 7 浅划的差别：两次刀最低点都在 60.5 mm，第二层粒子在�
 
 ![Fig. 3 重力刀](media/fig3_freefall.png)
 
-**未复现 Fig. 3(d)**：锋利度 0.5 与 0.9 结果完全相同（同样两块、同样轨迹）。原因与 Fig. 6 相同：刃前粒子在损伤满之前就绕刃滑开，切割能（\(G_c\)、锋利度）不进入切割阻力。`cut_hold` 在这里不可用：\(s_n\) = 1 的自由刀被甩出 200 mm、平躺在板上，三种锋利度都一样。
+**Fig. 3(d) 仍未复现**：本组锋利度 0.5 与 0.9 均切成两块、轨迹接近；粒子损伤未满时已按几何分配侧标签。修正后的 `cut_hold` 和低锋利度停刀结果见后面的 Fig. 3(d) 实验。
 
 回归：全部测试通过；Franka 三刀 4 块 763 / 312 / 223 / 141、Fig. 4 5940 / 2992、Fig. 8 4046 + 4 × 952，与修改前相同。
 

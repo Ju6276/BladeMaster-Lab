@@ -25,8 +25,13 @@ def run(
     duration=1.0,
     sampling_seed=1,
     cutting_energy=FIG3_CUTTING_ENERGY,
-    normal_scale=0.1,
+    normal_scale=1.0,
+    board_normal_scale=1.0,
+    cut_hold=False,
+    tilt_axis="thickness",
 ):
+    if tilt_axis not in ("length", "thickness"):
+        raise ValueError(tilt_axis)
     cfg = Config(
         size=(0.14, 0.10, 0.08),
         grid_spacing=0.01,
@@ -41,6 +46,8 @@ def run(
         cutting_energy=cutting_energy,
         sampling_seed=sampling_seed,
         normal_scale=normal_scale,
+        board_normal_scale=board_normal_scale,
+        cut_hold=cut_hold,
     )
     steps = round(duration / dt)
     if steps < 1 or not np.isclose(steps * dt, duration):
@@ -52,9 +59,18 @@ def run(
     warm.state()
     del warm
     s = Solver(cfg)
+    # The paper gives the tilt angle, not its axis: about the blade length (the blade
+    # plane leans, the knife falls partly face-on and stalls) or about the thickness
+    # (inclined edge, one corner enters first; cuts through as in Fig. 3(a)-(c)).
     angle = np.deg2rad(25.0)
-    q = np.array([0.0, np.sin(angle / 2), 0.0, np.cos(angle / 2)])
-    height = 0.08 + 0.015 + cfg.blade_half_size[2] * np.cos(angle) + cfg.blade_half_size[0] * np.sin(angle)
+    hx, hy, hz = cfg.blade_half_size
+    if tilt_axis == "length":
+        q = np.array([0.0, np.sin(angle / 2), 0.0, np.cos(angle / 2)])
+        reach = hz * np.cos(angle) + hx * np.sin(angle)
+    else:
+        q = np.array([np.sin(angle / 2), 0.0, 0.0, np.cos(angle / 2)])
+        reach = hz * np.cos(angle) + hy * np.sin(angle)
+    height = 0.08 + 0.015 + reach
     s.tool_rot.assign([q])
     s.tool_pos.assign([[0.0, 0.0, height]])
     meta = {
@@ -68,6 +84,7 @@ def run(
             "rho=1100kg/m3",
             "knife_mass=0.1kg",
             "tilt=25deg",
+            f"tilt axis (not given): blade {tilt_axis}",
             "Table I: 8960 particles, dt=2ms",
         ],
         "independent_choices": [
@@ -131,6 +148,20 @@ if __name__ == "__main__":
     p.add_argument("--duration", type=float, default=1.0)
     p.add_argument("--sampling-seed", type=int, default=1)
     p.add_argument("--cutting-energy", type=float, default=FIG3_CUTTING_ENERGY)
-    p.add_argument("--normal-scale", type=float, default=0.1, help="Contact s_n (paper Eq. 11)")
+    p.add_argument("--normal-scale", type=float, default=1.0, help="Contact s_n (paper Eq. 11)")
+    p.add_argument("--board-normal-scale", type=float, default=1.0, help="Board s_n; 0 uses --normal-scale")
+    p.add_argument("--cut-hold", action="store_true", help="Config.cut_hold (not the paper's Eq. 5 behaviour)")
+    p.add_argument("--tilt-axis", choices=["length", "thickness"], default="thickness")
     a = p.parse_args()
-    run(a.output, a.sharpness, a.dt, a.duration, a.sampling_seed, a.cutting_energy, a.normal_scale)
+    run(
+        a.output,
+        a.sharpness,
+        a.dt,
+        a.duration,
+        a.sampling_seed,
+        a.cutting_energy,
+        a.normal_scale,
+        a.board_normal_scale,
+        a.cut_hold,
+        a.tilt_axis,
+    )

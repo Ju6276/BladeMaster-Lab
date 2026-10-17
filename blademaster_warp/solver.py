@@ -721,6 +721,8 @@ class Solver:
                     view["omega"],
                     self.half,
                     cfg.grid_spacing,
+                    self.radius,
+                    self.board_half,
                     cfg.dt,
                     3 ** (cut_index + i),
                     int(cutting),

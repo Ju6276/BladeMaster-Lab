@@ -793,6 +793,8 @@ def assign(
     tool_omega: wp.array(dtype=wp.vec3),
     half: wp.vec3,
     spacing: float,
+    radius: float,
+    board_half: wp.vec2,
     dt: float,
     digit: wp.int64,
     cutting: int,
@@ -801,14 +803,24 @@ def assign(
     p = wp.tid()
     if cutting == 0 or (codes[p] // digit) % wp.int64(3) != wp.int64(0):
         return
+    xp = x[p]
     edge = tool_pos[0] + wp.quat_rotate(tool_rot[0], wp.vec3(0.0, 0.0, -half[2]))
-    local = wp.quat_rotate_inv(tool_rot[0], x[p] - edge)
+    local = wp.quat_rotate_inv(tool_rot[0], xp - edge)
     front = -local[2]
     edge_v = tool_vel[0] + wp.cross(tool_omega[0], edge - tool_pos[0])
     d = wp.quat_rotate(tool_rot[0], wp.vec3(0.0, 0.0, -1.0))
     advance = wp.dot(edge_v - v[p], d)
     back = 2.0 * spacing + wp.max(advance * dt, 0.0)
-    if wp.abs(local[0]) <= 6.0 * spacing and wp.abs(local[1]) <= half[1] and front >= -back and front <= 0.0:
+    behind = front >= -back and front <= 0.0
+    # Once the edge rests on the board, the bottom layer beside it (centres within a
+    # radius of the edge height) is cut through; with a pitched blade these particles
+    # lie below the blade's edge plane and the band test alone never labels them.
+    on_board = (board_half[0] == 0.0 or wp.abs(xp[0]) <= board_half[0]) and (
+        board_half[1] == 0.0 or wp.abs(xp[1]) <= board_half[1]
+    )
+    edge_here = edge + wp.quat_rotate(tool_rot[0], wp.vec3(0.0, local[1], 0.0))
+    pinched = on_board and edge_here[2] <= radius and xp[2] <= edge_here[2] + radius
+    if wp.abs(local[0]) <= 6.0 * spacing and wp.abs(local[1]) <= half[1] and (behind or pinched):
         side = int(2)
         if local[0] < 0.0:
             side = 1

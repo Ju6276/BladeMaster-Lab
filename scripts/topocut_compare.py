@@ -201,7 +201,7 @@ def plot(directory, output):
     summary = json.loads((directory / "summary.json").read_text())
     name = summary["scenario"]
     colors = np.array(["#9aa5b1", "#e07a1f", "#2f7fc1", "#3a9d5d", "#c23b5a", "#7d5ba6", "#c9a227"])
-    runs = summary["runs"]
+    runs = [r for r in summary["runs"] if summary[r]["evaluation"] is not None]
     finals = [np.load(directory / f"{r}.npz")["positions"][-1] * 1000 for r in runs]
     lo = np.min([f.min(0) for f in finals], axis=0)
     hi = np.max([f.max(0) for f in finals], axis=0)
@@ -220,9 +220,6 @@ def plot(directory, output):
         ax.view_init(elev=20, azim=-70)
         ax.set_axis_off()
         e = summary[run_name]["evaluation"]
-        if e is None:
-            ax.set_title(f"{run_name}: {summary[run_name]['error']}", fontsize=9)
-            continue
         if run_name == "blademaster":
             title = "BladeMaster (multi-field TLMPM)"
         else:

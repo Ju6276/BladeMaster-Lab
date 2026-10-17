@@ -73,6 +73,7 @@
 
 ## 8. TopoCut 对照（方案 A，见 RESULTS）
 - [x] Warp 版 TopoCut 式单场 MLS-MPM（`mlsmpm.py`）、SDF 挖切 + Marching Cubes 分块（`topocut_topology.py`）、谱奖励（`spectral.py`）、同刀路对比（`scripts/topocut_compare.py`）。
-- [x] Fig. 8：BladeMaster 两种步长都分块全对；MLS-MPM 论文步长下 ×0 / ×1 发散，0.25 ms 下切片粘连、推片推走整块材料（53 mm），或完全软化时液化。
-- [x] Fig. 4：MLS-MPM 分块纯度 ≥ 0.995，但中间片抬不起来（≤ 1.5 mm，BladeMaster 37.7 mm）。
+- [x] 式 (6) 的 \(J\) 改为相对重力静置后的状态（原来 Fig. 4 只受重力就有 23–26% 粒子被标损伤）；两种求解器先静置 1 s。
+- [x] Fig. 8：BladeMaster 两种步长都分块全对；MLS-MPM 在论文步长 1 ms 下只受重力就发散（刀接触前），0.25 ms 下切片粘连、推片推走整块材料（53 mm）。
+- [x] Fig. 4：MLS-MPM 分块纯度 ≥ 0.995；2 ms、×0.1 片抬 18.4 mm 但带起周围材料 9.4 mm，其余组合 ≤ 11 mm（BladeMaster 38.9 mm，其余 ≤ 0.8 mm）。
 - [ ] TopoCut 的 MPPI 示范与 PDDP 策略（需要时再做；对照目前只针对仿真与评价）。

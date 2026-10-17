@@ -226,6 +226,87 @@ def resist_cut(
 
 
 @wp.func
+def blade_at(
+    p: int,
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    tool_pos: wp.array(dtype=wp.vec3),
+    tool_vel: wp.array(dtype=wp.vec3),
+    tool_rot: wp.array(dtype=wp.quat),
+    tool_omega: wp.array(dtype=wp.vec3),
+    half: wp.vec3,
+    bevel: float,
+    blade_offset: float,
+    spacing: float,
+    mass: float,
+    blade_mass: float,
+    inertia_inv: wp.vec3,
+    mobility: wp.array2d(dtype=float),
+    tool_model: int,
+    dt: float,
+    sn: float,
+    mus: float,
+    mud: float,
+    gk: float,
+    gc: float,
+    histories: wp.array2d(dtype=wp.vec3),
+    row: int,
+    damage: wp.array(dtype=float),
+    threshold: float,
+    cutting: int,
+    reaction: wp.array(dtype=wp.vec3),
+    torque: wp.array(dtype=wp.vec3),
+    work: wp.array(dtype=float),
+):
+    """Blade contact impulse on particle p: closest point on the (beveled) box,
+    relative velocity at that point. Friction history in histories[row, p]."""
+    xp = x[p]
+    q = tool_rot[0]
+    origin = tool_pos[0]
+    result = wp.vec3(0.0)
+    # Bounding-sphere test: the particle cannot reach the blade within this step.
+    blade_radius = wp.length(half)
+    max_closing = wp.length(v[p]) + wp.length(tool_vel[0]) + wp.length(tool_omega[0]) * blade_radius
+    if wp.length(xp - origin) - blade_radius - blade_offset > dt * max_closing:
+        histories[row, p] = wp.vec3(0.0)
+    else:
+        closest_local, normal_local, distance = blade_query(wp.quat_rotate_inv(q, xp - origin), half, bevel)
+        lever = wp.quat_rotate(q, closest_local)
+        n = wp.quat_rotate(q, normal_local)
+        relative = v[p] - tool_vel[0] - wp.cross(tool_omega[0], lever)
+        if distance - blade_offset + dt * wp.min(wp.dot(relative, n), 0.0) >= 0.0:
+            histories[row, p] = wp.vec3(0.0)
+        else:
+            me = blade_effective_mass(mass, lever, n, q, blade_mass, inertia_inv, mobility, tool_model)
+            j_blade, h_blade = penalty_impulse(
+                distance - blade_offset, relative, n, me, histories[row, p], dt, sn, mus, mud, gk, gc
+            )
+            histories[row, p] = h_blade
+            if wp.length_sq(j_blade) > 0.0:
+                if cutting != 0:
+                    j_blade = resist_cut(
+                        p,
+                        j_blade,
+                        x,
+                        v,
+                        origin,
+                        tool_vel[0],
+                        q,
+                        tool_omega[0],
+                        half,
+                        blade_offset,
+                        spacing,
+                        damage,
+                        threshold,
+                        work,
+                    )
+                result = j_blade
+                wp.atomic_add(reaction, 0, -j_blade)
+                wp.atomic_add(torque, 0, -wp.cross(lever, j_blade))
+    return result
+
+
+@wp.func
 def rigid_at(
     p: int,
     x: wp.array(dtype=wp.vec3),
@@ -279,50 +360,38 @@ def rigid_at(
         total += j_board
         wp.atomic_add(board, 0, j_board)
 
-    # Blade: closest point on the (beveled) box, relative velocity at that point.
-    q = tool_rot[0]
-    origin = tool_pos[0]
-    # Bounding-sphere test: the particle cannot reach the blade within this step.
-    blade_radius = wp.length(half)
-    max_closing = wp.length(v[p]) + wp.length(tool_vel[0]) + wp.length(tool_omega[0]) * blade_radius
-    if wp.length(xp - origin) - blade_radius - blade_offset > dt * max_closing:
-        histories[1, p] = wp.vec3(0.0)
-        impulse[p] = total
-        return
-    closest_local, normal_local, distance = blade_query(wp.quat_rotate_inv(q, xp - origin), half, bevel)
-    lever = wp.quat_rotate(q, closest_local)
-    n = wp.quat_rotate(q, normal_local)
-    relative = v[p] - tool_vel[0] - wp.cross(tool_omega[0], lever)
-    if distance - blade_offset + dt * wp.min(wp.dot(relative, n), 0.0) >= 0.0:
-        histories[1, p] = wp.vec3(0.0)
-        impulse[p] = total
-        return
-    me = blade_effective_mass(mass, lever, n, q, blade_mass, inertia_inv, mobility, tool_model)
-    j_blade, h_blade = penalty_impulse(
-        distance - blade_offset, relative, n, me, histories[1, p], dt, sn, mus, mud, gk, gc
+    total += blade_at(
+        p,
+        x,
+        v,
+        tool_pos,
+        tool_vel,
+        tool_rot,
+        tool_omega,
+        half,
+        bevel,
+        blade_offset,
+        spacing,
+        mass,
+        blade_mass,
+        inertia_inv,
+        mobility,
+        tool_model,
+        dt,
+        sn,
+        mus,
+        mud,
+        gk,
+        gc,
+        histories,
+        1,
+        damage,
+        threshold,
+        cutting,
+        reaction,
+        torque,
+        work,
     )
-    histories[1, p] = h_blade
-    if wp.length_sq(j_blade) > 0.0:
-        if cutting != 0:
-            j_blade = resist_cut(
-                p,
-                j_blade,
-                x,
-                v,
-                origin,
-                tool_vel[0],
-                q,
-                tool_omega[0],
-                half,
-                blade_offset,
-                spacing,
-                damage,
-                threshold,
-                work,
-            )
-        total += j_blade
-        wp.atomic_add(reaction, 0, -j_blade)
-        wp.atomic_add(torque, 0, -wp.cross(lever, j_blade))
     impulse[p] = total
 
 
@@ -398,6 +467,75 @@ def rigid_and_speed(
         reaction,
         torque,
         board,
+        work,
+    )
+
+
+@wp.kernel
+def extra_blade(
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    tool_pos: wp.array(dtype=wp.vec3),
+    tool_vel: wp.array(dtype=wp.vec3),
+    tool_rot: wp.array(dtype=wp.quat),
+    tool_omega: wp.array(dtype=wp.vec3),
+    half: wp.vec3,
+    bevel: float,
+    blade_offset: float,
+    spacing: float,
+    mass: float,
+    blade_mass: float,
+    inertia_inv: wp.vec3,
+    mobility: wp.array2d(dtype=float),
+    tool_model: int,
+    dt: float,
+    sn: float,
+    mus: float,
+    mud: float,
+    gk: float,
+    gc: float,
+    histories: wp.array2d(dtype=wp.vec3),
+    row: int,
+    damage: wp.array(dtype=float),
+    threshold: float,
+    cutting: int,
+    impulse: wp.array(dtype=wp.vec3),
+    reaction: wp.array(dtype=wp.vec3),
+    torque: wp.array(dtype=wp.vec3),
+    work: wp.array(dtype=float),
+):
+    """Add the contact impulse of one more blade (after rigid_and_speed)."""
+    p = wp.tid()
+    impulse[p] = impulse[p] + blade_at(
+        p,
+        x,
+        v,
+        tool_pos,
+        tool_vel,
+        tool_rot,
+        tool_omega,
+        half,
+        bevel,
+        blade_offset,
+        spacing,
+        mass,
+        blade_mass,
+        inertia_inv,
+        mobility,
+        tool_model,
+        dt,
+        sn,
+        mus,
+        mud,
+        gk,
+        gc,
+        histories,
+        row,
+        damage,
+        threshold,
+        cutting,
+        reaction,
+        torque,
         work,
     )
 

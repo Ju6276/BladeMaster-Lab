@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, asdict
 import time
+import warnings
 import numpy as np
 import warp as wp
 from . import material as m, contact as c, tool
@@ -58,6 +59,8 @@ class Config:
     rotational_damping: float = 0.003
     # Board half extents (x, y) around the material centre; 0 means an unbounded plane.
     board_half_extent: tuple = (0.0, 0.0)
+    # Identical free knives (paper Fig. 6); knife k labels cut digit cut_index + k.
+    tool_count: int = 1
 
     def __post_init__(self):
         if self.grid_storage not in ("hash", "compact"):
@@ -101,6 +104,10 @@ class Config:
             raise ValueError("Invalid blade geometry")
         if sum((self.free_blade, self.pose_servo, self.external_tool)) > 1:
             raise ValueError("Choose free, pose-servo, or externally prescribed tool")
+        if self.tool_count < 1 or (
+            self.tool_count > 1 and not (self.free_blade and not self.accumulate_tool_impulses)
+        ):
+            raise ValueError("Several tools are supported only as free knives")
         if self.grid_spacing <= 0 or min(np.asarray(self.size) / self.grid_spacing) < 2:
             raise ValueError("Grid spacing must be positive with at least two cells per axis")
 
@@ -142,6 +149,12 @@ class Solver:
         self.mass = cfg.density * self.volume
         self.radius = cfg.grid_spacing / 4
         self.blade_offset = cfg.blade_contact_radius or self.radius
+        if cfg.blade_half_size[0] + self.blade_offset < cfg.grid_spacing / 4:
+            warnings.warn(
+                "Blade half thickness plus contact distance is below half the particle spacing: "
+                "a blade between two particle columns touches neither",
+                stacklevel=2,
+            )
         self.mu = cfg.young_modulus / (2 * (1 + cfg.poisson_ratio))
         self.lam = (
             cfg.young_modulus * cfg.poisson_ratio / ((1 + cfg.poisson_ratio) * (1 - 2 * cfg.poisson_ratio))
@@ -217,13 +230,30 @@ class Solver:
             self.pair_grid = wp.HashGrid(*self.hash_grid_shape, device=self.device)
             self.pair_grid.reserve(self.n)
         self.speed = zeros(1, float)
-        self.tool_pos = array([[0.0, 0.0, cfg.size[2] + 0.012 + hz]], wp.vec3)
-        self.tool_vel, self.tool_omega = zeros(1, wp.vec3), zeros(1, wp.vec3)
-        self.tool_rot = array([[0.0, 0.0, 0.0, 1.0]], wp.quat)
+        k = cfg.tool_count
+        self.tool_pos = array([[0.0, 0.0, cfg.size[2] + 0.012 + hz]] * k, wp.vec3)
+        self.tool_vel, self.tool_omega = zeros(k, wp.vec3), zeros(k, wp.vec3)
+        self.tool_rot = array([[0.0, 0.0, 0.0, 1.0]] * k, wp.quat)
         self.tool_mobility = zeros((6, 6), float)
-        self.reaction, self.torque, self.board = [zeros(1, wp.vec3) for _ in range(3)]
+        self.reaction, self.torque = zeros(k, wp.vec3), zeros(k, wp.vec3)
+        self.board = zeros(1, wp.vec3)
         self.work = zeros(1, float)
-        self.tool_table_impulse = zeros(1, wp.vec3)
+        self.tool_table_impulse = zeros(k, wp.vec3)
+        # Knife 0 uses the full arrays (kernels read element 0); knife i > 0 uses views.
+        self.tool_views = [
+            dict(
+                pos=self.tool_pos[i : i + 1],
+                vel=self.tool_vel[i : i + 1],
+                rot=self.tool_rot[i : i + 1],
+                omega=self.tool_omega[i : i + 1],
+                reaction=self.reaction[i : i + 1],
+                torque=self.torque[i : i + 1],
+                table=self.tool_table_impulse[i : i + 1],
+            )
+            for i in range(k)
+        ]
+        # Blade friction history of knife i > 0 in row i.
+        self.extra_histories = zeros((k, self.n), wp.vec3) if k > 1 else None
         self.interval_impulse, self.interval_angular_impulse = zeros(1, wp.vec3), zeros(1, wp.vec3)
         self.single_target = zeros(1, wp.vec3)
         self.single_rotation = array([[0.0, 0.0, 0.0, 1.0]], wp.quat)
@@ -434,8 +464,9 @@ class Solver:
         self._step_kernels(target_edge, cutting, cut_index, orientation=orientation)
 
     def _set_cut(self, cut_index):
-        if cut_index < self.cut_index or cut_index > self.max_cut_index:
-            raise ValueError(f"Cut indices must be monotonic and within [0, {self.max_cut_index}]")
+        last = self.max_cut_index - (self.config.tool_count - 1)
+        if cut_index < self.cut_index or cut_index > last:
+            raise ValueError(f"Cut indices must be monotonic and within [0, {last}]")
         if cut_index != self.cut_index:
             self.damage.zero_()
             self.cut_index = cut_index
@@ -489,6 +520,44 @@ class Solver:
                 self.work,
             ],
         )
+        for i in range(1, cfg.tool_count):
+            view = self.tool_views[i]
+            self.launch(
+                c.extra_blade,
+                self.n,
+                [
+                    self.x,
+                    self.v,
+                    view["pos"],
+                    view["vel"],
+                    view["rot"],
+                    view["omega"],
+                    self.half,
+                    cfg.blade_bevel_height,
+                    self.blade_offset,
+                    cfg.grid_spacing,
+                    self.mass,
+                    cfg.blade_mass,
+                    self.inertia_inv,
+                    self.tool_mobility,
+                    self._tool_model(),
+                    cfg.dt,
+                    self.normal_scale,
+                    cfg.friction_static,
+                    cfg.friction_dynamic,
+                    self.tangent_stiffness,
+                    cfg.tangent_damping,
+                    self.extra_histories,
+                    i,
+                    self.damage,
+                    self.threshold,
+                    int(cutting),
+                    self.impulses,
+                    view["reaction"],
+                    view["torque"],
+                    self.work,
+                ],
+            )
 
     def particle_contacts(self):
         """Contacts between particles on incompatible sides of a cut, with friction history."""
@@ -577,25 +646,29 @@ class Solver:
 
     def _drive_tool(self, target_edge, orientation, buffer, rotations, index):
         """Pose servo, free rigid blade, or guided translation; all share the knife/board contact."""
-        cfg = self.config
         if buffer is None:
             self.single_target.assign([target_edge])
             self.single_rotation.assign([orientation if orientation is not None else [0.0, 0.0, 0.0, 1.0]])
             buffer, rotations, index = self.single_target, self.single_rotation, 0
+        for view in self.tool_views:
+            self._drive_one(view, buffer, rotations, index)
+
+    def _drive_one(self, view, buffer, rotations, index):
+        cfg = self.config
         self.launch(
             tool.step,
             1,
             [
-                self.tool_pos,
-                self.tool_vel,
-                self.tool_rot,
-                self.tool_omega,
+                view["pos"],
+                view["vel"],
+                view["rot"],
+                view["omega"],
                 buffer,
                 rotations,
                 index,
-                self.reaction,
-                self.torque,
-                self.tool_table_impulse,
+                view["reaction"],
+                view["torque"],
+                view["table"],
                 cfg.dt,
                 cfg.blade_mass,
                 self.half,
@@ -614,27 +687,28 @@ class Solver:
         )
 
     def assign_sides(self, cut_index, cutting=True):
-        """Give particles crossed by the blade edge a side digit for this cut."""
+        """Give particles crossed by the blade edge a side digit for this cut (knife i: cut_index + i)."""
         cfg = self.config
-        self.launch(
-            c.assign,
-            self.n,
-            [
-                self.x,
-                self.v,
-                self.codes,
-                self.tool_pos,
-                self.tool_vel,
-                self.tool_rot,
-                self.tool_omega,
-                self.half,
-                cfg.grid_spacing,
-                cfg.dt,
-                3**cut_index,
-                int(cutting),
-                self.topology_dirty,
-            ],
-        )
+        for i, view in enumerate(self.tool_views):
+            self.launch(
+                c.assign,
+                self.n,
+                [
+                    self.x,
+                    self.v,
+                    self.codes,
+                    view["pos"],
+                    view["vel"],
+                    view["rot"],
+                    view["omega"],
+                    self.half,
+                    cfg.grid_spacing,
+                    cfg.dt,
+                    3 ** (cut_index + i),
+                    int(cutting),
+                    self.topology_dirty,
+                ],
+            )
 
     def embedded_particles(self):
         """Number of particles beside the blade body; zero once the blade has left the material."""
@@ -653,7 +727,8 @@ class Solver:
         cfg = self.config
         if not cfg.external_tool:
             # In external mode finish_external_step already cleared these.
-            self.launch(c.clear_step, 1, [self.reaction, self.torque, self.board, self.speed])
+            for view in self.tool_views:
+                self.launch(c.clear_step, 1, [view["reaction"], view["torque"], self.board, self.speed])
         self.rigid_contacts(cutting)
         self.particle_contacts()
         self.material_step()

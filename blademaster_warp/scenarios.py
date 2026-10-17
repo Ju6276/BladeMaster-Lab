@@ -238,9 +238,8 @@ def scene_config(name, dt=None):
             density=1200.0,
             yield_stress=2000.0,
             cutting_energy=10.0,
-            # 6 mm grid as the banana runs; a particle-radius contact would make the kerf
-            # 4 mm of a 12 mm slice.
-            blade_contact_radius=0.0005,
+            # Particle radius: with 0.5 mm the knife passes between particle columns.
+            blade_contact_radius=0.0,
             external_tool=True,
             grid_storage="compact",
             blade_half_size=FIG8_KNIFE_HALF_SIZE,
@@ -262,7 +261,7 @@ PROVENANCE = {
     "fig4": "Paper Fig. 4 E/nu/rho; local cylinder size, knife, path, Gc=10, 0.5 ms step and contact numerics",
     "fig7-shallow": "Paper Fig. 7 E/nu/rho; local block size, knife, roll, path, depth, Gc=10 and step",
     "fig7-deep": "Paper Fig. 7 E/nu/rho; local block size, knife, roll, path, depth, Gc=10 and step",
-    "fig8": "Paper Fig. 6/8 E/nu/rho/yield; local block size, knife, slice width, tip-over push, Gc=10 and step",
+        "fig8": "Paper Fig. 6/8 E/nu/rho/yield; local block size, knife, slice width, tip-over push, Gc=10, step and contact",
 }
 
 

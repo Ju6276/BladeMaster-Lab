@@ -80,6 +80,9 @@ def benchmark(directory, output, cuda_ccd=False):
                 start = time.perf_counter()
                 recorder.update(t, x[i], F[i], codes[i], poses[i], active[i])
                 frame_wall.append(time.perf_counter() - start)
+            start = time.perf_counter()
+            recorder.close()
+            frame_wall[-1] += time.perf_counter() - start
             result["backends"][backend] = dict(
                 wall_s=float(sum(frame_wall)),
                 phase_s=recorder.timing_s,

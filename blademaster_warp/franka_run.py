@@ -548,6 +548,8 @@ class FrankaCuttingRun:
         from .diagnostics import Metrics
 
         out, data, s = self.out, self.data, self.solver
+        if self.surface is not None:
+            self.surface.close()
         np.savez_compressed(
             out / "trajectory.npz",
             log=np.array(data.logs),

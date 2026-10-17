@@ -1,5 +1,7 @@
 """Incremental surface updates from the current simulation state."""
 
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import json
 import time
@@ -7,6 +9,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from .geometry import grid_cells
 from .surface import LinkedSurface, MaterialEmbedding, moving_segment_hits
+
+
+def _write_json(path, value):
+    path.write_text(json.dumps(value, indent=2))
 
 
 class SurfaceRecorder:
@@ -23,8 +29,13 @@ class SurfaceRecorder:
 
             self.ccd = CudaSegmentCCD(solver.device)
         self.directory = Path(directory) if directory is not None else None
+        # zlib releases the GIL: frames compress on one writer thread while the
+        # simulation continues. close() waits for them and re-raises write errors.
+        self._writer = None
+        self._pending = deque()
         if self.directory is not None:
             self.directory.mkdir(parents=True, exist_ok=False)
+            self._writer = ThreadPoolExecutor(1, thread_name_prefix="surface-writer")
         self.current = None
         cfg = solver.config
         # Independent visualization resolution. At h=6 mm, the 120 mm demo's
@@ -143,7 +154,8 @@ class SurfaceRecorder:
             tool_orientation=tool.orientation_xyzw,
         )
         if self.directory is not None and record_frame:
-            np.savez_compressed(self.directory / f"{count:05d}.npz", **self.current)
+            frame = {k: np.array(v, copy=True) for k, v in self.current.items()}
+            self._submit(np.savez_compressed, self.directory / f"{count:05d}.npz", **frame)
         if record_frame:
             self.history.append(
                 dict(
@@ -156,6 +168,26 @@ class SurfaceRecorder:
                 )
             )
             if self.directory is not None:
-                (self.directory / "frames.json").write_text(json.dumps(self.history, indent=2))
+                self._submit(_write_json, self.directory / "frames.json", list(self.history))
         self.timing_s["recording"] += time.perf_counter() - phase
         self.wall_s += time.perf_counter() - tick
+
+    def _submit(self, function, *args, **kwargs):
+        while len(self._pending) >= 8:
+            self._pending.popleft().result()
+        self._pending.append(self._writer.submit(function, *args, **kwargs))
+
+    def close(self):
+        """Wait for every recorded frame to be on disk."""
+        if self._writer is None:
+            return
+        tick = time.perf_counter()
+        try:
+            while self._pending:
+                self._pending.popleft().result()
+        finally:
+            self._writer.shutdown(wait=True)
+            self._writer = None
+            waited = time.perf_counter() - tick
+            self.timing_s["recording"] += waited
+            self.wall_s += waited

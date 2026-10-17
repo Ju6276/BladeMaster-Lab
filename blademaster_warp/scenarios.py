@@ -402,6 +402,8 @@ def run(args):
         forces=np.array(forces),
         energy=np.array(energy),
     )
+    if surface:
+        surface.close()
     _, counts = components(s.node_numpy, s.weight_numpy, s.codes.numpy())
     simulated = s.step_count * cfg.dt
     meta.update(

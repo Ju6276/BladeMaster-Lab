@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import {OrbitControls} from './vendor/OrbitControls.js';
 const $ = id => document.getElementById(id);
+// Page files the open page was loaded with; a restarted server with new files reloads it.
+let pageVersion=null;
 // Pieces below 1% of the particles count as debris, not as a separated piece.
 function showPieces(sizes){const out=$('pieces');if(!sizes.length){out.textContent='—';out.className='';return}
  const total=sizes.reduce((a,b)=>a+b,0),big=sizes.filter(s=>s>=Math.max(5,0.01*total)),debris=sizes.length-big.length;
@@ -75,7 +77,7 @@ async function poll(){
    if(!response.ok)throw Error('HTTP '+response.status);
    const text=await response.text();const t1=performance.now();
    const p=JSON.parse(text);const t2=performance.now();
-   if(p.generation!==undefined&&p.generation!==assetGeneration){const a=await(await fetch('/scene',{signal:abort.signal})).json();if(a)installAsset(a)}
+   if(p.generation!==undefined&&p.generation!==assetGeneration){const a=await(await fetch('/scene',{signal:abort.signal})).json();if(a){if(pageVersion===null)pageVersion=a.web_version;else if(a.web_version!==pageVersion){location.reload();return}installAsset(a)}}
    if(p.geom_positions&&assetGeneration===p.generation){applyPacket(p);const t3=performance.now();keep(timing.fetchMs,t1-t0);keep(timing.parseMs,t2-t1);keep(timing.applyMs,t3-t2);keep(timing.bytes,text.length);appliedAt=t3}
    seq=p.sequence;lastReceive=performance.now();packetCount++;lastState=p.state;
    $('connection').textContent=states[p.state]||p.state;$('connection').className='connection'+(p.state==='failed'?' error':'');

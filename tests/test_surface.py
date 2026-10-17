@@ -370,3 +370,17 @@ def test_bucketed_tent_supports_match_brute_force():
             want = np.flatnonzero(expected > 1.0e-12)
             np.testing.assert_array_equal(ids, want)
             np.testing.assert_allclose(w, expected[want], rtol=0, atol=1.0e-15)
+
+
+def test_unassigned_surface_node_follows_one_side_not_the_gap():
+    ref, origin, cells = points((0.06, 0.03, 0.03), 0.006, "block")
+    s = LinkedSurface((0.06, 0.03, 0.03), 0.003)
+    emb = MaterialEmbedding(s.reference, ref, 0.006, origin, cells)
+    codes = np.where(ref[:, 0] < 0, 1, 2)
+    F = np.tile(np.eye(3), (len(ref), 1, 1))
+    x = ref + np.where(ref[:, :1] < 0, -0.03, 0.03) * np.array([1.0, 0.0, 0.0])
+    node_codes = np.zeros(len(s.reference), dtype=np.int64)
+    nodes, _ = emb.node_state(x, F, codes, node_codes)
+    shift = np.abs(nodes[:, 0] - s.reference[:, 0])
+    ok = np.isfinite(shift)
+    np.testing.assert_allclose(shift[ok], 0.03, atol=1e-12)

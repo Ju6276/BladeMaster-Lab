@@ -28,13 +28,23 @@ def node_field(
 
     Falls back to the next support ring when extend is set and the first ring has
     no compatible particle. Returns (position sum, F sum, weight sum, extended).
+    A code still unassigned for a cut is compatible with both of its sides; such a
+    node follows the side of its heaviest compatible particle instead of their
+    average, which would stretch it across the gap once the pieces separate.
     """
     total = wp.float64(0.0)
     position = wp.vec3d(0.0)
     gradient = wp.mat33d(0.0)
+    anchor = code
+    heaviest = wp.float64(0.0)
     for a in range(offsets[i], offsets[i + 1]):
         p = indices[a]
-        if compatible(code, particle_codes[p]):
+        if compatible(code, particle_codes[p]) and weights[a] > heaviest:
+            heaviest = weights[a]
+            anchor = particle_codes[p]
+    for a in range(offsets[i], offsets[i + 1]):
+        p = indices[a]
+        if compatible(code, particle_codes[p]) and compatible(anchor, particle_codes[p]):
             w = weights[a]
             position += w * (x[p] + deformation[p] * (nodes[i] - reference[p]))
             gradient += w * deformation[p]
@@ -43,7 +53,12 @@ def node_field(
     if total == wp.float64(0.0) and extend != 0:
         for a in range(extra_offsets[i], extra_offsets[i + 1]):
             p = extra_indices[a]
-            if compatible(code, particle_codes[p]):
+            if compatible(code, particle_codes[p]) and extra_weights[a] > heaviest:
+                heaviest = extra_weights[a]
+                anchor = particle_codes[p]
+        for a in range(extra_offsets[i], extra_offsets[i + 1]):
+            p = extra_indices[a]
+            if compatible(code, particle_codes[p]) and compatible(anchor, particle_codes[p]):
                 w = extra_weights[a]
                 position += w * (x[p] + deformation[p] * (nodes[i] - reference[p]))
                 gradient += w * deformation[p]

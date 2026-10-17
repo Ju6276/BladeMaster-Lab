@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Condition, Event, Thread
 from urllib.parse import urlparse, parse_qs
 import gzip
+import hashlib
 import json
 import mimetypes
 import time
@@ -14,6 +15,14 @@ import numpy as np
 from .teleop_input import LatestInput, read_chunked_packets
 
 WEB = Path(__file__).with_name("web")
+
+
+def web_version():
+    """Fingerprint of the page files; an open page reloads itself when they change."""
+    digest = hashlib.sha1()
+    for name in ("index.html", "app.js"):
+        digest.update((WEB / name).read_bytes())
+    return digest.hexdigest()[:12]
 
 
 def scene_asset(robot):
@@ -48,6 +57,7 @@ def scene_asset(robot):
         geoms=geoms,
         origin=robot.material_origin.tolist(),
         base=robot.model.body("link0").pos.tolist(),
+        web_version=web_version(),
         geometry_source="Actual compiled MuJoCo visuals; material surface reconstructed from current particles",
     )
 

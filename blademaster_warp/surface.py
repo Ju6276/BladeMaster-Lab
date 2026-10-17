@@ -684,16 +684,29 @@ class MaterialEmbedding:
         # not populate an MPM state or transfer force across a cut.
         return tent_supports(self.nodes, self.ref, 2 * self.h)
 
+    @staticmethod
+    def one_side(code, ids, w, particle_codes):
+        """Compatible support restricted to the side of its heaviest particle.
+
+        A code still unassigned for a cut is compatible with both of its sides;
+        averaging them stretches the surface across the gap once pieces separate.
+        """
+        valid = np.array([compatible(code, c) for c in particle_codes[ids]], dtype=bool)
+        ids, w = ids[valid], w[valid]
+        if len(ids):
+            anchor = particle_codes[ids[np.argmax(w)]]
+            keep = np.array([compatible(anchor, c) for c in particle_codes[ids]], dtype=bool)
+            ids, w = ids[keep], w[keep]
+        return ids, w
+
     def field(self, x, F, particle_codes, code):
         result = np.full_like(self.nodes, np.nan, dtype=float)
         self.extended = np.zeros(len(self.nodes), bool)
         for i, (ids, w) in enumerate(self.support):
-            valid = np.array([compatible(code, c) for c in particle_codes[ids]], dtype=bool)
-            ids, w = ids[valid], w[valid]
+            ids, w = self.one_side(code, ids, w, particle_codes)
             if not len(ids):
                 ext, ew = self.extension_support[i]
-                valid = np.array([compatible(code, c) for c in particle_codes[ext]], dtype=bool)
-                ids, w = ext[valid], ew[valid]
+                ids, w = self.one_side(code, ext, ew, particle_codes)
                 if not len(ids):
                     continue
                 self.extension_nodes += 1
@@ -706,8 +719,7 @@ class MaterialEmbedding:
         positions = np.full_like(self.nodes, np.nan, dtype=float)
         deformation = np.full((len(self.nodes), 3, 3), np.nan)
         for i, (ids, w) in enumerate(self.support):
-            valid = np.array([compatible(node_codes[i], c) for c in particle_codes[ids]], dtype=bool)
-            ids, w = ids[valid], w[valid]
+            ids, w = self.one_side(node_codes[i], ids, w, particle_codes)
             if not len(ids):
                 continue
             positions[i] = (

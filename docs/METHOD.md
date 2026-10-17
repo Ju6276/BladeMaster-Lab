@@ -23,7 +23,7 @@
 |---|---|---|
 | 网格间距 Δx | 6 mm（香蕉），`--spacing` 可取任意值，不必整除香蕉尺寸 | 本地选择 |
 | 粒子 | 每格每轴 2 个；规则采样 1452 个，默认 seed=1 扰动采样 1439 个 | 本地选择 |
-| 接触半径 | 粒子—粒子、粒子—砧板：\(R_p = (V_p^0)^{1/3}/2 = \Delta x/4\)，即 \(s_R = 1\)；粒子—刀：香蕉固定 0.5 mm（`blade_contact_radius`），见 RESULTS.md 力的收敛 | 本地选择 |
+| 接触半径 | 粒子—粒子、粒子—砧板：\(R_p = (V_p^0)^{1/3}/2 = \Delta x/4\)，即 \(s_R = 1\)；粒子—刀：香蕉固定 0.5 mm（`blade_contact_radius`），见 RESULTS.md 力的收敛；求解器下限 \(\Delta x/4\) − 刀半厚（6 mm 网格为 1.0 mm），否则刀落在两列粒子之间谁也碰不到 | 本地选择 |
 | PIC/FLIP 比例 | 0.95 | DexLab |
 | \(s_n\)，\(\gamma_k\)，\(\gamma_c\) | 0.1，0.05，0.1（在参考步长下） | DexLab |
 | \(b_\text{lead}\)，\(b_\text{back}\)，\(u_\text{min}\) | \(2R_p\)，\(2\Delta x\)，0 | DexLab |

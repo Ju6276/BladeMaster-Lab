@@ -393,6 +393,10 @@ libfranka 示例的转动增益（10 Nm/rad，阻尼 \(2\sqrt{k}\)）时间常�
 
 刀接触距离下限（\(\Delta x/4\) − 半厚，见上文）在 6 mm 与 5 mm 网格上生效（1.0 / 0.75 mm），重测 20 次采样：6 mm 1.164 ± 0.200 N（冲量 1.528 Ns），5 mm 0.788 ± 0.098 N（1.037 Ns），全部切透。收敛值 0.646 N，6 mm 由原来的 43% 变为 180%，5 mm 由 54% 变为 122%；4 mm 及更细不受影响。粗网格两头都不准：低于下限时刀从两列粒子之间滑过，取下限时刀的有效厚度（6 mm 下 3 mm）等于粒子间距，多挤开一列粒子。Franka 三刀序列峰值力相应由 2.0 N 变为 4.0 N。3 mm 网格（85%）仍是在线运行精度与速度的折中点。
 
+抖动采样反射修正（`392ee72`，修正前 6 mm 最低粒子初始弹起 8.4 mm、3 mm 1.2 mm）之后重测（代码同 `2a57511`，`python -m scripts.force_convergence --output runs/force_convergence_20261017b --spacings 0.006 0.005 0.004 0.003 --seeds 20`，summary 记录 revision 与命令）：6 mm 1.091 ± 0.206 N（冲量 1.530 Ns），5 mm 0.765 ± 0.104 N（1.087 Ns），4 mm 0.443 ± 0.061 N（0.621 Ns），3 mm 0.551 ± 0.031 N（0.754 Ns），全部切透、无 GPU 错误。相对收敛值 0.646 N：6 mm 169%（原 180%），5 mm 118%（原 122%），4 mm 69%、3 mm 85% 不变。弹起只影响粗网格，结论不变。
+
+Fig. 1 三刀序列重跑（6 mm，`python -m blademaster_warp.franka_run --motion sequence --controller libfranka --stiffness 1000 --material paper-banana --duration 30 --surface --surface-embedding cuda --surface-ccd cuda --output runs/fig1_rerun_20261017`）：任务成功，四块 795 / 297 / 225 / 122（原 794 / 284 / 221 / 140），退刀后保持、刀上方无材料，峰值力 5.3 N（原 4.0 N），最小 det F 0.965。该次 GPU 被其他进程占满（0.45×），实时比不作计时结果；计时仍以上文空闲 GPU 的 0.80× 为准。
+
 ## 2026-10-17 导向刀驱动、连续切割的到底判定
 
 **导向刀**：论文没有给导向驱动。论文材料香蕉的峰值切割力约 5 N，DexLab 的 250 N/m 比例驱动下刀滞后 20 mm，到 2 s 退刀时刀刃仍在板上 13 mm。论文材料预设改为 1000 N/m（与 Franka 笛卡尔刚度相同）、对 0.1 kg 刀临界阻尼 20 N·s/m，限力仍 10 N；DexLab 基线不变。`paper_experiments --driver guided` 的单刀：250 N/m 一块不切开；1000 / 3000 N/m 切成 717 / 722，0.4–1.4 s 平均力 1.18 / 1.23 N（规定刀路 6 mm 为 1.164 N），峰值 4.2 / 4.5 N。`python -m blademaster_warp.run`（DexLab 三刀 + 推开，论文材料）：三刀刀心都到达板面（0.0200 m = 半刀高），最终 4 块 230 / 426 / 493 / 290，0.73× 实时。`paper_experiments` 新增 `--drive-stiffness`、`--drive-damping`、`--drive-force-limit`。

@@ -2,6 +2,35 @@
 
 硬件：tams61，RTX 4060 8 GB，Warp 1.18.0，MuJoCo 3.3.7。运行目录在 tams61 的 `runs/` 下（不进仓库）。
 
+## 2026-10-18 双向审查修复与复测
+
+commit `d4b0635`。212 项测试、18 个子用例通过；Ruff 与差异空白检查通过。香蕉材料、接触参数与步长保持原设置（6 mm：62.5 μs；3 mm：40 μs）。
+
+- 邻居表在重建时加入本步预测位移；1–2 ms、高速、小 skin 的接触数和冲量与完整搜索一致。多刀损伤独立存储。
+- 表面记录实际材料子步刀路及刀次/开关，常数段压缩首尾；显示时消费完整历史。帧间进退刀、帧间两刀、绕行与材料经过静止刀均有测试。
+- SpaceMouse 轴超时与按钮处理分开；会话重启清旧事件、保留序号水位，加载时的停止请求保留。
+- TopoCut 分块查询范围覆盖物体包围盒；细网格内部粒子测试通过。数值试验缓存比较有效配置、协议与干净的 Git 提交；更换接触距离时拒绝旧缓存，原汇总保持不变。
+
+**香蕉三刀**（`franka_run --motion sequence --controller libfranka --stiffness 1000 --material paper-banana --duration 30 --surface --surface-embedding cuda --surface-ccd cuda [--record]`）：
+
+- 带录制 `runs/review_fix_sequence_final_20261018`：21.243 s / 37.886 s，0.561×；四块 811 / 293 / 225 / 110，峰值力 4.917 N，GPU 错误、MuJoCo 警告均为零。
+- 不录制 `runs/review_fix_sequence_norecord_20261018`：21.243 s / 37.125 s，0.572×，四块相同。两项都含表面，客户端渲染另计。
+- 532 帧网格全部闭合且绕向一致、顶点有限；保留 42,959 个刀路样本。前 120 帧 CPU/CUDA 拓扑相同，坐标最大差 2.36e-15 m，与录制网格一致（`runs/review_fix_surface_equivalence_20261018.json`）。
+- 完整刀路的表面计算经整段包围盒筛选、侧标签候选与缓冲复用后，带录制表面耗时 44.38 → 9.36 s；最新扫掠 6.31 s。2026-10-17 的帧端点版本计时另见历史条目。
+- 8 s 模拟遥操作（`--motion teleop --cut-events auto --surface-precision float32`，其余相同）：18.498 s，0.432×，两次切割事件，峰值力 4.567 N，无 GPU 错误或 MuJoCo 警告（`runs/review_fix_teleop_20261018`）。同参数的 `2292eb6` 为 12.955 s、0.618×、4.558 N；两版本均分成 1435 / 4。完整刀路的记录与扫掠增加了开销。
+
+**力曲线**：`python -m scripts.force_convergence --output runs/review_fix_force_final_20261018 --spacings 0.006 0.003 --seeds 20`，每种 20 次，全部切透、错误为零。
+
+- 6 mm：平均 1.0903 ± 0.207 N，冲量 1.526 Ns；与旧均值相差 0.074%。
+- 3 mm：平均 0.55115 ± 0.031 N，冲量 0.753 Ns；与旧均值相差 0.00064%。
+- 旧 80 组记录的配置字段一致；来源分布在四个提交，`h3mm_seed3.json` 标记为 dirty。本次 40 组均来自同一干净提交。
+
+**论文场景复跑**（`runs/review_fix_fig{4,8,6}_20261018`）：Fig. 4 两块 5940 / 2992；Fig. 8 五块 4046 / 952 / 952 / 952 / 952；Fig. 6 三把 20 g 刀停止深度 20.0 / 33.8 / 51.5 mm。物理 wall/sim 分别 0.140 / 0.196 / 0.394。
+
+Fig. 3 默认重力刀复跑（`paper_freefall --output runs/review_fix_fig3_20261018`）：两块 4308 / 4652，1 s 仿真耗时 0.419 s。真实 HTTP 服务的终止后暂停/重启、旧输入清理、加载时停止回归通过。
+
+**TopoCut 式对照复跑**（`scripts.topocut_compare --damaged-shear 0.1`）：Fig. 4 默认 2 ms，BladeMaster 片抬 38.886 mm、其余最大 0.750 mm；MLS-MPM 为 7.538 / 0.976 mm，8 粒子处于 SDF 切口空隙未分配。Fig. 8、0.25 ms 下 BladeMaster 五块分配正确（参考构形谱奖励 5.0），MLS-MPM 得四块，参考谱奖励 −67.24。两次 MLS-MPM 的越界和翻转钳制计数均为零。目录为 `runs/review_fix_topocut_fig{4,8}_20261018`。
+
 ## 2026-10-16 香蕉单刀：接触刚度与步长
 
 commit `c3ca5c6`；`franka_run --motion feedback --controller serl --material paper-banana --duration 12 --record`；`runs/dt_sweep_20261016/`。

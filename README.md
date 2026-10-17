@@ -2,10 +2,10 @@
 
 [BladeMaster](https://arxiv.org/html/2609.27342v2)（拓扑感知 TLMPM 切割仿真）的 Warp/CUDA 实现，带 MuJoCo Franka 双向耦合、linked-volume 表面重建和浏览器实时显示。
 
-- SpaceMouse 遥操作 Franka 切香蕉（论文 §IV-C 材料，6 mm 网格，62.5 μs 子步）+ 在线表面：RTX 4060 上 **0.62× 实时**，只算物理 0.70×，带录制 0.61×。论文的计时不含表面重建与渲染（§IV-D），表 I 也没有香蕉；香蕉比表 I 的软块硬 20–60 倍，步长小 16–32 倍。
-- 连续三刀 + 推开 + 表面：**四块，0.68–0.80× 实时**（6 mm 网格）；3 mm 网格（11485 粒子）约 0.31×。
+- SpaceMouse 遥操作 Franka 切香蕉（论文 §IV-C 材料，6 mm 网格，62.5 μs 子步），浏览器支持开始、暂停、结束和重启。表面保留实际子步刀路，包含两帧之间的进退刀和换刀。
+- 连续三刀 + 推开 + 表面：**四块，无录制 0.57×，带录制 0.56× 实时**（6 mm，21.243 s 仿真 / 37.125–37.886 s 计算，RTX 4060；不含客户端渲染）。最新验证与计时见 RESULTS。
 - 论文 Table I 重力刀（8960 粒子，2 ms）：**0.42–0.44 wall/sim**，切透成两块（论文 RTX 5090 为 0.33）。
-- 项目页 7 个演示中已复现 6 个（Fig. 1、3、4、6、7、8），Fig. 5（与 CRESSim-MPM 对比独立操作）未做；Fig. 3(d) 低锋利度只在 `cut_hold` 下复现到"切不透"。逐项见 RESULTS。
+- 已实现 Fig. 1、3、4、6、7、8 对应场景。Fig. 5（CRESSim-MPM 独立操作对照）和 Fig. 3(d) 的停刀深度仍在 TODO；低锋利度切不透使用 `cut_hold` 对照开关。逐项见 RESULTS。
 - 接触刚度与步长解耦，25–77 μs 下刀阶段平均力相差 < 2%。
 
 详细数字见 [docs/RESULTS.md](docs/RESULTS.md)，公式对照与数值设置见 [docs/METHOD.md](docs/METHOD.md)，论文各实验参数、DexLab 与文献数据见 [docs/PARAMETERS.md](docs/PARAMETERS.md)，剩余工作见 [TODO.md](TODO.md)。
@@ -66,7 +66,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 `--attachment grasp` 让夹爪夹住带柄的自由刀（默认每指 30 N），刀只靠摩擦保持；默认 `fixed` 为刀固定在法兰安装座上，手指合在安装座上。
 
-![遥操作（模拟输入），两刀未切透](docs/media/franka_teleop_mock.png)
+![遥操作模拟输入示例](docs/media/franka_teleop_mock.png)
 
 ## 记录与离线分析
 
@@ -90,7 +90,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 .venv/bin/python -m blademaster_warp.render_franka runs/fig1_sequence --layout paper
 ```
 
-`--cuts` 指定各刀相对起始位置的 x 坐标（m，按顺序切），`--push-distance` 指定推开距离。加 `--spacing 0.003` 用 3 mm 网格（11485 粒子，与论文 Table I 的粒子数同一量级；步长自动取 40 μs），外形和切面明显更圆润，RTX 4060 上约 0.31× 实时。
+`--cuts` 指定各刀相对起始位置的 x 坐标（m，按顺序切），`--push-distance` 指定推开距离。加 `--spacing 0.003` 用 3 mm 网格（11485 粒子；步长自动取 40 μs），外形和切面更圆润。
 
 常用选项：
 
@@ -103,6 +103,8 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | `--controller {serl,libfranka}` | 笛卡尔阻抗控制器 |
 
 `report.json` 里的 `time_s` 给出材料、机器人、观测各阶段耗时，`task_evaluation` 给出切割结果。
+
+表面帧的 `tool_path` 保存完整刀路，列定义在 `surface/method.json`。`scripts.force_convergence` 在干净的 Git 提交上运行；复用缓存时核对配置、试验协议和提交，换参数使用新的输出目录。已有历史汇总仍可用 `--plot` 读取。
 
 ## 其他入口
 

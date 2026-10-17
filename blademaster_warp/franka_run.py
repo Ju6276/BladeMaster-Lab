@@ -199,7 +199,19 @@ class FrankaCuttingRun:
         self.cut_index = 0
         self.teleop = None
         if args.motion == "teleop":
-            self.teleop = PoseTarget(self.robot.position, quat_xyzw(self.robot.rotation))
+            board = self.robot.material_origin
+            margin = np.array([0.02, 0.02, 0.0])
+            extent = np.r_[BOARD_HALF_EXTENT, 0.0]
+            self.teleop = PoseTarget(
+                self.robot.position,
+                quat_xyzw(self.robot.rotation),
+                workspace=(board - extent + margin, board + extent - margin + [0.0, 0.0, 0.25]),
+                edge=[(0.0, -HALF[1], -HALF[2]), (0.0, HALF[1], -HALF[2])],
+                # Edge target at most 2 mm into the board: the impedance spring then
+                # presses with about stiffness x 2 mm instead of winding up.
+                floor_z=board[2] - 0.002,
+                max_tilt=np.radians(getattr(args, "teleop_max_tilt", 45.0)),
+            )
             self._mock = dict(seq=0, phase=-1)
         self.strokes = ContactStrokes() if args.motion == "teleop" and args.cut_events == "auto" else None
         self._last_codes = None
@@ -729,6 +741,12 @@ def parser():
             "teleop: knife twist and begin_cut/end_cut from /input (SpaceMouse client), or the fixed mock input "
             "sequence without --live"
         ),
+    )
+    p.add_argument(
+        "--teleop-max-tilt",
+        type=float,
+        default=45.0,
+        help="teleop only: largest angle in degrees between the knife axis and its initial direction",
     )
     p.add_argument(
         "--cut-events",

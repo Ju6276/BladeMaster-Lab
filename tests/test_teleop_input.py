@@ -83,3 +83,16 @@ def test_pose_target_limits_tilt_workspace_and_floor():
     yaw = PoseTarget((0.0, 0.0, 0.1), max_tilt=np.radians(45.0))
     yaw.integrate(Command(0, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)), [], 1.0, 1)
     assert yaw.orientation[2] == pytest.approx(np.sin(0.5))
+
+
+def test_yaw_only_keeps_the_blade_upright_and_operator_frame_turns_input():
+    from blademaster_warp.franka import yaw_matrix
+    from blademaster_warp.teleop_input import quaternion_rotate
+
+    target = PoseTarget((0.0, 0.0, 0.1), input_rotation=yaw_matrix(np.pi), yaw_only=True)
+    target.integrate(Command(0, (0.01, 0.0, 0.0), (1.0, 1.0, 0.5)), [], 1.0, 1)
+    axis = quaternion_rotate(target.orientation, np.array([0.0, 0.0, 1.0]))
+    np.testing.assert_allclose(axis, [0.0, 0.0, 1.0], atol=1e-12)
+    # Operator facing the arm: their forward is world -x for an arm reaching along +x.
+    np.testing.assert_allclose(target.position, [-0.01, 0.0, 0.1], atol=1e-12)
+    assert abs(target.orientation[2]) == pytest.approx(np.sin(0.25))

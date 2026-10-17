@@ -3,6 +3,9 @@ import {OrbitControls} from './vendor/OrbitControls.js';
 const $ = id => document.getElementById(id);
 // Page files the open page was loaded with; a restarted server with new files reloads it.
 let pageVersion=null;
+// One colour per cut-side code: uncut material keeps the banana colour, every side of every cut gets its own hue.
+const codeColors=new Map();
+function codeColor(code){if(!codeColors.has(code))codeColors.set(code,code===0?new THREE.Color(0xe9bc58):new THREE.Color().setHSL((0.55+code*0.618034)%1,.62,.52));return codeColors.get(code)}
 // Pieces below 1% of the particles count as debris, not as a separated piece.
 function showPieces(sizes){const out=$('pieces');if(!sizes.length){out.textContent='—';out.className='';return}
  const total=sizes.reduce((a,b)=>a+b,0),big=sizes.filter(s=>s>=Math.max(5,0.01*total)),debris=sizes.length-big.length;
@@ -47,7 +50,7 @@ function installAsset(asset){
  // Paper Fig. 1 view: in front of the arm, looking back along its reach, slightly from above.
  const base=new THREE.Vector3(...(asset.base||[0,0,0])),reach=origin.clone().sub(base).setZ(0),front=reach.clone().normalize();
  const whole=base.clone().addScaledVector(reach,.5).setZ(.52);
- views.forEach((v,i)=>{v.controls.target.copy(i?origin.clone().add(new THREE.Vector3(0,0,.025)):whole);v.camera.position.copy(v.controls.target).add(i?front.clone().multiplyScalar(.3).setZ(.1):front.clone().multiplyScalar(1.45).setZ(.6));v.controls.update()});
+ views.forEach((v,i)=>{v.controls.target.copy(i?origin.clone().add(new THREE.Vector3(0,0,.025)):whole);v.camera.position.copy(v.controls.target).add(i?front.clone().multiplyScalar(.24).setZ(.19):front.clone().multiplyScalar(1.2).setZ(.85));v.controls.update()});
  assetGeneration=asset.generation;
 }
 function applyPacket(p){
@@ -59,8 +62,7 @@ function applyPacket(p){
  }
  if(p.particles.length){
   if(!particles){particles=new THREE.InstancedMesh(new THREE.SphereGeometry(p.radius*.85,10,8),new THREE.MeshStandardMaterial({roughness:.8}),p.codes.length);particles.layers.set(1);scene.add(particles)}
-  const colors=[new THREE.Color(0xe9bc58),new THREE.Color(0x3698c0),new THREE.Color(0xdf8b4b)];
-  p.codes.forEach((code,i)=>{dummy.position.fromArray(p.particles,3*i);dummy.updateMatrix();particles.setMatrixAt(i,dummy.matrix);particles.setColorAt(i,colors[code%3])});particles.instanceMatrix.needsUpdate=true;particles.instanceColor.needsUpdate=true;particles.computeBoundingSphere();
+  p.codes.forEach((code,i)=>{dummy.position.fromArray(p.particles,3*i);dummy.updateMatrix();particles.setMatrixAt(i,dummy.matrix);particles.setColorAt(i,codeColor(code))});particles.instanceMatrix.needsUpdate=true;particles.instanceColor.needsUpdate=true;particles.computeBoundingSphere();
  }
  $('sim').textContent=p.sim_s.toFixed(3)+' s';$('wall').textContent=p.wall_s.toFixed(2)+' s';$('ratio').textContent=p.ratio.toFixed(3)+' ×';$('ratio').className=p.ratio>=1?'good':'slow';$('force').textContent=Math.hypot(...p.wrench.slice(0,3)).toFixed(3)+' N';showPieces(p.pieces||[]);
 }

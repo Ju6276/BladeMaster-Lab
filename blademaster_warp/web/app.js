@@ -16,6 +16,8 @@ const views=['whole','detail','particles'].map((id,i)=>{
  return {element:$(id),camera,controls};
 });
 let objects=[],surface=null,particles=null,assetGeneration=-1,seq=-1,lastReceive=0,packetCount=0,lastState='loading';
+const timing={fetchMs:[],parseMs:[],applyMs:[],bytes:[],presentMs:[]};let appliedAt=null;
+function keep(list,value){list.push(value);if(list.length>200)list.shift()}
 const matrix=new THREE.Matrix4(),dummy=new THREE.Object3D();
 function installAsset(asset){
  for(const o of objects){scene.remove(o);o.geometry.dispose();o.material.dispose()}
@@ -54,13 +56,16 @@ function applyPacket(p){
 }
 const states={loading:'正在初始化 GPU…',ready:'已就绪 · 点击开始计算',running:'在线计算中',paused:'已暂停 · 点击继续',completed:'本次运行已结束',stopped:'已结束',failed:'运行出错'};
 async function poll(){
+ let delay=0;
  try{
+  const t0=performance.now();
   const response=await fetch('/state?after='+seq);
   if(response.status!==204){
    if(!response.ok)throw Error('HTTP '+response.status);
-   const p=await response.json();
+   const text=await response.text();const t1=performance.now();
+   const p=JSON.parse(text);const t2=performance.now();
    if(p.generation!==undefined&&p.generation!==assetGeneration){const a=await(await fetch('/scene')).json();if(a)installAsset(a)}
-   if(p.geom_positions&&assetGeneration===p.generation)applyPacket(p);
+   if(p.geom_positions&&assetGeneration===p.generation){applyPacket(p);const t3=performance.now();keep(timing.fetchMs,t1-t0);keep(timing.parseMs,t2-t1);keep(timing.applyMs,t3-t2);keep(timing.bytes,text.length);appliedAt=t3}
    seq=p.sequence;lastReceive=performance.now();packetCount++;lastState=p.state;
    $('connection').textContent=states[p.state]||p.state;$('connection').className='connection'+(p.state==='failed'?' error':'');
    $('start').disabled=['loading','running'].includes(p.state)||p.can_restart===false;$('pause').disabled=p.state!=='running';$('stop').disabled=!['running','paused','ready'].includes(p.state);
@@ -68,15 +73,17 @@ async function poll(){
    if(p.report){const success=p.report.task_evaluation?.success;$('result').textContent=p.report.exception|| (success?'单刀诊断通过':p.state==='stopped'?'用户结束':'本次诊断未通过');$('result').className=success?'good':'slow';$('storage').textContent=p.report.recording?'本次已开启原始数据记录':'本次未保存逐帧快照';}
    else $('result').textContent=p.phase==='ready'?'':p.phase||'';
   }
- }catch(e){$('connection').textContent='连接中断：'+e.message;$('connection').className='connection error'}
- setTimeout(poll,35);
+ }catch(e){$('connection').textContent='连接中断：'+e.message;$('connection').className='connection error';delay=500}
+ // The server holds the request until a new frame, so polling again at once does not spin.
+ setTimeout(poll,delay);
 }
 for(const command of ['start','pause','stop'])$(command).onclick=async()=>{const r=await fetch('/command/'+command,{method:'POST'});if(!r.ok)$('connection').textContent=await r.text()};
-function draw(){
+function draw(now){
+ if(appliedAt!==null){keep(timing.presentMs,now-appliedAt);appliedAt=null}
  const bounds=$('stage').getBoundingClientRect();renderer.setSize(bounds.width,bounds.height,false);
  for(const v of views){const r=v.element.getBoundingClientRect(),left=r.left-bounds.left,bottom=bounds.bottom-r.bottom;v.controls.update();v.camera.aspect=r.width/r.height;v.camera.updateProjectionMatrix();renderer.setViewport(left,bottom,r.width,r.height);renderer.setScissor(left,bottom,r.width,r.height);renderer.render(scene,v.camera)}
  // Browser frame rate is never presented as simulation speed.
- window.liveDiagnostics={packets:packetCount,sequence:seq,state:lastState,stalenessMs:performance.now()-lastReceive,generation:assetGeneration};
+ window.liveDiagnostics={packets:packetCount,sequence:seq,state:lastState,stalenessMs:performance.now()-lastReceive,generation:assetGeneration,timing};
  requestAnimationFrame(draw);
 }
-poll();draw();
+poll();requestAnimationFrame(draw);

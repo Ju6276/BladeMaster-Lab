@@ -35,6 +35,33 @@ def test_live_state_protocol_and_pause_resume():
         server.server_close()
 
 
+def test_state_long_poll_returns_the_next_frame_on_a_kept_alive_connection():
+    import http.client
+    import time
+    from threading import Timer
+
+    live = LiveState()
+    live._set(dict(state="running", sim_s=0.0))
+    server = make_server(live, 0)
+    Thread(target=server.serve_forever, daemon=True).start()
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2.0)
+    try:
+        Timer(0.1, live._set, args=(dict(state="running", sim_s=0.04),)).start()
+        begin = time.perf_counter()
+        conn.request("GET", "/state?after=1")
+        packet = json.loads(gzip.decompress(conn.getresponse().read()))
+        assert packet["sim_s"] == 0.04 and packet["sequence"] == 2
+        assert 0.09 < time.perf_counter() - begin < 0.4
+        socket = conn.sock
+        conn.request("GET", "/state?after=1")
+        assert json.loads(gzip.decompress(conn.getresponse().read()))["sequence"] == 2
+        assert conn.sock is socket
+    finally:
+        conn.close()
+        server.shutdown()
+        server.server_close()
+
+
 def test_live_input_stream_feeds_teleop_source():
     import http.client
     from blademaster_warp.teleop_input import Command, LatestInput
@@ -57,6 +84,24 @@ def test_live_input_stream_feeds_teleop_source():
         assert json.loads(gzip.decompress(conn.getresponse().read()))["accepted_packets"] == 2
         command, events, stale = live.teleop.sample()
         assert command.seq == 1 and events == [(0, "begin_cut")] and not stale
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_spacemouse_client_streams_to_live_server():
+    from blademaster_warp import spacemouse_client
+    from blademaster_warp.teleop_input import LatestInput
+
+    live = LiveState()
+    live.teleop = LatestInput()
+    live._set(dict(state="ready", sim_s=0.0))
+    server = make_server(live, 0)
+    Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        spacemouse_client.run(port=server.server_port, duration=0.3, mock=True)
+        command, _, _ = live.teleop.sample()
+        assert command.seq >= 10 and command.event == "hold"
     finally:
         server.shutdown()
         server.server_close()

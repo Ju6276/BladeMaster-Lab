@@ -4,7 +4,7 @@ Binds localhost; use an SSH tunnel for remote access."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Condition, Event, Thread
 from urllib.parse import urlparse, parse_qs
 import gzip
 import json
@@ -51,9 +51,17 @@ def scene_asset(robot):
     )
 
 
+LONG_POLL_S = 0.5
+
+
+def display(values):
+    """Display coordinates rounded to 1 um; full float64 digits double the JSON frame."""
+    return np.round(np.asarray(values, np.float64), 6).ravel().tolist()
+
+
 class LiveState:
     def __init__(self):
-        self.lock = Lock()
+        self.lock = Condition()
         self.play, self.restart = Event(), Event()
         self.stop_requested = False
         self.sequence, self.generation = 0, int(time.time() * 1.0e6)
@@ -92,7 +100,7 @@ class LiveState:
         self.play.wait()
         return time.perf_counter() - begin
 
-    def publish(self, robot, solver, surface, x, codes, wall_s, phase, wrench, state="running"):
+    def publish(self, robot, solver, surface, x, codes, wall_s, phase, wrench, state="running", input_seq=None):
         ids = self.ids
         if state == "running" and not self.play.is_set() and not self.stop_requested:
             state = "paused"
@@ -104,14 +112,16 @@ class LiveState:
             ratio=float(robot.data.time / wall_s) if wall_s > 0 else 0.0,
             phase=phase,
             wrench=np.asarray(wrench).tolist(),
-            geom_positions=robot.data.geom_xpos[ids].tolist(),
-            geom_rotations=robot.data.geom_xmat[ids].tolist(),
-            particles=(x + robot.material_origin).ravel().tolist() if x is not None else [],
+            geom_positions=np.round(robot.data.geom_xpos[ids], 6).tolist(),
+            geom_rotations=np.round(robot.data.geom_xmat[ids], 6).tolist(),
+            particles=display(x + robot.material_origin) if x is not None else [],
             codes=codes.tolist() if codes is not None else [],
             radius=float(solver.radius) if solver else 0.0,
+            # Sequence number of the operator command the frame's last step used.
+            input_seq=input_seq,
         )
         if surface and surface.current:
-            packet["vertices"] = (surface.current["vertices"] + robot.material_origin).ravel().tolist()
+            packet["vertices"] = display(surface.current["vertices"] + robot.material_origin)
             packet["triangles"] = surface.current["triangles"].ravel().tolist()
         self._set(packet)
 
@@ -119,6 +129,7 @@ class LiveState:
         with self.lock:
             self.sequence += 1
             self.snapshot = dict(packet, sequence=self.sequence)
+            self.lock.notify_all()
 
     def finish(self, report):
         self._set(dict(self.snapshot, state=report["status"], report=report, can_restart=self.can_restart))
@@ -149,6 +160,11 @@ class LiveState:
 
 def make_server(live, port):
     class Handler(BaseHTTPRequestHandler):
+        # Keep-alive: over an SSH tunnel a new connection per frame costs extra round trips and slow start.
+        protocol_version = "HTTP/1.1"
+        # Headers and body are separate writes; with Nagle the body waits for a delayed ACK (40 ms).
+        disable_nagle_algorithm = True
+
         def log_message(self, *args):
             pass
 
@@ -169,9 +185,12 @@ def make_server(live, port):
         def do_GET(self):
             url = urlparse(self.path)
             if url.path == "/state":
+                after = parse_qs(url.query).get("after", [""])[0]
                 with live.lock:
+                    # Long poll: hold an up-to-date client until the next frame instead of a 204 round trip.
+                    live.lock.wait_for(lambda: str(live.snapshot["sequence"]) != after, timeout=LONG_POLL_S)
                     packet = live.snapshot
-                if str(packet["sequence"]) == parse_qs(url.query).get("after", [""])[0]:
+                if str(packet["sequence"]) == after:
                     self.send(b"", "application/json", 204)
                     return
                 if live.teleop is not None:

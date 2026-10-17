@@ -270,6 +270,7 @@ class FrankaCuttingRun:
         source = getattr(self.observer, "teleop", None)
         if source is not None:
             command, events, _ = source.sample()
+            self.input_seq = command.seq
             return command, events
         command, self._mock["phase"] = mock_command(t, self._mock["seq"], self._mock["phase"])
         self._mock["seq"] += 1
@@ -400,6 +401,7 @@ class FrankaCuttingRun:
                 time.perf_counter() - begin - self.paused_s,
                 self._phase_name(),
                 wrench,
+                input_seq=getattr(self, "input_seq", None),
             )
         if not self.record:
             # Live mode keeps only the current state, no history.

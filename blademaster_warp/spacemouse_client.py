@@ -1,6 +1,7 @@
 """Stream SpaceMouse input from the Mac to the simulation over HTTP."""
 
 import argparse
+import gzip
 import http.client
 import json
 from pathlib import Path
@@ -9,6 +10,12 @@ import socket
 import time
 import numpy as np
 from .teleop_input import Command, hid_twist, mock_command
+
+
+def body(response):
+    """Response body; the simulation server gzips every response."""
+    data = response.read()
+    return gzip.decompress(data) if data and response.getheader("Content-Encoding") == "gzip" else data
 
 
 def run(
@@ -21,7 +28,7 @@ def run(
         try:
             conn.request("GET", "/state")
             response = conn.getresponse()
-            status = json.loads(response.read())
+            status = json.loads(body(response))
             ready = status.get("ready", False)
             if ready:
                 break
@@ -96,7 +103,7 @@ def run(
             stream.sendall(b"0\r\n\r\n")
             response = http.client.HTTPResponse(stream)
             response.begin()
-            result = response.read()
+            result = body(response)
             if response.status != 200:
                 raise RuntimeError(result.decode())
             print(result.decode(), flush=True)

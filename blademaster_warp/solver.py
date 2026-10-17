@@ -55,9 +55,13 @@ class Config:
     external_tool: bool = False
     cache_topology: bool = False
     grid_storage: str = "hash"  # compact is validated against the original hash path
-    # 'all' checks every pair (cheaper than a hash-grid build for small n),
-    # 'auto' picks 'all' up to ALL_PAIRS_MAX_PARTICLES.
+    # 'list' (= 'auto') keeps a skin neighbour list of the pairs pair contact can act
+    # on and rebuilds it on the device when a particle moves skin/2 or a side code
+    # changes; 'hash' rebuilds a hash grid every substep, 'all' checks every pair.
+    # Same contacts; 'list' is fastest from 1.4k to 11k particles, see docs/RESULTS.md.
     pair_search: str = "auto"
+    # Skin of the 'list' search in metres; 0 uses the particle radius.
+    pair_skin: float = 0.0
     # External tool within a coupling interval: 'hold' (paper III-G) or
     # 'predict' (mobility-based twist update, see tool.finish_external_step).
     tool_substep: str = "hold"
@@ -77,8 +81,10 @@ class Config:
     def __post_init__(self):
         if self.grid_storage not in ("hash", "compact"):
             raise ValueError("grid_storage must be hash or compact")
-        if self.pair_search not in ("auto", "hash", "all"):
-            raise ValueError("pair_search must be auto, hash or all")
+        if self.pair_search not in ("auto", "hash", "all", "list"):
+            raise ValueError("pair_search must be auto, hash, all or list")
+        if self.pair_skin < 0:
+            raise ValueError("pair_skin must be non-negative")
         if self.cut_work not in ("relative", "advance"):
             raise ValueError("cut_work must be relative or advance")
         if self.tool_substep not in ("hold", "predict"):
@@ -133,8 +139,9 @@ class Config:
         return self.normal_scale * ratio, self.tangent_stiffness * ratio
 
 
-ALL_PAIRS_MAX_PARTICLES = 2048
 PAIR_LANES = 64
+# Listed partners per particle; a particle with more falls back to a grid query.
+PAIR_LIST_LANES = 16
 
 
 class Solver:
@@ -234,12 +241,24 @@ class Solver:
         # the reference box are still inserted and queried without clipping.
         extent = np.ceil(np.asarray(cfg.size) / (2 * self.radius)).astype(int) + 2
         self.hash_grid_shape = tuple(1 << (max(8, int(v)) - 1).bit_length() for v in extent)
-        self.all_pairs = cfg.pair_search == "all" or (
-            cfg.pair_search == "auto" and self.n <= ALL_PAIRS_MAX_PARTICLES
-        )
-        if not self.all_pairs:
+        self.all_pairs = cfg.pair_search == "all"
+        self.pair_list = cfg.pair_search in ("list", "auto")
+        if cfg.pair_search == "hash":
             self.pair_grid = wp.HashGrid(*self.hash_grid_shape, device=self.device)
             self.pair_grid.reserve(self.n)
+        if self.pair_list:
+            self.pair_skin = cfg.pair_skin or self.radius
+            self.pair_reach = 2 * self.radius + self.pair_skin
+            self.partners = zeros(self.n * PAIR_LIST_LANES, int)
+            self.partner_count = zeros(self.n, int)
+            self.built_x = zeros(self.n, wp.vec3)
+            self.built_codes = zeros(self.n, wp.int64)
+            self.pair_list_dirty = array([1], int)
+            self.pair_list_builds = zeros(1, int)
+            buckets = 1 << int(2 * self.n - 1).bit_length()
+            self.list_mask = buckets - 1
+            self.list_heads = zeros(buckets, int)
+            self.list_links = zeros(self.n, int)
         self.speed = zeros(1, float)
         k = cfg.tool_count
         self.tool_pos = array([[0.0, 0.0, cfg.size[2] + 0.012 + hz]] * k, wp.vec3)
@@ -618,6 +637,40 @@ class Solver:
                 (self.n, PAIR_LANES),
                 [*contact, *history, PAIR_LANES, self.speed, self.impulses, self.errors],
             )
+        elif self.pair_list:
+            self.launch(
+                c.check_pair_list,
+                self.n,
+                [
+                    self.x,
+                    self.v,
+                    self.codes,
+                    self.built_x,
+                    self.built_codes,
+                    0.5 * self.pair_skin,
+                    cfg.dt,
+                    self.pair_list_dirty,
+                ],
+            )
+            wp.capture_if(self.pair_list_dirty, self._build_pair_list)
+            self.launch(
+                c.pairs_listed,
+                self.n,
+                [
+                    self.list_heads,
+                    self.list_links,
+                    self.list_mask,
+                    self.partners,
+                    self.partner_count,
+                    PAIR_LIST_LANES,
+                    self.built_x,
+                    self.pair_reach,
+                    *contact,
+                    *history,
+                    self.impulses,
+                    self.errors,
+                ],
+            )
         else:
             self.pair_grid.build(self.x, 2 * self.radius)
             self.launch(
@@ -625,6 +678,34 @@ class Solver:
                 self.n,
                 [self.pair_grid.id, *contact, self.speed, *history, self.impulses, self.errors],
             )
+
+    def _build_pair_list(self):
+        # Inside a CUDA conditional node: HashGrid.build allocates and is not allowed there.
+        self.list_heads.fill_(-1)
+        self.launch(
+            c.bin_particles, self.n, [self.x, self.pair_reach, self.list_mask, self.list_heads, self.list_links]
+        )
+        self.launch(
+            c.build_pair_list,
+            self.n,
+            [
+                self.list_heads,
+                self.list_links,
+                self.list_mask,
+                self.x,
+                self.ref,
+                self.codes,
+                self.config.grid_spacing,
+                self.pair_reach,
+                PAIR_LIST_LANES,
+                self.partners,
+                self.partner_count,
+                self.built_x,
+                self.built_codes,
+                self.pair_list_builds,
+            ],
+        )
+        self.pair_list_dirty.zero_()
 
     def _finish_external_tool(self):
         """The external engine integrates the tool; here only reactions are accumulated."""

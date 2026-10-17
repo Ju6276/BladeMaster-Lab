@@ -702,7 +702,7 @@ def parser():
         default="physical",
         help="physical: contact stiffness fixed at the preset dt; per-step: fixed s_n, gamma_k (stiffness ~ 1/dt^2)",
     )
-    p.add_argument("--pair-search", choices=["auto", "hash", "all"], default="auto")
+    p.add_argument("--pair-search", choices=["auto", "list", "hash", "all"], default="auto")
     p.add_argument(
         "--tool-substep",
         choices=["hold", "predict"],

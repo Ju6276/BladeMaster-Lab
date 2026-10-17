@@ -715,6 +715,199 @@ def pairs(
 
 
 @wp.kernel
+def check_pair_list(
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    codes: wp.array(dtype=wp.int64),
+    built_x: wp.array(dtype=wp.vec3),
+    built_codes: wp.array(dtype=wp.int64),
+    half_skin: float,
+    dt: float,
+    dirty: wp.array(dtype=int),
+):
+    """Request a rebuild when a particle may reach a pair outside the list, or a code changed.
+
+    With |x - x_built| + dt |v| <= skin / 2 for both particles, a pair at least
+    2 radius + skin apart at the build is still farther than 2 radius + dt |v_p - v_q|,
+    the reach of pair_at.
+    """
+    p = wp.tid()
+    if wp.length(x[p] - built_x[p]) + dt * wp.length(v[p]) > half_skin or codes[p] != built_codes[p]:
+        dirty[0] = 1
+
+
+@wp.func
+def list_cell(x: wp.vec3, size: float):
+    return wp.vec3i(int(wp.floor(x[0] / size)), int(wp.floor(x[1] / size)), int(wp.floor(x[2] / size)))
+
+
+@wp.func
+def list_bucket(c: wp.vec3i, mask: int):
+    return ((c[0] * 73856093) ^ (c[1] * 19349663) ^ (c[2] * 83492791)) & mask
+
+
+@wp.kernel
+def bin_particles(
+    x: wp.array(dtype=wp.vec3),
+    size: float,
+    mask: int,
+    heads: wp.array(dtype=int),
+    links: wp.array(dtype=int),
+):
+    """Bucket linked lists of the particles by cell; heads must hold -1."""
+    p = wp.tid()
+    links[p] = wp.atomic_exch(heads, list_bucket(list_cell(x[p], size), mask), p)
+
+
+@wp.kernel
+def build_pair_list(
+    heads: wp.array(dtype=int),
+    links: wp.array(dtype=int),
+    mask: int,
+    x: wp.array(dtype=wp.vec3),
+    ref: wp.array(dtype=wp.vec3),
+    codes: wp.array(dtype=wp.int64),
+    spacing: float,
+    reach: float,
+    lanes: int,
+    partners: wp.array(dtype=int),
+    partner_count: wp.array(dtype=int),
+    built_x: wp.array(dtype=wp.vec3),
+    built_codes: wp.array(dtype=wp.int64),
+    builds: wp.array(dtype=int),
+):
+    """Partners q > p within reach that pair_at does not skip as compatible neighbours.
+
+    Cells have the size of the reach. More than `lanes` partners stores -1; such a
+    particle searches the buckets of this build at its build position instead.
+    """
+    p = wp.tid()
+    if p == 0:
+        builds[0] += 1
+    xp = x[p]
+    built_x[p] = xp
+    built_codes[p] = codes[p]
+    home = list_cell(xp, reach)
+    count = int(0)
+    for i in range(27):
+        c = home + wp.vec3i(i % 3 - 1, (i // 3) % 3 - 1, i // 9 - 1)
+        q = heads[list_bucket(c, mask)]
+        while q >= 0:
+            # Several cells can share a bucket; each particle is taken from its own cell only.
+            if q > p and count >= 0 and list_cell(x[q], reach) == c and wp.length(x[q] - xp) < reach:
+                if not (compatible(codes[p], codes[q]) and wp.length(ref[p] - ref[q]) < 2.0 * spacing):
+                    if count == lanes:
+                        count = -1
+                    else:
+                        partners[p * lanes + count] = q
+                        count += 1
+            q = links[q]
+    partner_count[p] = count
+
+
+@wp.kernel
+def pairs_listed(
+    heads: wp.array(dtype=int),
+    links: wp.array(dtype=int),
+    mask: int,
+    partners: wp.array(dtype=int),
+    partner_count: wp.array(dtype=int),
+    lanes: int,
+    built_x: wp.array(dtype=wp.vec3),
+    reach: float,
+    x: wp.array(dtype=wp.vec3),
+    ref: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    codes: wp.array(dtype=wp.int64),
+    radius: float,
+    spacing: float,
+    mass: float,
+    dt: float,
+    sn: float,
+    mus: float,
+    mud: float,
+    gk: float,
+    gc: float,
+    old_keys: wp.array(dtype=wp.int64),
+    old_history: wp.array(dtype=wp.vec3),
+    new_keys: wp.array(dtype=wp.int64),
+    new_history: wp.array(dtype=wp.vec3),
+    new_used: wp.array(dtype=int),
+    new_count: wp.array(dtype=int),
+    capacity: int,
+    n: int,
+    impulses: wp.array(dtype=wp.vec3),
+    errors: wp.array(dtype=int),
+):
+    p = wp.tid()
+    count = partner_count[p]
+    if count >= 0:
+        for k in range(count):
+            pair_at(
+                p,
+                partners[p * lanes + k],
+                x,
+                ref,
+                v,
+                codes,
+                radius,
+                spacing,
+                mass,
+                dt,
+                sn,
+                mus,
+                mud,
+                gk,
+                gc,
+                old_keys,
+                old_history,
+                new_keys,
+                new_history,
+                new_used,
+                new_count,
+                capacity,
+                n,
+                impulses,
+                errors,
+            )
+        return
+    home = list_cell(built_x[p], reach)
+    for i in range(27):
+        c = home + wp.vec3i(i % 3 - 1, (i // 3) % 3 - 1, i // 9 - 1)
+        q = heads[list_bucket(c, mask)]
+        while q >= 0:
+            if q > p and list_cell(built_x[q], reach) == c:
+                pair_at(
+                    p,
+                    q,
+                    x,
+                    ref,
+                    v,
+                    codes,
+                    radius,
+                    spacing,
+                    mass,
+                    dt,
+                    sn,
+                    mus,
+                    mud,
+                    gk,
+                    gc,
+                    old_keys,
+                    old_history,
+                    new_keys,
+                    new_history,
+                    new_used,
+                    new_count,
+                    capacity,
+                    n,
+                    impulses,
+                    errors,
+                )
+            q = links[q]
+
+
+@wp.kernel
 def pairs_all(
     x: wp.array(dtype=wp.vec3),
     ref: wp.array(dtype=wp.vec3),

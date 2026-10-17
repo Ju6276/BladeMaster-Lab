@@ -8,6 +8,7 @@ from .geometry import levelset
 from .topology import compatible
 
 OFFSETS = np.array(list(product((0, 1), repeat=3)), int)
+QUAD_SPLIT_MARGIN = 1.0e-6
 LOCAL_EDGES = [
     (a, b) for a in range(8) for b in range(a + 1, 8) if np.abs(OFFSETS[a] - OFFSETS[b]).sum() == 1
 ]
@@ -486,7 +487,9 @@ class LinkedSurface:
         )
         links = np.flatnonzero(self.boundary | self.broken)
         cells = self.incident_cells[links]
-        fans = np.full((len(links), 2, 2, 3), -1)
+        rings = np.full((len(links), 2, 4), -1)
+        others = np.zeros((len(links), 2), bool)
+        region_points = self.region_point[valid]
         for end in (0, 1):
             ring = np.where(
                 cells >= 0, corner_vertex[np.maximum(cells, 0), self.incident_corner[links, end]], -1
@@ -502,12 +505,42 @@ class LinkedSurface:
             for k in (3, 4):
                 rows = flip & (count == k)
                 ring[rows, :k] = ring[rows, :k][:, ::-1]
-            fans[:, end, 0] = np.where((count >= 3)[:, None], ring[:, [0, 1, 2]], -1)
-            fans[:, end, 1] = np.where((count == 4)[:, None], ring[:, [0, 2, 3]], -1)
-        faces = fans[fans[..., 0] >= 0]
+            # Split each quad along the diagonal whose two halves agree best in
+            # normal; the other split folds non-convex quads onto themselves.
+            # The margin keeps near-planar quads (ties up to rounding) on the first split.
+            q = region_points[np.maximum(ring, 0)]
+
+            def agreement(a, b, c, d):
+                n1, n2 = np.cross(q[:, b] - q[:, a], q[:, c] - q[:, a]), np.cross(q[:, c] - q[:, a], q[:, d] - q[:, a])
+                return np.einsum("ij,ij->i", n1, n2) / np.maximum(
+                    np.linalg.norm(n1, axis=1) * np.linalg.norm(n2, axis=1), 1.0e-300
+                )
+
+            rings[:, end] = ring
+            others[:, end] = (count == 4) & (agreement(1, 2, 3, 0) > agreement(0, 1, 2, 3) + QUAD_SPLIT_MARGIN)
+        quad = (rings >= 0).sum(2) == 4
+        triangle = (rings >= 0).sum(2) >= 3
+        key_base = int(rings.max()) + 1 if rings.size else 1
+        while True:
+            first = np.where(others[..., None], rings[..., [1, 2, 3]], rings[..., [0, 1, 2]])
+            second = np.where(others[..., None], rings[..., [1, 3, 0]], rings[..., [0, 2, 3]])
+            fans = np.stack(
+                [np.where(triangle[..., None], first, -1), np.where(quad[..., None], second, -1)], axis=2
+            )
+            faces = fans[fans[..., 0] >= 0]
+            # The alternative diagonal can coincide with an edge of a neighbouring
+            # polygon (several regions per cell); keep the default split there.
+            edges = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)
+            keys, uses = np.unique(edges[:, 0] * key_base + edges[:, 1], return_counts=True)
+            diagonal = np.sort(rings[..., [1, 3]], axis=2)
+            at = np.searchsorted(keys, diagonal[..., 0] * key_base + diagonal[..., 1])
+            bad = others & (uses[np.minimum(at, len(uses) - 1)] != 2)
+            if not bad.any():
+                break
+            others &= ~bad
         owner = np.nonzero(valid)[0]
         self._mesh_cache = Mesh(
-            self.region_point[valid],
+            region_points,
             faces.reshape(-1, 3),
             self.region_code[valid],
             self.cells[owner].reshape(-1, 8),

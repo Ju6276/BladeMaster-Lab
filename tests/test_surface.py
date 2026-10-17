@@ -1,5 +1,5 @@
 import numpy as np
-from blademaster_warp.surface import LinkedSurface, MaterialEmbedding
+from blademaster_warp.surface import QUAD_SPLIT_MARGIN, LinkedSurface, MaterialEmbedding
 from blademaster_warp.geometry import points
 
 
@@ -196,6 +196,12 @@ def test_band_labels_keep_skin_near_a_cut_on_its_own_side():
     assert s.broken[missed]
 
 
+def quad_agreement(vertices, ring):
+    q = np.asarray([vertices[i] for i in ring])
+    n1, n2 = np.cross(q[1] - q[0], q[2] - q[0]), np.cross(q[2] - q[0], q[3] - q[0])
+    return n1 @ n2 / max(np.linalg.norm(n1) * np.linalg.norm(n2), 1.0e-300)
+
+
 def loop_mesh(s):
     """The per-link loop assembly the vectorized LinkedSurface.mesh replaced."""
     vertices, lookup = [], {}
@@ -215,6 +221,10 @@ def loop_mesh(s):
                 continue
             if (-1 if s.axes[e] == 1 else 1) * (1 if node == a else -1) < 0:
                 ring = ring[::-1]
+            if len(ring) == 4 and quad_agreement(vertices, ring[1:] + ring[:1]) > quad_agreement(
+                vertices, ring
+            ) + QUAD_SPLIT_MARGIN:
+                ring = ring[1:] + ring[:1]
             faces += [[ring[0], ring[j], ring[j + 1]] for j in range(1, len(ring) - 1)]
     return np.array(vertices), np.array(faces).reshape(-1, 3)
 

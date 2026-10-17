@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, asdict
 import time
-import warnings
 import numpy as np
 import warp as wp
 from . import material as m, contact as c, tool
@@ -32,7 +31,15 @@ class Config:
     contact_reference_dt: float = 0.0
     cutting_energy: float = 0.5
     sharpness: float = 0.9
+    # Damage work rate: 'relative' uses the edge speed relative to the particle
+    # (paper Eq. 5), 'advance' the edge's own speed along the cutting direction.
+    cut_work: str = "relative"
+    # Intact particles in the edge's path are pushed only along the cutting
+    # direction, so they cannot slide around the edge before damage reaches 1.
+    cut_hold: bool = False
     # Particle-to-knife contact distance in metres; 0 uses the particle radius h/4.
+    # Raised to at least h/4 minus the blade half thickness, otherwise a blade
+    # between two particle columns touches neither.
     blade_contact_radius: float = 0.0
     blade_mass: float = 0.2
     blade_half_size: tuple = (0.0005, 0.025, 0.02)
@@ -67,6 +74,8 @@ class Config:
             raise ValueError("grid_storage must be hash or compact")
         if self.pair_search not in ("auto", "hash", "all"):
             raise ValueError("pair_search must be auto, hash or all")
+        if self.cut_work not in ("relative", "advance"):
+            raise ValueError("cut_work must be relative or advance")
         if self.tool_substep not in ("hold", "predict"):
             raise ValueError("tool_substep must be hold or predict")
         if self.tool_substep == "predict" and not self.external_tool:
@@ -148,13 +157,7 @@ class Solver:
         self.volume = (cfg.grid_spacing / 2) ** 3
         self.mass = cfg.density * self.volume
         self.radius = cfg.grid_spacing / 4
-        self.blade_offset = cfg.blade_contact_radius or self.radius
-        if cfg.blade_half_size[0] + self.blade_offset < cfg.grid_spacing / 4:
-            warnings.warn(
-                "Blade half thickness plus contact distance is below half the particle spacing: "
-                "a blade between two particle columns touches neither",
-                stacklevel=2,
-            )
+        self.blade_offset = max(cfg.blade_contact_radius or self.radius, self.radius - cfg.blade_half_size[0])
         self.mu = cfg.young_modulus / (2 * (1 + cfg.poisson_ratio))
         self.lam = (
             cfg.young_modulus * cfg.poisson_ratio / ((1 + cfg.poisson_ratio) * (1 - 2 * cfg.poisson_ratio))
@@ -478,6 +481,12 @@ class Solver:
             return -1
         return int(cfg.free_blade or cfg.pose_servo)
 
+    def _cut_bits(self, cutting):
+        if not cutting:
+            return 0
+        cfg = self.config
+        return c.CUT_ON | (c.CUT_ADVANCE if cfg.cut_work == "advance" else 0) | (c.CUT_HOLD if cfg.cut_hold else 0)
+
     def rigid_contacts(self, cutting=True):
         """Gravity plus board and blade contact impulses on every particle."""
         cfg = self.config
@@ -512,7 +521,7 @@ class Solver:
                 self.histories,
                 self.damage,
                 self.threshold,
-                int(cutting),
+                self._cut_bits(cutting),
                 self.impulses,
                 self.reaction,
                 self.torque,
@@ -551,7 +560,7 @@ class Solver:
                     i,
                     self.damage,
                     self.threshold,
-                    int(cutting),
+                    self._cut_bits(cutting),
                     self.impulses,
                     view["reaction"],
                     view["torque"],

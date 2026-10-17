@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 import time
 import numpy as np
+from scipy.spatial.transform import Rotation
 import warp as wp
 from .solver import Config, Solver
 from .run import write
@@ -19,7 +20,7 @@ KNIFE_X = (-0.03, 0.0, 0.03)
 KNIFE_MASS = 0.1
 
 
-def config(dt, cutting_energy):
+def config(dt, cutting_energy, cut_work="relative", cut_hold=False, knife_mass=KNIFE_MASS):
     return Config(
         size=FIG8_SIZE,
         grid_spacing=0.006,
@@ -29,10 +30,12 @@ def config(dt, cutting_energy):
         density=1200.0,
         yield_stress=2000.0,
         cutting_energy=cutting_energy,
+        cut_work=cut_work,
+        cut_hold=cut_hold,
         # Particle radius: a free knife between two 3 mm-apart particle columns must
         # still touch them (see Solver's slipping warning).
         blade_contact_radius=0.0,
-        blade_mass=KNIFE_MASS,
+        blade_mass=knife_mass,
         blade_half_size=FIG8_KNIFE_HALF_SIZE,
         blade_bevel_height=DEMO_KNIFE_BEVEL_HEIGHT_M,
         free_blade=True,
@@ -41,8 +44,20 @@ def config(dt, cutting_energy):
     )
 
 
-def run(output, dt=0.0005, duration=0.5, cutting_energy=100.0):
-    cfg = config(dt, cutting_energy)
+def edge_height(position, orientation, half):
+    """Lowest edge point height and tilt from vertical, per frame and knife (xyzw quaternions)."""
+    position, orientation = np.asarray(position), np.asarray(orientation)
+    rotation = Rotation.from_quat(orientation.reshape(-1, 4))
+    ends = [rotation.apply([0.0, y, -half[2]])[:, 2] for y in (-half[1], half[1])]
+    lowest = np.minimum(*ends).reshape(position.shape[:2]) + position[..., 2]
+    up = rotation.apply([0.0, 0.0, 1.0])[:, 2].reshape(position.shape[:2])
+    return lowest, np.degrees(np.arccos(np.clip(up, -1.0, 1.0)))
+
+
+def run(
+    output, dt=0.0005, duration=0.5, cutting_energy=100.0, cut_work="relative", cut_hold=False, knife_mass=KNIFE_MASS
+):
+    cfg = config(dt, cutting_energy, cut_work, cut_hold, knife_mass)
     steps = round(duration / dt)
     if steps < 1 or not np.isclose(steps * dt, duration):
         raise ValueError("Invalid duration")
@@ -115,7 +130,7 @@ def run(output, dt=0.0005, duration=0.5, cutting_energy=100.0):
         )
         write(out / "manifest.json", meta)
     t = np.asarray(saved["time"])
-    edge = np.asarray(saved["blade_position"])[:, :, 2] - hz
+    edge, tilt = edge_height(saved["blade_position"], saved["blade_orientation"], cfg.blade_half_size)
     speed = np.asarray(saved["blade_velocity"])[:, :, 2]
     _, counts = components(s.node_numpy, s.weight_numpy, saved["sides"][-1])
     knives = []
@@ -126,6 +141,7 @@ def run(output, dt=0.0005, duration=0.5, cutting_energy=100.0):
                 initial_speed_m_s=v0,
                 max_penetration_m=float(FIG8_SIZE[2] - edge[:, k].min()),
                 final_edge_height_m=float(edge[-1, k]),
+                final_tilt_deg=float(tilt[-1, k]),
                 final_speed_m_s=float(speed[-1, k]),
                 stopped_at_s=float(t[moving[-1] + 1]) if len(moving) and moving[-1] + 1 < len(t) else None,
             )
@@ -146,5 +162,8 @@ if __name__ == "__main__":
     p.add_argument("--dt", type=float, default=0.0005)
     p.add_argument("--duration", type=float, default=0.5)
     p.add_argument("--cutting-energy", type=float, default=100.0, help="Gc in J/m^2; not given in the paper")
+    p.add_argument("--cut-work", choices=("relative", "advance"), default="relative")
+    p.add_argument("--cut-hold", action="store_true")
+    p.add_argument("--knife-mass", type=float, default=KNIFE_MASS, help="kg; not given in the paper")
     a = p.parse_args()
-    run(a.output, a.dt, a.duration, a.cutting_energy)
+    run(a.output, a.dt, a.duration, a.cutting_energy, a.cut_work, a.cut_hold, a.knife_mass)

@@ -12,6 +12,11 @@ Symbols follow the paper:
 import warp as wp
 from .material import compatible, insert_key
 
+# Bits of the `cutting` argument of the blade contact kernels.
+CUT_ON = wp.constant(1)
+CUT_ADVANCE = wp.constant(2)  # damage work from the edge's own advance, not the relative speed
+CUT_HOLD = wp.constant(4)  # intact particles in the edge's path cannot slide around it
+
 
 @wp.func
 def friction(
@@ -193,19 +198,24 @@ def resist_cut(
     spacing: float,
     damage: wp.array(dtype=float),
     threshold: float,
+    cutting: int,
     work: wp.array(dtype=float),
 ):
     """Cutting resistance at the blade edge.
 
     While a particle just ahead of the edge is intact, the edge-direction
     push does work that accumulates into its damage. Once damage reaches 1
-    that push component is removed and the edge passes through.
+    that push component is removed and the edge passes through. The work rate
+    uses the edge speed relative to the particle (paper Eq. 5) or, with
+    CUT_ADVANCE, the edge's own speed along the cutting direction.
     """
     edge = origin + wp.quat_rotate(q, wp.vec3(0.0, 0.0, -half[2]))
     down = wp.quat_rotate(q, wp.vec3(0.0, 0.0, -1.0))
     edge_velocity = tool_velocity + wp.cross(tool_angular, edge - origin)
     front = wp.dot(x[p] - edge, down)
     advance = wp.dot(edge_velocity - v[p], down)
+    if (cutting & CUT_ADVANCE) != 0:
+        advance = wp.dot(edge_velocity, down)
     local_edge = wp.quat_rotate_inv(q, x[p] - edge)
     ahead_of_edge = (
         front >= 0.0
@@ -270,7 +280,20 @@ def blade_at(
     if wp.length(xp - origin) - blade_radius - blade_offset > dt * max_closing:
         histories[row, p] = wp.vec3(0.0)
     else:
-        closest_local, normal_local, distance = blade_query(wp.quat_rotate_inv(q, xp - origin), half, bevel)
+        local = wp.quat_rotate_inv(q, xp - origin)
+        closest_local, normal_local, distance = blade_query(local, half, bevel)
+        front = -half[2] - local[2]
+        if (
+            (cutting & CUT_HOLD) != 0
+            and damage[p] < 1.0
+            and wp.abs(local[0]) <= half[0] + blade_offset
+            and wp.abs(local[1]) <= half[1]
+            and front >= -(half[0] + blade_offset)
+        ):
+            # Push along the cutting direction only, against the edge line.
+            closest_local = wp.vec3(local[0], local[1], -half[2])
+            normal_local = wp.vec3(0.0, 0.0, -1.0)
+            distance = front
         lever = wp.quat_rotate(q, closest_local)
         n = wp.quat_rotate(q, normal_local)
         relative = v[p] - tool_vel[0] - wp.cross(tool_omega[0], lever)
@@ -298,6 +321,7 @@ def blade_at(
                         spacing,
                         damage,
                         threshold,
+                        cutting,
                         work,
                     )
                 result = j_blade

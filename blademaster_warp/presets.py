@@ -22,6 +22,7 @@ def banana_config(*, paper_material=True):
         sampling_seed=1,
         # Fixed knife contact distance: with the particle radius h/4 the effective
         # blade thickness, and the steady cutting force, grow linearly with h.
+        # On this 6 mm grid the solver raises it to h/4 minus the half thickness, 1 mm.
         blade_contact_radius=0.0005,
     )
     if not paper_material:

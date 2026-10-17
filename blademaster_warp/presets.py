@@ -40,6 +40,11 @@ def banana_config(*, paper_material=True):
         cutting_energy=700.0,
         dt=0.0000625,
         contact_reference_dt=0.000025,
+        # The paper gives no guided drive. At the DexLab 250 N/m the ~5 N peak cutting
+        # force leaves a 20 mm lag and the blade never reaches the board; 1000 N/m
+        # (the Franka Cartesian stiffness), critically damped for the 0.1 kg blade.
+        drive_stiffness=1000.0,
+        drive_damping=20.0,
     )
 
 

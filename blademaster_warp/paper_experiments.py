@@ -42,6 +42,9 @@ def single_cut(
     cache_topology=False,
     driver="prescribed",
     spacing=0.006,
+    drive_stiffness=None,
+    drive_damping=None,
+    drive_force_limit=None,
 ):
     if driver not in ("prescribed", "guided"):
         raise ValueError(driver)
@@ -53,6 +56,14 @@ def single_cut(
         cache_topology=cache_topology,
         accumulate_tool_impulses=True,
     )
+    if drive_stiffness is not None:
+        # Critically damped for the blade mass unless a damping is given.
+        damping = drive_damping if drive_damping is not None else 2 * np.sqrt(drive_stiffness * cfg.blade_mass)
+        cfg = replace(cfg, drive_stiffness=drive_stiffness, drive_damping=damping)
+    elif drive_damping is not None:
+        cfg = replace(cfg, drive_damping=drive_damping)
+    if drive_force_limit is not None:
+        cfg = replace(cfg, drive_force_limit=drive_force_limit)
     if interval <= 0 or not np.isfinite([interval, duration]).all() or duration <= 0:
         raise ValueError("Invalid coupling time")
     if not np.isclose(interval / dt, round(interval / dt), atol=1.0e-9, rtol=0.0) or interval < dt:
@@ -216,5 +227,20 @@ if __name__ == "__main__":
         "--cache-topology", action="store_true", help="Experimental CUDA conditional topology-map cache"
     )
     p.add_argument("--driver", choices=["prescribed", "guided"], default="prescribed")
+    p.add_argument("--drive-stiffness", type=float, help="Guided drive N/m (default 250; damping critical)")
+    p.add_argument("--drive-damping", type=float, help="Guided drive N s/m")
+    p.add_argument("--drive-force-limit", type=float, help="Guided drive force limit N (default 10)")
     a = p.parse_args()
-    single_cut(a.output, a.dt, a.interval, a.duration, not a.no_graph, a.cache_topology, a.driver, a.spacing)
+    single_cut(
+        a.output,
+        a.dt,
+        a.interval,
+        a.duration,
+        not a.no_graph,
+        a.cache_topology,
+        a.driver,
+        a.spacing,
+        a.drive_stiffness,
+        a.drive_damping,
+        a.drive_force_limit,
+    )

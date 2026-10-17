@@ -18,8 +18,30 @@ def body(response):
     return gzip.decompress(data) if data and response.getheader("Content-Encoding") == "gzip" else data
 
 
+def session_command(host, port, name):
+    """Press a page button (start/pause/stop) on the simulation server."""
+    conn = http.client.HTTPConnection(host, port, timeout=2.0)
+    try:
+        conn.request("POST", "/command/" + name)
+        response = conn.getresponse()
+        result = body(response)
+        if response.status != 200:
+            print(f"{name}: {result.decode()}", flush=True)
+    except (OSError, http.client.HTTPException) as error:
+        print(f"{name}: {error}", flush=True)
+    finally:
+        conn.close()
+
+
 def run(
-    host="127.0.0.1", port=8765, duration=30.0, mock=False, wowskin_root=None, speed=0.06, angular_speed=0.5
+    host="127.0.0.1",
+    port=8765,
+    duration=30.0,
+    mock=False,
+    wowskin_root=None,
+    speed=0.06,
+    angular_speed=0.5,
+    buttons="session",
 ):
     conn = http.client.HTTPConnection(host, port, timeout=2.0)
     # Do not start the device/motion clock until shader/kernel warmup is done.
@@ -84,8 +106,14 @@ def run(
                         if armed
                         else (np.zeros(3), np.zeros(3))
                     )
-                    events = {"close": "begin_cut", "open": "end_cut", "hold": "hold"}
-                    event = events.get(snapshot.presses[-1], "") if snapshot.presses and armed else ""
+                    event = ""
+                    if buttons == "session":
+                        # Left starts the run, right ends it, both pause; same as the page buttons.
+                        for press in snapshot.presses:
+                            session_command(host, port, {"close": "start", "open": "stop", "hold": "pause"}[press])
+                    elif snapshot.presses and armed:
+                        events = {"close": "begin_cut", "open": "end_cut", "hold": "hold"}
+                        event = events.get(snapshot.presses[-1], "")
                 command = Command(seq, tuple(v), tuple(w), event)
             send(command)
             seq += 1
@@ -121,5 +149,11 @@ if __name__ == "__main__":
     p.add_argument("--wowskin-root")
     p.add_argument("--speed", type=float, default=0.06)
     p.add_argument("--angular-speed", type=float, default=0.5)
+    p.add_argument(
+        "--buttons",
+        choices=["session", "cut"],
+        default="session",
+        help="session: left start, right stop, both pause; cut: left begin_cut, right end_cut (manual cut events)",
+    )
     a = p.parse_args()
-    run(a.host, a.port, a.seconds, a.mock, a.wowskin_root, a.speed, a.angular_speed)
+    run(a.host, a.port, a.seconds, a.mock, a.wowskin_root, a.speed, a.angular_speed, a.buttons)

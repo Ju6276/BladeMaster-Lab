@@ -114,7 +114,8 @@ class LiveState:
         return time.perf_counter() - begin
 
     def publish(
-        self, robot, solver, surface, x, codes, wall_s, phase, wrench, state="running", input_seq=None, pieces=None
+        self, robot, solver, surface, x, codes, wall_s, phase, wrench, state="running", input_seq=None, pieces=None,
+        piece_labels=None,
     ):
         ids = self.ids
         if state == "running" and not self.play.is_set() and not self.stop_requested:
@@ -136,6 +137,8 @@ class LiveState:
             input_seq=input_seq,
             # Particle counts of the connected pieces, largest first.
             pieces=sorted(pieces, reverse=True) if pieces is not None else [],
+            # Connected piece of each particle, numbered by its lowest particle index.
+            piece=np.asarray(piece_labels).tolist() if piece_labels is not None else [],
         )
         if surface and surface.current:
             packet["vertices"] = display(surface.current["vertices"] + robot.material_origin)

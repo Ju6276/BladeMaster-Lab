@@ -3,9 +3,9 @@ import {OrbitControls} from './vendor/OrbitControls.js';
 const $ = id => document.getElementById(id);
 // Page files the open page was loaded with; a restarted server with new files reloads it.
 let pageVersion=null;
-// One colour per cut-side code: uncut material keeps the banana colour, every side of every cut gets its own hue.
-const codeColors=new Map();
-function codeColor(code){if(!codeColors.has(code))codeColors.set(code,code===0?new THREE.Color(0xe9bc58):new THREE.Color().setHSL((0.55+code*0.618034)%1,.62,.52));return codeColors.get(code)}
+// One colour per connected piece; the piece holding the first particle keeps the banana colour.
+const pieceColors=new Map();
+function pieceColor(piece){if(!pieceColors.has(piece))pieceColors.set(piece,piece===0?new THREE.Color(0xe9bc58):new THREE.Color().setHSL((0.55+piece*0.618034)%1,.62,.52));return pieceColors.get(piece)}
 // Pieces below 1% of the particles count as debris, not as a separated piece.
 function showPieces(sizes){const out=$('pieces');if(!sizes.length){out.textContent='—';out.className='';return}
  const total=sizes.reduce((a,b)=>a+b,0),big=sizes.filter(s=>s>=Math.max(5,0.01*total)),debris=sizes.length-big.length;
@@ -62,7 +62,7 @@ function applyPacket(p){
  }
  if(p.particles.length){
   if(!particles){particles=new THREE.InstancedMesh(new THREE.SphereGeometry(p.radius*.85,10,8),new THREE.MeshStandardMaterial({roughness:.8}),p.codes.length);particles.layers.set(1);scene.add(particles)}
-  p.codes.forEach((code,i)=>{dummy.position.fromArray(p.particles,3*i);dummy.updateMatrix();particles.setMatrixAt(i,dummy.matrix);particles.setColorAt(i,codeColor(code))});particles.instanceMatrix.needsUpdate=true;particles.instanceColor.needsUpdate=true;particles.computeBoundingSphere();
+  p.codes.forEach((code,i)=>{dummy.position.fromArray(p.particles,3*i);dummy.updateMatrix();particles.setMatrixAt(i,dummy.matrix);particles.setColorAt(i,pieceColor(p.piece.length?p.piece[i]:0))});particles.instanceMatrix.needsUpdate=true;particles.instanceColor.needsUpdate=true;particles.computeBoundingSphere();
  }
  $('sim').textContent=p.sim_s.toFixed(3)+' s';$('wall').textContent=p.wall_s.toFixed(2)+' s';$('ratio').textContent=p.ratio.toFixed(3)+' ×';$('ratio').className=p.ratio>=1?'good':'slow';$('force').textContent=Math.hypot(...p.wrench.slice(0,3)).toFixed(3)+' N';showPieces(p.pieces||[]);
 }

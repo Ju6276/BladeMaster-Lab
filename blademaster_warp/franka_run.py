@@ -223,6 +223,7 @@ class FrankaCuttingRun:
         self.strokes = ContactStrokes() if args.motion == "teleop" and args.cut_events == "auto" else None
         self._last_codes = None
         self._last_component_sizes = None
+        self._last_component_labels = None
 
     def _make_cycle(self):
         if self.args.motion == "sequence":
@@ -369,8 +370,9 @@ class FrankaCuttingRun:
     def _component_sizes(self, codes):
         """Connected material pieces; recomputed only when side codes changed."""
         if self._last_codes is None or not np.array_equal(codes, self._last_codes):
-            _, sizes = components(self.solver.node_numpy, self.solver.weight_numpy, codes)
+            labels, sizes = components(self.solver.node_numpy, self.solver.weight_numpy, codes)
             self._last_codes = codes
+            self._last_component_labels = labels
             self._last_component_sizes = sizes.tolist()
         return self._last_component_sizes
 
@@ -422,6 +424,7 @@ class FrankaCuttingRun:
                 wrench,
                 input_seq=getattr(self, "input_seq", None),
                 pieces=self._component_sizes(data.codes[-1]) if s else None,
+                piece_labels=self._last_component_labels if s else None,
             )
         if not self.record:
             # Live mode keeps only the current state, no history.

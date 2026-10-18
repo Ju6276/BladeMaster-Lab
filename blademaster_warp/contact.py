@@ -69,38 +69,33 @@ def blade_query(local: wp.vec3, half: wp.vec3, bevel: float):
             closest[axis] = normal[axis] * half[axis]
             distance = -margin[axis]
     else:
-        # Convex beveled prism, polygon in the local x-z plane.
-        best = float(1.0e30)
-        inside = bool(True)
-        near = wp.vec2(0.0)
-        out = wp.vec2(0.0)
-        q = wp.vec2(local[0], local[2])
-        for i in range(5):
-            a = wp.vec2(0.0, -half[2])
-            b = wp.vec2(half[0], -half[2] + bevel)
-            if i == 1:
-                a = b
-                b = wp.vec2(half[0], half[2])
-            elif i == 2:
-                a = wp.vec2(half[0], half[2])
-                b = wp.vec2(-half[0], half[2])
-            elif i == 3:
-                a = wp.vec2(-half[0], half[2])
-                b = wp.vec2(-half[0], -half[2] + bevel)
-            elif i == 4:
-                a = wp.vec2(-half[0], -half[2] + bevel)
-                b = wp.vec2(0.0, -half[2])
-            edge = b - a
-            offset = q - a
-            if edge[0] * offset[1] - edge[1] * offset[0] < 0.0:
-                inside = False
-            t = wp.clamp(wp.dot(offset, edge) / wp.dot(edge, edge), 0.0, 1.0)
-            candidate = a + t * edge
-            dist = wp.length(q - candidate)
-            if dist < best:
-                best = dist
-                near = candidate
-                out = wp.normalize(wp.vec2(edge[1], -edge[0]))
+        # Reflect into the positive x half: only bevel, side and top can be nearest.
+        q = wp.vec2(wp.abs(local[0]), local[2])
+        sign = float(1.0)
+        if local[0] < 0.0:
+            sign = -1.0
+        edge = wp.vec2(half[0], bevel)
+        edge_length_sq = wp.dot(edge, edge)
+        t = wp.clamp(wp.dot(q - wp.vec2(0.0, -half[2]), edge) / edge_length_sq, 0.0, 1.0)
+        near = wp.vec2(t * half[0], -half[2] + t * bevel)
+        best_sq = wp.length_sq(q - near)
+        out = wp.vec2(bevel, -half[0]) / wp.sqrt(edge_length_sq)
+        candidate = wp.vec2(half[0], wp.clamp(q[1], -half[2] + bevel, half[2]))
+        distance_sq = wp.length_sq(q - candidate)
+        if distance_sq < best_sq:
+            best_sq = distance_sq
+            near = candidate
+            out = wp.vec2(1.0, 0.0)
+        candidate = wp.vec2(wp.clamp(q[0], 0.0, half[0]), half[2])
+        distance_sq = wp.length_sq(q - candidate)
+        if distance_sq < best_sq:
+            best_sq = distance_sq
+            near = candidate
+            out = wp.vec2(0.0, 1.0)
+        inside = q[0] <= half[0] and q[1] <= half[2] and half[0] * (q[1] + half[2]) >= bevel * q[0]
+        best = wp.sqrt(best_sq)
+        near = wp.vec2(sign * near[0], near[1])
+        out = wp.vec2(sign * out[0], out[1])
         closest = wp.vec3(near[0], wp.clamp(local[1], -half[1], half[1]), near[1])
         if inside and wp.abs(local[1]) <= half[1]:
             normal = wp.vec3(out[0], 0.0, out[1])

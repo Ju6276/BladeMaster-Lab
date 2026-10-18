@@ -148,6 +148,38 @@ def test_friction_stick_and_slip_history():
     assert np.linalg.norm(j.numpy()[1]) == pytest.approx(0.2 * 0.003, rel=2e-6)
 
 
+def test_beveled_blade_face_normal_remains_exact_near_contact():
+    # A segment projection loses z precision near a planar face; dividing that
+    # error by a nanometre-scale gap creates spurious tangential normals.
+    half = np.array([0.0005, 0.04, 0.02], np.float32)
+    x = np.array(
+        [
+            [sign * (half[0] + gap), y, z]
+            for sign in (-1, 1)
+            for gap in (1e-8, 1e-7, 1e-6)
+            for y in (-0.03, 0.01)
+            for z in (-0.01476572, -0.005, 0.00126425, 0.019)
+        ],
+        np.float32,
+    )
+    pts = wp.zeros(len(x), dtype=wp.vec3, device="cuda:0")
+    normals = wp.zeros_like(pts)
+    distance = wp.zeros(len(x), dtype=float, device="cuda:0")
+    wp.launch(
+        query_kernel,
+        len(x),
+        [arr(x, wp.vec3), wp.vec3(*half), 0.005, pts, normals, distance],
+        device="cuda:0",
+    )
+    expected_points = x.copy()
+    expected_points[:, 0] = np.sign(x[:, 0]) * half[0]
+    expected_normals = np.zeros_like(x)
+    expected_normals[:, 0] = np.sign(x[:, 0])
+    np.testing.assert_array_equal(pts.numpy(), expected_points)
+    np.testing.assert_allclose(normals.numpy(), expected_normals, atol=1e-7)
+    np.testing.assert_array_equal(distance.numpy(), np.abs(x[:, 0]) - half[0])
+
+
 @pytest.mark.parametrize("viscosity", [0.0, 2.0])
 def test_material_step_fp64_and_momentum(viscosity):
     s = Solver(replace(Config(), dynamic_viscosity=viscosity))

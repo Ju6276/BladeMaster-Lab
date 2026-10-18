@@ -204,12 +204,13 @@ def quad_agreement(vertices, ring):
 
 def loop_mesh(s):
     """The per-link loop assembly the vectorized LinkedSurface.mesh replaced."""
-    vertices, lookup = [], {}
+    vertices, owners, lookup = [], [], {}
     for ci in range(len(s.cells)):
         for slot in np.flatnonzero(s.region_valid[ci]):
             for k in np.flatnonzero(s.corner_region[ci] == slot):
                 lookup[ci, s.cells[ci][k]] = len(vertices)
             vertices.append(s.region_point[ci, slot])
+            owners.append(ci)
     polygons = []
     changes = dict(dropped=0, reverted=0, switched=0)
     for e in np.flatnonzero(s.boundary | s.broken):
@@ -223,9 +224,14 @@ def loop_mesh(s):
                 continue
             if (-1 if s.axes[e] == 1 else 1) * (1 if node == a else -1) < 0:
                 ring = ring[::-1]
-            other = len(ring) == 4 and quad_agreement(vertices, ring[1:] + ring[:1]) > quad_agreement(
-                vertices, ring
-            ) + QUAD_SPLIT_MARGIN
+            other = False
+            if len(ring) == 4:
+                default = quad_agreement(vertices, ring)
+                alternative = quad_agreement(vertices, ring[1:] + ring[:1])
+                if abs(alternative - default) <= QUAD_SPLIT_MARGIN:
+                    other = s.broken[e] and min(range(4), key=lambda k: owners[ring[k]]) % 2 == 1
+                else:
+                    other = alternative > default
             ends.append([ring, other, len(ring) != 4])
         # Both ends in one region all around the link: an internal double wall, no faces.
         if len(ends) == 2 and sorted(ends[0][0]) == sorted(ends[1][0]):

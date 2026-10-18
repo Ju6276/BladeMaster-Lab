@@ -586,7 +586,51 @@ class LinkedSurface:
                     p = centre + front
             local = (p - lower) / self.h
             regions.append((region, p, np.where(OFFSETS == 1, local, 1 - local).prod(1)))
-        return regions
+        return self._pair_cell_regions(ci, regions)
+
+    def _pair_cell_regions(self, ci, regions):
+        """Duplicate one reference representative for a cell's two cut banks.
+
+        Three or more regions can contain separate patches on the same bank;
+        collapsing them creates folded faces. They keep their individual QEFs.
+        Region membership, cut codes and vertex identity remain separate.
+        """
+        if len(regions) != 2:
+            return regions
+        owner = {corner: i for i, (region, _, _) in enumerate(regions) for corner in region}
+        samples, front, shared = [], [], False
+        for edge, (a, b) in zip(self.cell_edges[ci], LOCAL_EDGES):
+            if edge not in self.hermite or (a not in owner and b not in owner):
+                continue
+            samples.append(edge)
+            if self.broken[edge] and a in owner and b in owner:
+                if owner[a] == owner[b]:
+                    front.append(edge)
+                else:
+                    shared = True
+        if not shared:
+            return regions
+        points = np.array([self.hermite[e][0] for e in samples])
+        normals = np.array([self.hermite[e][1] for e in samples])
+        centre = points.mean(0)
+        rhs = np.einsum("ij,ij->i", normals, points - centre)
+        lower = self.reference[self.cells[ci]].min(0)
+        inset = self.h * QEF_CELL_INSET
+        lo, hi = lower + inset - centre, lower + self.h - inset - centre
+        if front:
+            planes = np.array([self.hermite[e][1] for e in front])
+            offsets = np.einsum("ij,ij->i", planes, np.array([self.hermite[e][0] for e in front]) - centre)
+            offset = constrained_box_lstsq(normals, rhs, planes, offsets, lo, hi)
+            if offset is None:
+                return regions
+        else:
+            offset = np.linalg.lstsq(normals, rhs, rcond=None)[0]
+            if np.any((offset < lo) | (offset > hi)):
+                offset = box_lstsq(normals, rhs, lo, hi)
+        point = centre + offset
+        local = (point - lower) / self.h
+        weights = np.where(OFFSETS == 1, local, 1 - local).prod(1)
+        return [(region, point.copy(), weights.copy()) for region, _, _ in regions]
 
     def mesh(self, use_cache=True):
         self.updated_cells = len(self.dirty)
@@ -610,6 +654,7 @@ class LinkedSurface:
         rings = np.full((len(links), 2, 4), -1)
         others = np.zeros((len(links), 2), bool)
         region_points = self.region_point[valid]
+        owner = np.nonzero(valid)[0]
         for end in (0, 1):
             ring = np.where(
                 cells >= 0, corner_vertex[np.maximum(cells, 0), self.incident_corner[links, end]], -1
@@ -627,7 +672,9 @@ class LinkedSurface:
                 ring[rows, :k] = ring[rows, :k][:, ::-1]
             # Split each quad along the diagonal whose two halves agree best in
             # normal; the other split folds non-convex quads onto themselves.
-            # The margin keeps near-planar quads (ties up to rounding) on the first split.
+            # On near-planar ties, choose the diagonal through the lowest cell
+            # id. Opposite banks reverse their rings and have different vertex
+            # ids, but must triangulate coincident representatives identically.
             q = region_points[np.maximum(ring, 0)]
 
             def agreement(a, b, c, d):
@@ -639,11 +686,13 @@ class LinkedSurface:
                 )
 
             rings[:, end] = ring
+            default, alternative = agreement(0, 1, 2, 3), agreement(1, 2, 3, 0)
+            canonical = np.argmin(owner[np.maximum(ring, 0)], axis=1) % 2 == 1
             others[:, end] = (count == 4) & (
-                agreement(1, 2, 3, 0) > agreement(0, 1, 2, 3) + QUAD_SPLIT_MARGIN
+                (alternative > default + QUAD_SPLIT_MARGIN)
+                | ((np.abs(alternative - default) <= QUAD_SPLIT_MARGIN) & self.broken[links] & canonical)
             )
         faces, self.split_changes = triangulate(rings, others)
-        owner = np.nonzero(valid)[0]
         # A local volume region can have several disconnected boundary fans when
         # crack fronts meet. They must not share a surface vertex merely because
         # their material corners still belong to one cell region.

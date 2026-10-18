@@ -209,6 +209,8 @@ def test_partial_crack_front_stays_on_the_cut_plane(monkeypatch):
     normal = np.array([0.9998799731904567, 0.014900775404051499, 0.004243360108371719])
     surface.broken[edge] = True
     surface.hermite[edge] = point, normal
+    # Isolate the front constraint from the independent two-bank pairing.
+    monkeypatch.setattr(LinkedSurface, "_pair_cell_regions", lambda self, ci, regions: regions)
     with monkeypatch.context() as context:
         context.setattr(module, "constrained_box_lstsq", lambda *args: None)
         before = surface.mesh()
@@ -225,6 +227,111 @@ def test_partial_crack_front_stays_on_the_cut_plane(monkeypatch):
         rtol=0,
         atol=2e-16,
     )
+
+
+def test_recorded_interface_pairs_preserve_front_planes_and_separate_bank_patches():
+    surface = LinkedSurface(BANANA_DEMO_SIZE_M, 0.003, "banana")
+    # Nine Hermite samples from the first cut, actual951237c frames 150-531.
+    # Cell 2038 has two disconnected patches on the same bank. Pairing all
+    # three regions makes final-frame edge (1402,1414) pierce face (1416,1478,1476).
+    data = [
+        (
+            26169,
+            [0.042804863278028724, 0.0015, 0.0105],
+            [0.9851891143295205, 0.11157652047934122, 0.13020402867937078],
+        ),
+        (
+            26201,
+            [0.042716015102529536, 0.0045, 0.0075],
+            [0.9765049618280566, 0.13203017772295514, 0.1703117485543219],
+        ),
+        (
+            26204,
+            [0.04237099853030895, 0.0045, 0.0105],
+            [0.9865658487566955, 0.10563453328426767, 0.12461609625082945],
+        ),
+        (
+            26921,
+            [0.04372796651317317, 0.0015, 0.0045],
+            [0.9745505681134353, 0.17158335223942564, 0.14425790593260895],
+        ),
+        (
+            26922,
+            [0.0435, 0.002634903993206865, 0.0045],
+            [0.9776572288920822, 0.12145506889171204, 0.17156634004245788],
+        ),
+        (
+            26923,
+            [0.0435, 0.0015, 0.0072774873461058836],
+            [0.9731191619412387, 0.151800149475791, 0.17319298854719498],
+        ),
+        (
+            26924,
+            [0.0435041486917116, 0.0015, 0.0075],
+            [0.9737739377393473, 0.14738157854810185, 0.17332913339734757],
+        ),
+        (
+            26925,
+            [0.0435, 0.0015922525955474522, 0.0075],
+            [0.9729416596573048, 0.15128727883641188, 0.17463300422761682],
+        ),
+        (
+            26926,
+            [0.0435, 0.0015, 0.007569922284440133],
+            [0.9730241613623943, 0.1509447393831898, 0.17446967374747466],
+        ),
+    ]
+    for edge, point, normal in data:
+        surface.broken[edge] = True
+        surface.hermite[edge] = np.array(point), np.array(normal)
+    cells = {ci: surface._cell_regions(ci) for ci in (1990, 1997, 1998, 2038, 2039)}
+    for ci in (1997, 1998, 2039):
+        assert len(cells[ci]) == 2
+        np.testing.assert_array_equal(cells[ci][0][1], cells[ci][1][1])
+        np.testing.assert_array_equal(cells[ci][0][2], cells[ci][1][2])
+        assert cells[ci][0][0].isdisjoint(cells[ci][1][0])
+    point, normal = surface.hermite[26923]
+    assert abs((cells[1997][0][1] - point) @ normal) < 1e-14
+    assert [region for region, _, _ in cells[2038]] == [{0}, {1}, {2, 3, 4, 5, 6, 7}]
+    assert len(np.unique([p for _, p, _ in cells[2038]], axis=0)) == 3
+    a, b = cells[1990][0][1], cells[1997][0][1]
+    triangle = np.array([cells[1998][0][1], cells[2039][0][1], cells[2038][1][1]])
+    assert not segment_triangle_pairs(a[None], b[None], triangle[None], strict=True).item()
+    # The discarded common-QEF result for the three-region cell reproduces
+    # the introduced crossing, independently of the global intersection audit.
+    triangle[2] = [0.043503, 0.0020678764078308253, 0.006282852495208274]
+    assert segment_triangle_pairs(a[None], b[None], triangle[None], strict=True).item()
+
+
+def test_coincident_cut_banks_keep_codes_and_share_a_nonplanar_quad_diagonal():
+    surface = LinkedSurface((0.03, 0.03, 0.03), 0.003, "block")
+    surface.sweep(
+        [[0, -0.04, 0.04], [0, 0.04, 0.04]],
+        [[0, -0.04, -0.01], [0, 0.04, -0.01]],
+        normal_world=[1, 0, 0],
+    )
+    surface.mesh()
+    links = np.flatnonzero(surface.broken)
+    centres = surface.reference[surface.edges[links]].mean(1)
+    link = links[np.argmin(np.linalg.norm(centres - [0, 0, 0.015], axis=1))]
+    cells = surface.cells_around(link)
+    assert len(cells) == 4
+    # Both banks use the same slightly warped quad, with nearly tied normal
+    # agreement. Reversing the ring swaps the default and alternate diagonals.
+    first = cells[0]
+    surface.region_point[first, surface.region_valid[first], 0] += surface.h * 1e-5
+    mesh = surface.mesh(use_cache=False)
+    selected = np.array(
+        [any(np.array_equal(nodes, surface.cells[ci]) for ci in cells) for nodes in mesh.cells]
+    )
+    banks = []
+    for code in (1, 2):
+        vertices = np.flatnonzero(selected & (mesh.codes == code))
+        assert len(vertices) == 4
+        faces = mesh.triangles[np.isin(mesh.triangles, vertices).all(1)]
+        assert len(faces) == 2
+        banks.append(sorted(tuple(sorted(map(tuple, face))) for face in mesh.reference[faces]))
+    assert banks[0] == banks[1]
 
 
 @pytest.mark.parametrize("scale", [1e-6, 1e-3, 1.0, 1e3])

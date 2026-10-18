@@ -22,6 +22,7 @@ def fixture_run(identity):
         dt=cfg["dt"],
         blade_contact_radius=cfg["blade_contact_radius"],
         revision=identity["provenance"],
+        x_offset_m=identity["protocol"]["x_offset_m"],
         particles=1,
         force_n=[[0, 0, 1]] * 2000,
         pieces=[1],
@@ -50,6 +51,49 @@ def test_fresh_config_and_json_checkpoint_have_the_same_identity():
     run["config"] = asdict(study.effective_config(0.006, 1))
     study.validate_cache(run, identity, "fresh.json")
     study.validate_cache(json.loads(json.dumps(run)), identity, "loaded.json")
+
+
+def test_regular_sampling_offset_study_keeps_distinct_traces(tmp_path, monkeypatch):
+    computed = []
+
+    def compute(spacing, seed, radius, fraction):
+        computed.append((spacing, seed, fraction))
+        identity = study.cache_identity(spacing, seed, radius, study.git_revision(), fraction)
+        return fixture_run(identity)
+
+    monkeypatch.setattr(study, "cut_trace", compute)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "force_convergence",
+            "--output",
+            str(tmp_path),
+            "--spacings",
+            "0.006",
+            "0.003",
+            "--sampling-seeds",
+            "0",
+            "--x-offset-fractions",
+            "0",
+            "0.5",
+        ],
+    )
+    study.main()
+    assert computed == [(0.006, 0, 0), (0.006, 0, 0.5), (0.003, 0, 0), (0.003, 0, 0.5)]
+    for spacing in (0.006, 0.003):
+        path = tmp_path / f"h{spacing * 1000:g}mm_seed0_phase0.5.json"
+        run = json.loads(path.read_text())
+        assert run["x_offset_m"] == spacing / 4
+        identity = study.cache_identity(spacing, 0, None, study.git_revision(), 0.25)
+        with pytest.raises(ValueError, match="protocol"):
+            study.validate_cache(run, identity, path)
+    computed.clear()
+    study.main()
+    assert not computed
+    row = json.loads((tmp_path / "summary.json").read_text())["by_spacing"]["6 mm"]
+    assert row["seeds"] == 1 and row["samples"] == 2
+    assert row["x_offsets_m"] == [0, 0.0015]
 
 
 def test_all_caches_validate_before_compute(tmp_path, monkeypatch):

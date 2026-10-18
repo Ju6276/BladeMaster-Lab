@@ -50,14 +50,19 @@ def clean_revision():
     return revision
 
 
-def cache_identity(spacing, seed, blade_contact_radius, provenance):
+def cache_identity(spacing, seed, blade_contact_radius, provenance, x_offset_fraction=0.0):
     return json.loads(
         json.dumps(
             dict(
                 config=asdict(effective_config(spacing, seed, blade_contact_radius)),
                 provenance=provenance,
                 protocol=dict(
-                    interval=INTERVAL, descent_s=DESCENT_S, hold_s=HOLD_S, speed=SPEED, start_edge=START_EDGE
+                    interval=INTERVAL,
+                    descent_s=DESCENT_S,
+                    hold_s=HOLD_S,
+                    speed=SPEED,
+                    start_edge=START_EDGE,
+                    x_offset_m=x_offset_fraction * spacing / 2,
                 ),
             )
         )
@@ -78,12 +83,13 @@ def validate_cache(run, expected, path):
         dt=config["dt"],
         blade_contact_radius=config["blade_contact_radius"],
         revision=expected["provenance"],
+        x_offset_m=expected["protocol"]["x_offset_m"],
     ).items():
         if run.get(key) != value:
             raise ValueError(f"Cache mismatch in {path}: {key}; use a separate output directory")
 
 
-def cut_trace(spacing, seed, blade_contact_radius=None):
+def cut_trace(spacing, seed, blade_contact_radius=None, x_offset_fraction=0.0):
     cfg = effective_config(spacing, seed, blade_contact_radius)
     s = Solver(cfg)
     port = ExternalToolPort(s)
@@ -96,7 +102,10 @@ def cut_trace(spacing, seed, blade_contact_radius=None):
         moving = t < DESCENT_S
         edge = START_EDGE - SPEED * t if moving else 0.0
         state = ToolState(
-            [0.0, 0.0, edge + half], [0, 0, 0, 1], [0.0, 0.0, -SPEED if moving else 0.0], [0, 0, 0]
+            [x_offset_fraction * spacing / 2, 0.0, edge + half],
+            [0, 0, 0, 1],
+            [0.0, 0.0, -SPEED if moving else 0.0],
+            [0, 0, 0],
         )
         force[i] = port.advance(state, INTERVAL, cutting=True).force_n
     wall = time.perf_counter() - begin
@@ -104,6 +113,7 @@ def cut_trace(spacing, seed, blade_contact_radius=None):
     return dict(
         spacing=spacing,
         seed=seed,
+        x_offset_m=x_offset_fraction * spacing / 2,
         dt=cfg.dt,
         blade_contact_radius=cfg.blade_contact_radius,
         particles=s.n,
@@ -112,13 +122,15 @@ def cut_trace(spacing, seed, blade_contact_radius=None):
         wall_s=wall,
         gpu_errors=s.errors.numpy().tolist(),
         min_det_F=float(np.linalg.det(s.F.numpy()).min()),
+        directional_work_j=float(s.work.numpy()[0]),
+        damaged_particles=int((s.damage.numpy() >= 1).sum()),
         config=asdict(cfg),
         revision=git_revision(),
     )
 
 
 def summarize(runs, window=(0.4, 1.4), bin_s=0.02):
-    """Per spacing: mean/std over seeds of the binned vertical force and window averages."""
+    """Per spacing: mean/std over sampling seeds and offsets of force and impulse."""
     out = {}
     for spacing in sorted({r["spacing"] for r in runs}, reverse=True):
         group = [r for r in runs if r["spacing"] == spacing]
@@ -132,7 +144,9 @@ def summarize(runs, window=(0.4, 1.4), bin_s=0.02):
         out[f"{spacing * 1000:g} mm"] = dict(
             particles=group[0]["particles"],
             dt_us=group[0]["dt"] * 1.0e6,
-            seeds=len(group),
+            seeds=len({r["seed"] for r in group}),
+            samples=len(group),
+            x_offsets_m=sorted({r.get("x_offset_m", 0.0) for r in group}),
             steady_force_n=dict(
                 mean=float(steady.mean()), std=float(steady.std(ddof=1)) if len(group) > 1 else 0.0
             ),
@@ -164,7 +178,7 @@ def plot(studies, path):
         for color, (name, row) in zip(colors, rows.items()):
             mean, std = np.array(row["mean_trace_n"]), np.array(row["std_trace_n"])
             t = (np.arange(len(mean)) + 0.5) * summary["bin_s"]
-            ax.plot(t, mean, color=color, lw=1.4, label=f"{name} ({row['seeds']}×)")
+            ax.plot(t, mean, color=color, lw=1.4, label=f"{name} ({row.get('samples', row['seeds'])}×)")
             ax.fill_between(t, mean - std, mean + std, color=color, alpha=0.18, lw=0)
         ax.axvspan(*summary["window_s"], color="0.9", zorder=-1)
         ax.set(
@@ -196,6 +210,14 @@ def main():
     p.add_argument("--output", required=True)
     p.add_argument("--spacings", type=float, nargs="+", default=[0.006, 0.005, 0.004, 0.003])
     p.add_argument("--seeds", type=int, default=20, help="Sampling seeds 1..N per spacing")
+    p.add_argument("--sampling-seeds", type=int, nargs="+", help="Explicit seeds; use 0 for regular sampling")
+    p.add_argument(
+        "--x-offset-fractions",
+        type=float,
+        nargs="+",
+        default=[0.0],
+        help="Knife offsets as fractions of the particle spacing h/2, in [0, 1)",
+    )
     p.add_argument("--seeds-for", type=float, nargs=2, action="append", default=[], metavar=("SPACING", "N"))
     p.add_argument(
         "--blade-contact-radius",
@@ -211,6 +233,10 @@ def main():
         ]
         plot(studies, a.output)
         return
+    if any(not np.isfinite(f) or not 0 <= f < 1 for f in a.x_offset_fractions):
+        p.error("--x-offset-fractions must be finite and in [0, 1)")
+    if a.sampling_seeds is not None and (min(a.sampling_seeds) < 0 or a.seeds_for):
+        p.error("--sampling-seeds must be non-negative and cannot be combined with --seeds-for")
     provenance = clean_revision()
     out = Path(a.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -218,21 +244,24 @@ def main():
     requests = []
     # Validate every existing cache before launching any simulations.
     for spacing in a.spacings:
-        for seed in range(1, counts.get(round(spacing, 6), a.seeds) + 1):
-            path = out / f"h{spacing * 1000:g}mm_seed{seed}.json"
-            identity = cache_identity(spacing, seed, a.blade_contact_radius, provenance)
-            run = None
-            if path.exists():
-                try:
-                    run = json.loads(path.read_text())
-                    validate_cache(run, identity, path)
-                except (ValueError, TypeError, AttributeError) as exc:
-                    raise ValueError(f"Cannot reuse cache {path}: {exc}") from exc
-            requests.append((spacing, seed, path, identity, run))
+        seeds = a.sampling_seeds or range(1, counts.get(round(spacing, 6), a.seeds) + 1)
+        for seed in dict.fromkeys(seeds):
+            for fraction in dict.fromkeys(a.x_offset_fractions):
+                suffix = f"_phase{fraction!r}" if fraction else ""
+                path = out / f"h{spacing * 1000:g}mm_seed{seed}{suffix}.json"
+                identity = cache_identity(spacing, seed, a.blade_contact_radius, provenance, fraction)
+                run = None
+                if path.exists():
+                    try:
+                        run = json.loads(path.read_text())
+                        validate_cache(run, identity, path)
+                    except (ValueError, TypeError, AttributeError) as exc:
+                        raise ValueError(f"Cannot reuse cache {path}: {exc}") from exc
+                requests.append((spacing, seed, fraction, path, identity, run))
     runs = []
-    for spacing, seed, path, identity, run in requests:
+    for spacing, seed, fraction, path, identity, run in requests:
         if run is None:
-            run = cut_trace(spacing, seed, a.blade_contact_radius)
+            run = cut_trace(spacing, seed, a.blade_contact_radius, fraction)
             if git_revision() != provenance:
                 raise ValueError("Code changed during computation; results were not cached")
             run["cache_identity"] = identity
@@ -240,7 +269,8 @@ def main():
             path.write_text(json.dumps(run))
         runs.append(run)
         print(
-            f"h={spacing*1000:g} mm seed={seed} n={run['particles']} wall={run['wall_s']:.1f}s",
+            f"h={spacing*1000:g} mm seed={seed} phase={fraction:g} "
+            f"n={run['particles']} wall={run['wall_s']:.1f}s",
             flush=True,
         )
     if git_revision() != provenance:
@@ -253,7 +283,7 @@ def main():
             f"steady={row['steady_force_n']['mean']:.3f}±{row['steady_force_n']['std']:.3f} N "
             f"impulse={row['descent_impulse_ns']['mean']:.3f}±{row['descent_impulse_ns']['std']:.3f} Ns "
             f"peak(single)={row['peak_single_run_n']['mean']:.2f} N peak(mean)={row['peak_of_mean_trace_n']:.2f} N "
-            f"severed={row['severed_runs']}/{row['seeds']} errors={row['gpu_errors']}"
+            f"severed={row['severed_runs']}/{row['samples']} errors={row['gpu_errors']}"
         )
 
 

@@ -120,10 +120,10 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | `scripts/topocut_compare.py` | 同一刀路下 BladeMaster 与 TopoCut 式单场 MLS-MPM（`mlsmpm.py` + `topocut_topology.py`）对比，谱奖励评价；`scripts/render_compare.py` 把结果渲染成三栏对比视频 |
 | `scripts/surface_deformed.py` | 已知变形下的表面嵌入误差与自交 |
 | `scripts/surface_observations.py` | 保留完整刀路，对比不同材料观测间隔；默认 CUDA，可逐帧检查几何 |
-| `scripts/stress_teleop.py` | 固定种子的六轴输入、暂停、停止、重启和断线重连回放 |
-| `scripts/stress_multi_tool.py` | 同一材料上的多刀接触、换序、独立损伤和动量检查 |
+| `scripts/stress_teleop.py` | 六轴输入、暂停、停止、重启和断线重连回放；`--seeds 0 17 913 --near-capacity --restart-cycles 2` 检查多种种子和切割历史容量 |
+| `scripts/stress_multi_tool.py` | 同一材料上的多刀接触、旋转交叉、换序、独立损伤、动量及 int64 编号容量检查；`--seeds 0 17 913` 批量运行 |
 | `scripts/fig5_compare.py` | Fig. 5 两刀三块、退刀后独立推动；构建固定版本的 CRESSim-MPM 独立对照 |
-| `scripts/live_latency.py` | 明确被画面确认的命令到 HTTP 帧的延迟，`--output` 保存统计；`--start`、`--restart`、`--stop` 控制运行状态 |
+| `scripts/live_latency.py` | 状态帧确认的命令到 HTTP 帧的延迟，`--output` 保存统计；异常时关闭输入流，`--stop` 在正常或异常退出时结束会话 |
 
 浏览器的 `window.liveDiagnostics` 记录 WebGL 提交、显示循环间隔、收到的状态帧间隔和已绘制的命令序号。模拟输入的延迟测量应使用单独的服务端口，避免与 SpaceMouse 客户端同时发送序号。
 

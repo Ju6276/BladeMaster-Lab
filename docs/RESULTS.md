@@ -2,9 +2,35 @@
 
 硬件：tams61，RTX 4060 8 GB，Warp 1.18.0，MuJoCo 3.3.7。运行目录在 tams61 的 `runs/` 下（不进仓库）。
 
-## 2026-10-18 遥操作切透后的侧向弹开
+## 2026-10-18 恢复低弹开的 6 mm 香蕉设置
 
-代码 `c0b55b5` / `afbefae`：香蕉 Franka 遥操作默认材料网格改为 **3 mm、40 μs**；三刀等其他入口仍默认 6 mm，显式 `--spacing` 始终优先。页面分别显示材料与表面间距，LIVE 提示显示进程启动时的代码版本。全套 **503 项测试、18 个子用例通过，8 项跳过**。
+代码 `255d453`。全套 **504 项测试、18 个子用例通过，8 项跳过**；修改文件 Black、Ruff 与差异空白检查通过。
+
+历史记录和同输入对照将明显弹开定位到采样/刀距默认值的变化。`296851d` 加入每轴 ±h/4 扰动，`ed8bb16` 将 seed 1 设为香蕉默认；`6936158` 将刀距改为固定 0.5 mm，`9e06f1b` 又增加 h/4−刀半厚的下限。`2292eb6` 用相同 60 mm/s Franka 输入复跑，左块横移 10.185 mm、峰值平移速度 99.4 mm/s；这一现象已存在于后续表面审查之前。
+
+默认恢复 **6 mm、规则子单元中心采样（seed 0）、刀距等于粒子半径 h/4**。材料、摩擦、FLIP、步长、控制器和接触刚度保持原值。3 mm 仍可显式选择。历史干净提交 `c3ca5c6` 的 `dt_sweep_20261016/dt50` 使用规则采样、1.5 mm 刀距、SERL、20 mm/s，峰值反力 0.801 N，退刀前两块位移 −0.80 / +0.24 mm；62.5 μs 的 `1743d71` 也记录到 0.812 N 和两块各 726 粒子。
+
+当前求解器、6 mm、62.5 μs、libfranka 1000 N/m、相同 60 mm/s 输入，仅改变采样和刀距：
+
+| 采样 / 实际刀距 | 峰值反力 [N] | 切透窗口最大片块平移速度 [mm/s] | 左 / 右块横向位移 [mm] |
+|---|---|---|---|
+| seed 1 全幅扰动 / 1 mm（旧默认） | 7.456 | 94.3 | −9.466 / +4.377 |
+| seed 1 全幅扰动 / 1.5 mm | 5.824 | 49.3 | −5.928 / +2.907 |
+| 规则采样 / 1.5 mm（恢复设置） | 0.707 | 5.8 | −0.498 / +0.547 |
+
+规则采样配合旧的 1 mm 刀距，正中刀会落入粒子列间隙、反力为零；恢复粒子半径刀距后反力非零，切割成功。偏移 0.75 / 1.5 mm 后，峰值反力分别 1.332 / 8.535 N，切透窗口最大平移速度仍为 5.6 / 6.1 mm/s。30° 转刀的对应速度为 8.4 mm/s；刀在材料内转动还产生约 6–7 mm 的刀面推动。x=40 mm 的小片切割后下落约 2.6 mm、横移约 3.4 mm，继续作为薄片验证案例。
+
+新增完整 Franka 切透行为回归：6 mm 下反力须大于 0.1 N、片块横向速度小于 20 mm/s、停刀时横移小于 3 mm。邻居表比较固定使用有实际粒子接触的扰动夹具；Maxwell 松弛时间测试固定原有刀距和接触顺应性。规则采样的力仍对刀位敏感，切割功与网格收敛继续见 TODO。
+
+**干净提交复测（`255d453`，含表面和录制，不含浏览器渲染）。** `python -m scripts.check_cut_release --surface --output <目录>`：两块各 726 粒子，5.4 s 仿真 / 10.387 s 计算，**0.520×**；峰值反力 0.707 N，最大平移速度 5.8 mm/s，左右位移 −0.497 / +0.548 mm。相同输入的旧 3 mm 配置为 0.184×。
+
+`python -m blademaster_warp.franka_run --motion sequence --controller libfranka --stiffness 1000 --material paper-banana --duration 30 --surface --surface-embedding cuda --surface-ccd cuda --record --output <目录>`：21.037 / 34.478 s，**0.610×**；四块 778 / 294 / 236 / 144，退刀后保持，任务成功。峰值反力 4.794 N，min det F=0.9910。两组 GPU 错误、MuJoCo 警告均为零。配置、轨迹、偏移/斜切探针与测试日志在 `runs/sampling_regression_255d453_20261018/`。
+
+![相同 6 mm 网格和 Franka 输入：旧扰动设置与恢复规则采样](media/cut_release_sampling_6mm.png)
+
+## 2026-10-18 旧随机采样配置的 6 / 3 mm 对照
+
+代码 `c0b55b5` / `afbefae`：以下数据采用 seed 1、固定 0.5 mm 刀距的旧配置，比较 **3 mm、40 μs** 和 **6 mm、62.5 μs**。当前默认设置见上节。页面分别显示材料与表面间距，LIVE 提示显示进程启动时的代码版本。该提交全套 **503 项测试、18 个子用例通过，8 项跳过**。
 
 原在线进程仍运行 `951237c` 的 6 mm 材料、3 mm 表面、62.5 μs 设置。切到底后的弹开是粒子本身的运动。6 mm 下粒子间距为 3 mm，刀半厚为 0.5 mm，求解器把刀接触距离从设定的 0.5 mm 提至 1 mm；接触包络宽度达到 3 mm，切透前的侧向挤压偏大。只把该距离降回 0.5 mm，seed 1 峰值反力从 7.456 降至 3.375 N，最大片块平移速度从 94.3 降至 51.3 mm/s。粗网格减小接触距离仍有覆盖不足的问题，保留原接触法并使用更细材料网格。
 
@@ -20,15 +46,15 @@
 四组均切成两块，GPU 错误和 MuJoCo 警告均为零。初始对照使用 `9fc7fa7`；seed 17 使用同一求解器及本次新增输入/测量脚本。以下命令可复跑含表面的相同协议，输出 `manifest.json`、完整物理/表面记录及 `cut_release.json`：
 
 ```bash
-python -m scripts.check_cut_release --spacing .006 --seed 1 --surface --output runs/release-6mm
-python -m scripts.check_cut_release --spacing .003 --seed 1 --surface --output runs/release-3mm
+python -m scripts.check_cut_release --spacing .006 --seed 1 --blade-contact-radius .0005 --surface --output runs/release-6mm
+python -m scripts.check_cut_release --spacing .003 --seed 1 --blade-contact-radius .0005 --surface --output runs/release-3mm
 ```
 
 ![相同 Franka 输入下的实际粒子运动与片块质心位移](media/cut_release_6mm_3mm.png)
 
 **干净提交含表面复跑（`afbefae`，seed 1）。** 6 mm：5.4 s 仿真 / 10.097 s 计算，0.535×；3 mm：5.4 / 29.386 s，0.184×。表面网格分别为 3 / 1.5 mm，每组 136 帧，包含录制，不含浏览器渲染。6 mm 的最大平移速度 96.6 mm/s、左/右块位移 −9.693 / +4.407 mm；3 mm 为 34.0 mm/s、−0.006 / +1.979 mm。所有对照、配置与测试日志保存在 `runs/cut_release_afbefae_20261018/`。
 
-3 mm 减轻弹开，6 mm 的粗网格反力误差、复杂动态表面穿越和完整实时性能继续见 TODO。
+此旧配置改用 3 mm 可减轻弹开，同时明显降低速度；采样默认值回归的修正见上节。复杂动态表面穿越和完整实时性能继续见 TODO。
 
 ## 2026-10-18 切口前沿、Fig. 5 评价与输入生命周期修复
 

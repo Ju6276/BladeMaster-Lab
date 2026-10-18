@@ -103,3 +103,31 @@ def test_each_knife_pays_its_own_cutting_work(first):
     assert s.tool_damage[1 - first].numpy()[0] == 1
     s._set_cut(2)
     assert all(not damage.numpy().any() for damage in s.tool_damage)
+
+
+@pytest.mark.parametrize("seed", [0, 17, 913])
+@pytest.mark.parametrize("count", [2, 3])
+def test_shared_particle_contacts_are_independent_and_permutation_invariant_on_cpu(seed, count):
+    from scripts.stress_multi_tool import contact_stress
+
+    report = contact_stress(seed, "cpu", count)
+    assert report["shared_damaged_particles"] == 4
+    assert report["permutations"] == (2 if count == 2 else 6)
+    assert report["max_momentum_residual_kg_m_s"] < 1e-9
+
+
+def test_permutation_maps_each_strokes_ternary_digits():
+    from scripts.stress_multi_tool import canonical_codes
+
+    # Slot order C,A,B: [1,2,2; 1,1,2] becomes A,B,C: [2,2,1; 1,2,1].
+    np.testing.assert_array_equal(canonical_codes([619, 0], [2, 0, 1], 2), [449, 0])
+    with pytest.raises(AssertionError, match="Unexpected cut digit"):
+        canonical_codes([3**6], [2, 0, 1], 2)
+
+
+def test_three_knives_full_trajectory_and_cut_history_permutation():
+    from scripts.stress_multi_tool import trajectory_stress
+
+    report = trajectory_stress(seed=17, steps=120, tool_count=3)
+    assert report["shared_damaged_particles"] > 0
+    assert report["strokes"] == 2 and report["permutations"] == 6

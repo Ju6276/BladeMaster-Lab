@@ -46,7 +46,16 @@ def yaw_matrix(angle):
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
 
 
-def make_model(interval=0.001, blade_mass=0.1, attachment="fixed", base_yaw=0.0):
+def make_model(
+    interval=0.001,
+    blade_mass=0.1,
+    attachment="fixed",
+    base_yaw=0.0,
+    blade_half_size=HALF,
+    blade_bevel_height=BEVEL,
+    initial_edge_height=0.04,
+    blade_mount_offset=0.0,
+):
     if attachment not in ("fixed", "grasp"):
         raise ValueError("Unknown attachment")
     root = ET.parse(SOURCE).getroot()
@@ -59,7 +68,6 @@ def make_model(interval=0.001, blade_mass=0.1, attachment="fixed", base_yaw=0.0)
     hand = original.body("hand").id
     hand_r = initial.xmat[hand].reshape(3, 3)
     tool_origin = initial.xpos[hand] + hand_r @ np.array([0.0, 0.0, 0.16])
-    material_origin = tool_origin - np.array([0.0, 0.0, HALF[2] + 0.04])
     # Turning the base about the vertical through the tool origin keeps the tool,
     # material and board in place; the mount keeps the knife world-aligned.
     turn = yaw_matrix(base_yaw)
@@ -69,6 +77,9 @@ def make_model(interval=0.001, blade_mass=0.1, attachment="fixed", base_yaw=0.0)
     link0.set("pos", numbers(base))
     link0.set("quat", numbers(quat_wxyz(turn)))
     mounting_q = quat_wxyz((turn @ hand_r).T)
+    tcp_local = np.array([0.0, 0.0, 0.16]) + (turn @ hand_r).T @ [blade_mount_offset, 0, 0]
+    tool_origin = tool_origin + [blade_mount_offset, 0, 0]
+    material_origin = tool_origin - np.array([0.0, 0.0, blade_half_size[2] + initial_edge_height])
     root.find("option").set("timestep", str(interval))
     if attachment == "grasp":
         # MuJoCo's default soft pyramidal friction lets the held knife creep about
@@ -93,8 +104,14 @@ def make_model(interval=0.001, blade_mass=0.1, attachment="fixed", base_yaw=0.0)
                 forcerange=f"-{limit} {limit}",
             ),
         )
-    hx, hy, hz = HALF
-    section = [(0.0, -hz), (hx, -hz + BEVEL), (hx, hz), (-hx, hz), (-hx, -hz + BEVEL)]
+    hx, hy, hz = blade_half_size
+    section = [
+        (0.0, -hz),
+        (hx, -hz + blade_bevel_height),
+        (hx, hz),
+        (-hx, hz),
+        (-hx, -hz + blade_bevel_height),
+    ]
     vertices = [(x, y, z) for y in (-hy, hy) for x, z in section]
     ET.SubElement(root.find("asset"), "mesh", name="knife_prism", vertex=numbers(vertices))
     hand_node = root.find(".//body[@name='hand']")
@@ -104,7 +121,7 @@ def make_model(interval=0.001, blade_mass=0.1, attachment="fixed", base_yaw=0.0)
         hand_node,
         "site",
         name="control_tcp",
-        pos="0 0 .16",
+        pos=numbers(tcp_local),
         quat=numbers(mounting_q),
         size=".001",
         rgba="0 0 0 0",
@@ -121,7 +138,21 @@ def make_model(interval=0.001, blade_mass=0.1, attachment="fixed", base_yaw=0.0)
             rgba=".16 .18 .2 1",
             group="2",
         )
-        knife = ET.SubElement(hand_node, "body", name="knife", pos="0 0 .16", quat=numbers(mounting_q))
+        knife = ET.SubElement(
+            hand_node, "body", name="knife", pos=numbers(tcp_local), quat=numbers(mounting_q)
+        )
+        if blade_mount_offset:
+            ET.SubElement(
+                knife,
+                "geom",
+                name="knife_bracket",
+                type="box",
+                pos=numbers([-(blade_mount_offset + hx) / 2, 0, 0.035]),
+                size=numbers([(blade_mount_offset - hx) / 2, 0.006, 0.006]),
+                mass=".03",
+                rgba=".16 .18 .2 1",
+                group="2",
+            )
     else:
         # Free knife with a handle. No weld/equality involving
         # this free body and no artificial attraction to the fingers.
@@ -184,6 +215,10 @@ class Franka:
         attachment="fixed",
         grip_force_per_finger=30.0,
         layout="side",
+        blade_half_size=HALF,
+        blade_bevel_height=BEVEL,
+        initial_edge_height=0.04,
+        blade_mount_offset=0.0,
     ):
         """translation/rotation_stiffness: libfranka Cartesian gains (default 150 N/m, 10 Nm/rad)."""
         if controller == "serl" and (translation_stiffness is not None or rotation_stiffness is not None):
@@ -195,9 +230,32 @@ class Franka:
         if layout not in LAYOUT_BASE_YAW:
             raise ValueError("Unknown scene layout")
         self.layout = layout
+        half = np.asarray(blade_half_size, dtype=float)
+        if (
+            half.shape != (3,)
+            or not np.isfinite(half).all()
+            or np.min(half) <= 0
+            or not np.isfinite([blade_bevel_height, initial_edge_height, blade_mount_offset]).all()
+            or not 0 <= blade_bevel_height < 2 * half[2]
+            or initial_edge_height <= 0
+        ):
+            raise ValueError("Invalid knife geometry or initial edge height")
+        if blade_mount_offset < 0 or (
+            blade_mount_offset and (attachment != "fixed" or blade_mount_offset <= half[0])
+        ):
+            raise ValueError("Mount offset requires a fixed attachment and clearance beyond blade thickness")
+        self.blade_mount_offset = float(blade_mount_offset)
+        self.blade_half_size = tuple(half)
+        self.blade_bevel_height = float(blade_bevel_height)
         self.base_rotation = yaw_matrix(LAYOUT_BASE_YAW[layout])
         self.model, self.material_origin, self.xml = make_model(
-            interval, attachment=attachment, base_yaw=LAYOUT_BASE_YAW[layout]
+            interval,
+            attachment=attachment,
+            base_yaw=LAYOUT_BASE_YAW[layout],
+            blade_half_size=self.blade_half_size,
+            blade_bevel_height=self.blade_bevel_height,
+            initial_edge_height=initial_edge_height,
+            blade_mount_offset=blade_mount_offset,
         )
         self.attachment = attachment
         self.grip_force_per_finger = float(grip_force_per_finger)
@@ -244,7 +302,8 @@ class Franka:
 
     @property
     def edge_points(self):
-        local = np.array([[0.0, -HALF[1], -HALF[2]], [0.0, HALF[1], -HALF[2]]])
+        _, hy, hz = self.blade_half_size
+        local = np.array([[0.0, -hy, -hz], [0.0, hy, -hz]])
         return local @ self.rotation.T + self.position
 
     def board_normal_force(self):
@@ -330,6 +389,9 @@ class Franka:
         mj.mj_step(self.model, self.data)
         # Derived body states must correspond to the newly integrated qpos.
         mj.mj_forward(self.model, self.data)
-        if not (np.isfinite(self.data.qpos).all() and np.isfinite(self.data.qvel).all()) or self.data.warning.number.any():
+        if (
+            not (np.isfinite(self.data.qpos).all() and np.isfinite(self.data.qvel).all())
+            or self.data.warning.number.any()
+        ):
             raise RuntimeError(f"MuJoCo invalid state/warnings: {self.data.warning.number}")
         return requested, applied

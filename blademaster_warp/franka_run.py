@@ -8,12 +8,11 @@ import time
 import numpy as np
 from scipy.spatial.transform import Rotation
 from .franka import Franka, HALF, BEVEL, SOURCE, BOARD_HALF_EXTENT, quat_xyzw, yaw_matrix
-from .geometry import BANANA_DEMO_SIZE_M
 from .provenance import git_revision
 from .topology import components
 from .cut_cycle import CutCycle, CutSequence, CycleSettings, SequenceSettings, evaluate_cut
 from .teleop_input import ContactStrokes, PoseTarget, mock_command
-
+from .franka_task import SliceLift, SliceLiftSettings, SliceLiftMetrics
 
 # Softer libfranka stiffness (the example's 150 N/m) cannot push a blade through the banana.
 CUTTING_STIFFNESS = 1000.0
@@ -46,6 +45,13 @@ def material_config(args):
             blade_bevel_height=BEVEL,
         )
     )
+    if getattr(args, "motion", None) == "slice-lift":
+        from .scenarios import scene_config
+
+        cfg = replace(
+            scene_config("fig4", dt=args.dt or min(args.interval, 0.002)),
+            blade_mass=0.1,  # Match the mounted MuJoCo knife; contact uses the arm's mobility.
+        )
     overrides = {
         name: getattr(args, name)
         for name in ("dt", "cutting_energy", "maxwell_tau", "maxwell_fraction", "blade_contact_radius")
@@ -54,7 +60,11 @@ def material_config(args):
     spacing = args.spacing
     if spacing is not None:
         overrides["grid_spacing"] = spacing
-        if args.material == "paper-banana" and args.dt is None:
+        if (
+            args.material == "paper-banana"
+            and args.dt is None
+            and getattr(args, "motion", None) != "slice-lift"
+        ):
             overrides["dt"] = banana_dt(cfg, spacing, args.interval)
     if getattr(args, "sampling_seed", None) is not None:
         overrides["sampling_seed"] = args.sampling_seed
@@ -99,7 +109,6 @@ def run_manifest(args, robot, cfg, cycle):
     import mujoco
     import warp as wp
 
-    banana = args.material == "paper-banana"
     controller_source = (
         "libfranka/SOURCE.json" if args.controller == "libfranka" else "serl_controller/manifest.json"
     )
@@ -114,10 +123,15 @@ def run_manifest(args, robot, cfg, cycle):
         "controller_source": json.loads((SOURCE.parents[2] / controller_source).read_text()),
         "controller_parameters": controller_parameters,
         "mount": robot.attachment,
-        "knife_geometry": {"half_size_m": list(HALF), "bevel_height_m": BEVEL},
+        "blade_mount_offset_m": robot.blade_mount_offset,
+        "knife_geometry": {
+            "half_size_m": list(cfg.blade_half_size),
+            "bevel_height_m": cfg.blade_bevel_height,
+        },
         "grip_force_per_finger_n": robot.grip_force_per_finger if args.attachment == "grasp" else None,
-        "geometry": "banana" if banana else "block",
-        "domain_size_m": list(BANANA_DEMO_SIZE_M) if banana else list(cfg.size),
+        "geometry": cfg.shape,
+        "domain_size_m": list(cfg.size),
+        "task": "fig4-slice-lift" if args.motion == "slice-lift" else args.motion,
         "cycle_settings": asdict(cycle.settings) if cycle else None,
         "material_origin_world_m": robot.material_origin.tolist(),
         "config": asdict(cfg),
@@ -152,9 +166,15 @@ class Recording:
 
 
 class FrankaCuttingRun:
-    """Franka arm in MuJoCo, banana/block in TLMPM, exchanging wrench every robot step."""
+    """MuJoCo Franka and TLMPM material exchange wrench every robot step."""
 
     def __init__(self, args, observer=None):
+        if args.duration is None:
+            args.duration = 60.0 if args.motion == "slice-lift" else 4.6
+        if args.motion == "slice-lift" and args.attachment != "fixed":
+            raise ValueError("Slice-lift requires --attachment fixed")
+        if args.motion == "slice-lift" and getattr(args, "layout", "paper") != "paper":
+            raise ValueError("Slice-lift requires --layout paper for flat-knife reach")
         self.args = args
         self.observer = observer
         self.record = bool(getattr(args, "record", False))
@@ -172,20 +192,35 @@ class FrankaCuttingRun:
             self.frame_stride * args.interval, observation_interval, atol=1e-12, rtol=1e-10
         ):
             raise ValueError("Observation interval must be an integer multiple of the robot interval")
+        if args.motion == "slice-lift" and observation_interval > SliceLiftSettings().final_hold_s / 5:
+            raise ValueError("Slice-lift needs an observation interval <= 0.2 s to verify the final hold")
         self.out = Path(args.output) if args.output else None
         if self.out is not None:
             self.out.mkdir(parents=True, exist_ok=False)
 
+        self.cfg = material_config(args)
+        substeps = args.interval / self.cfg.dt
+        if not np.isclose(substeps, round(substeps), atol=1e-9, rtol=0) or substeps < 1:
+            raise ValueError("Robot interval must contain an integer number of material substeps")
+        slice_lift = args.motion == "slice-lift"
+        rotation_stiffness = getattr(args, "rotation_stiffness", None)
+        if rotation_stiffness is None and slice_lift:
+            rotation_stiffness = 80.0
         self.robot = Franka(
             args.interval,
             args.stiffness if args.controller == "libfranka" else None,
+            rotation_stiffness=rotation_stiffness if args.controller == "libfranka" else None,
             controller=args.controller,
             attachment=args.attachment,
             grip_force_per_finger=args.grip_force_per_finger,
             layout=getattr(args, "layout", "side"),
+            blade_half_size=self.cfg.blade_half_size,
+            blade_bevel_height=self.cfg.blade_bevel_height,
+            initial_edge_height=self.cfg.size[2] + 0.02 if slice_lift else 0.04,
+            # The palm extends 104 mm along the blade normal in the paper layout.
+            blade_mount_offset=0.115 if slice_lift else 0.0,
         )
         self.cycle = self._make_cycle()
-        self.cfg = material_config(args)
         if self.out is not None:
             manifest = run_manifest(args, self.robot, self.cfg, self.cycle)
             (self.out / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -194,6 +229,11 @@ class FrankaCuttingRun:
 
         warm = time.perf_counter()
         self.solver, self.port = self._make_solver()
+        self.task_metrics = (
+            SliceLiftMetrics(self.solver.reference, self.cycle.settings)
+            if slice_lift and self.solver is not None
+            else None
+        )
         self.warmup_s = time.perf_counter() - warm
         self.meter = None
         self.surface = None
@@ -246,6 +286,13 @@ class FrankaCuttingRun:
         self._next_piece = 1
 
     def _make_cycle(self):
+        if self.args.motion == "slice-lift":
+            return SliceLift(
+                self.robot.position,
+                self.robot.rotation,
+                self.robot.material_origin,
+                SliceLiftSettings(descent_speed_m_s=self.args.descent_speed),
+            )
         if self.args.motion == "sequence":
             return CutSequence(
                 self.robot.position,
@@ -337,6 +384,9 @@ class FrankaCuttingRun:
             return tool_target, tool_target + robot.control_position - robot.position, rotation
         if self.cycle is None:
             return None, target_at(t, robot.initial_position), None
+        if isinstance(self.cycle, SliceLift):
+            tool_target, rotation = self.cycle.update(t, robot.position, robot.rotation, robot.edge_points)
+            return tool_target, tool_target, rotation
         tool_target = self.cycle.update(t, robot.position, robot.edge_points)
         # Grasp mode uses the measured tool-to-TCP offset; fixed mounting has zero offset.
         return tool_target, tool_target + robot.control_position - robot.position, None
@@ -464,6 +514,16 @@ class FrankaCuttingRun:
                         ),
                     )
                 )
+            if self.task_metrics is not None:
+                self._component_sizes(data.codes[-1])
+                observation = self.task_metrics.observe(
+                    robot.data.time,
+                    self.cycle.phase,
+                    data.particles[-1],
+                    self._last_component_labels,
+                    s.v.numpy(),
+                )
+                data.task_observations[-1].update(observation)
             if self.surface:
                 self.surface.update(
                     robot.data.time,
@@ -506,6 +566,7 @@ class FrankaCuttingRun:
         frame_stride = self.frame_stride
         print_stride = max(1, round(0.5 / args.interval))
         begin = time.perf_counter()
+        wrench = np.zeros(6)
         try:
             for i in range(count):
                 if self.observer:
@@ -514,7 +575,10 @@ class FrankaCuttingRun:
                         status = "stopped"
                         break
                 tool_target, target, target_rotation = self._targets(i * args.interval)
-                if self.cycle and self.cycle.done:
+                if self.cycle and (self.cycle.done or getattr(self.cycle, "failed", False)):
+                    # Include the terminal measured state even if it falls between frames.
+                    heights = robot.edge_points[:, 2] - robot.material_origin[2]
+                    self._snapshot(heights, wrench, begin)
                     break
                 wrench = self._exchange_wrench()
                 tick = time.perf_counter()
@@ -631,13 +695,29 @@ class FrankaCuttingRun:
         )
         if cycle:
             completed = status == "completed"
+            failed = getattr(cycle, "failed", False)
             report.update(
-                motion_status="completed" if cycle.done else "timeout" if completed else "failed",
+                motion_status=(
+                    "failed"
+                    if failed
+                    else "completed" if cycle.done else "timeout" if completed else "failed"
+                ),
                 final_phase=cycle.phase,
                 task_evaluation=evaluate_cut(
                     self.data.task_observations, cycle.done and completed, cycle.expected_pieces
                 ),
             )
+            if isinstance(cycle, SliceLift):
+                report["task_evaluation"] = (
+                    self.task_metrics.evaluate(cycle.done and completed)
+                    if self.task_metrics
+                    else dict(success=False, cycle_completed=cycle.done, material_observed=False)
+                )
+                report["task_evaluation"].update(
+                    failure_reason=cycle.failure_reason,
+                    max_position_tracking_error_m=cycle.max_position_error_m,
+                    max_orientation_tracking_error_deg=float(np.rad2deg(cycle.max_orientation_error_rad)),
+                )
         if self.teleop is not None:
             report["teleop"] = dict(
                 input="live /input" if getattr(self.observer, "teleop", None) is not None else "mock fixture",
@@ -709,6 +789,8 @@ def render(out):
     camera = mj.MjvCamera()
     camera.lookat[:] = base + [*(0.5 * reach[:2]), 0.5]
     camera.distance, camera.azimuth, camera.elevation = 1.5, azimuth, -35
+    cycle_path = out / "cycle.json"
+    phases = json.loads(cycle_path.read_text())["phases"] if cycle_path.exists() else CutCycle.phases
     close = mj.MjvCamera()
     close.lookat[:] = z["origin"] + [0, 0, 0.035]
     close.distance, close.azimuth, close.elevation = 0.3, azimuth, -38
@@ -742,10 +824,8 @@ def render(out):
             time_s = float(z["control_tcp"][i, 0]) if "control_tcp" in z else i / fps
             phase = ""
             if "cycle_trace" in z and z["cycle_trace"].size:
-                from .cut_cycle import CutCycle
-
                 idx = np.argmin(abs(z["cycle_trace"][:, 0] - time_s))
-                phase = " | " + CutCycle.phases[int(z["cycle_trace"][idx, 1])]
+                phase = " | " + phases[int(z["cycle_trace"][idx, 1])]
             draw.text(
                 (14, 8),
                 f"Franka torque dynamics + GPU TLMPM | t={time_s:.2f}s{phase} | final: {result_label}",
@@ -793,7 +873,7 @@ def parser():
         "--material",
         choices=["elastic-block", "paper-banana"],
         default="elastic-block",
-        help="paper-banana: paper §IV-C material on the 120 mm synthetic banana",
+        help="paper-banana: paper §IV-C material on the 120 mm banana; slice-lift always uses the Fig4 cylinder",
     )
     p.add_argument(
         "--dt",
@@ -832,13 +912,16 @@ def parser():
         default=None,
         help="Jitter particles inside their sub-cells (0: regular lattice); default from the material preset",
     )
-    p.add_argument("--duration", type=float, default=4.6)
+    p.add_argument(
+        "--duration", type=float, default=None, help="Time budget, s (slice-lift: 60; other motions: 4.6)"
+    )
     p.add_argument(
         "--motion",
-        choices=["timed", "feedback", "sequence", "teleop"],
+        choices=["timed", "feedback", "sequence", "slice-lift", "teleop"],
         default="timed",
         help=(
             "feedback: one cut gated on the measured knife pose; sequence: several cuts, each followed by a push; "
+            "slice-lift: Fig4 cylinder, two radial cuts, flat insertion and measured 40 mm lift; "
             "teleop: knife twist and begin_cut/end_cut from /input (SpaceMouse client), or the fixed mock input "
             "sequence without --live"
         ),
@@ -903,6 +986,12 @@ def parser():
         help="libfranka Cartesian translational stiffness, N/m (SERL uses its own gains)",
     )
     p.add_argument("--controller", choices=["libfranka", "serl"], default="libfranka")
+    p.add_argument(
+        "--rotation-stiffness",
+        type=float,
+        default=None,
+        help="libfranka rotational stiffness, Nm/rad (slice-lift: 80; others: 10)",
+    )
     p.add_argument("--attachment", choices=["fixed", "grasp"], default="fixed")
     p.add_argument(
         "--grip-force-per-finger", type=float, default=30.0, help="Grasp actuator command, N per finger"

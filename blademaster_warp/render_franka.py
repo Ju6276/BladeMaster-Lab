@@ -75,10 +75,10 @@ def render(directory, output=None, preview=False, layout="overview"):
         dict(position=[120, -270, 210], focal=[0, 0, 29], scale=69),
     ]
     if layout == "paper":
-        # Fig. 1 uses the same camera for particles/surface and views the
-        # banana length horizontally. This is an explicitly chosen view,
-        # not claimed to be the unpublished author camera calibration.
+        # Keep particle and surface projections identical.
         cameras = [dict(position=[300, -600, 470], focal=[0, 0, 80], scale=140) for _ in scenes]
+        if manifest.get("task") == "fig4-slice-lift":
+            cameras = [dict(position=[-300, 600, 400], focal=[0, 0, 45], scale=125) for _ in scenes]
     for scene, camera in zip(scenes, cameras):
         set_camera(scene, **camera)
     cycle_path = directory / "cycle.json"
@@ -86,6 +86,8 @@ def render(directory, output=None, preview=False, layout="overview"):
     phase_labels = [{"descend": "Cut"}.get(name, name.capitalize()) for name in cycle["phases"]]
     cuts = sum(event["phase"] == "descend" for event in cycle["events"])
     title = "Franka | Single cut" if cuts <= 1 else f"Franka | {cuts} cuts + push"
+    if manifest.get("task") == "fig4-slice-lift":
+        title = "Franka | Two radial cuts + slice lift"
     if "teleop" in report:
         title = f"Franka | Teleoperation, {report['teleop']['cut_strokes']} cut strokes"
     font = ImageFont.truetype("DejaVuSans.ttf", 22)

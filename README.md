@@ -93,6 +93,15 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 `--cuts` 指定各刀相对起始位置的 x 坐标（m，按顺序切），`--push-distance` 指定推开距离。加 `--spacing 0.003` 用 3 mm 网格（规则采样 11520 粒子；步长自动取 40 μs），外形和切面更圆润。
 
+Fig. 4 形式的 Franka 中片抬升：两次径向切割，转平刀具，插入片块下方并抬高 40 mm。使用圆柱材料、10 mm 材料网格和 1 ms 子步；成功评价检查片块分离、实际抬升、持续托持及余块位移。
+
+```bash
+.venv/bin/python -m blademaster_warp.franka_run --motion slice-lift --live --port 18766 \
+  --surface --surface-embedding cuda --surface-ccd cuda
+```
+
+去掉 `--live`、加 `--record --output runs/franka_slice_lift` 保存完整任务；用 `render_franka runs/franka_slice_lift --layout paper` 导出粒子/表面对照视频。
+
 常用选项：
 
 | 选项 | 作用 |
@@ -142,7 +151,7 @@ PYTHONPATH=/path/to/Dexlab/src .venv/bin/python -m pytest tests -q
 ## 代码结构
 
 - `solver.py`、`material.py`、`contact.py`：材料、网格传输、接触、切割标签。
-- `franka.py`、`coupling.py`、`franka_run.py`、`cut_cycle.py`：机器人、外部刚体接口、运行循环。
+- `franka.py`、`coupling.py`、`franka_run.py`、`cut_cycle.py`、`franka_task.py`：机器人、外部刚体接口、切割与抬片任务。
 - `surface*.py`：表面重建（CPU 参考 + CUDA 部分）。
 - `live.py`、`web/`：浏览器实时显示。
 - `render*.py`、`replay_style.py`、`robot_replay.py`：离线渲染。

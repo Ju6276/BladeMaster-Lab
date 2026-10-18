@@ -544,10 +544,13 @@ class Solver:
     def step(self, target_edge=(0.0, 0.0, 0.042), cutting=True, cut_index=0, orientation=None):
         if self.config.external_tool:
             raise ValueError("Use ExternalToolPort.advance for an externally owned tool")
-        self._set_cut(cut_index)
+        cut_index = self._set_cut(cut_index)
         self._step_kernels(target_edge, cutting, cut_index, orientation=orientation)
 
     def _set_cut(self, cut_index):
+        if isinstance(cut_index, (bool, np.bool_)) or not isinstance(cut_index, (int, np.integer)):
+            raise ValueError("Cut index must be an integer")
+        cut_index = int(cut_index)
         last = self.max_cut_index - (self.config.tool_count - 1)
         if cut_index < self.cut_index or cut_index > last:
             raise ValueError(f"Cut indices must be monotonic and within [0, {last}]")
@@ -555,6 +558,7 @@ class Solver:
             for damage in self.tool_damage:
                 damage.zero_()
             self.cut_index = cut_index
+        return cut_index
 
     def _tool_model(self):
         """-1 articulated (external), 0 guided translation, 1 free rigid blade (see contact.blade_effective_mass)."""
@@ -938,7 +942,6 @@ class Solver:
         targets = np.ascontiguousarray(targets, dtype=np.float32)
         if targets.ndim != 2 or targets.shape[1] != 3 or not np.isfinite(targets).all() or not len(targets):
             raise ValueError("targets must be finite (substeps, 3) edge positions")
-        self._set_cut(cut_index)
         orientations = (
             np.tile([0.0, 0.0, 0.0, 1.0], (len(targets), 1))
             if orientations is None
@@ -950,6 +953,7 @@ class Solver:
         if np.any(lengths < 1.0e-6):
             raise ValueError("Zero quaternion")
         orientations = np.ascontiguousarray(orientations / lengths[:, None], dtype=np.float32)
+        cut_index = self._set_cut(cut_index)
         if not graph:
             for target, orientation in zip(targets, orientations):
                 self._step_kernels(target, cutting, cut_index, orientation=orientation)

@@ -19,9 +19,14 @@ CONTROL_DT = 0.01
 INITIAL_EDGE = (-0.01, 0.0, 0.036)
 
 
-def seeded_replay(seed=17, extra_cuts=0):
-    if extra_cuts < 0 or extra_cuts > 20:
-        raise ValueError("extra_cuts must be within [0, 20]")
+def seeded_replay(seed=17, extra_cuts=0, restart_cycles=0):
+    from scripts.stress_multi_tool import cut_code_capacity
+
+    last = cut_code_capacity()["max_cut_index"]
+    if not isinstance(extra_cuts, int) or isinstance(extra_cuts, bool) or not 0 <= extra_cuts <= last:
+        raise ValueError(f"extra_cuts must be an integer within [0, {last}]")
+    if not isinstance(restart_cycles, int) or isinstance(restart_cycles, bool) or restart_cycles < 0:
+        raise ValueError("restart_cycles must be a nonnegative integer")
     rng = np.random.default_rng(seed)
     rotating = rng.uniform(0.3, 0.7, 6) * rng.choice([-1, 1], 6)
     rows, seq = [], 0
@@ -84,6 +89,36 @@ def seeded_replay(seed=17, extra_cuts=0):
                 )
             )
             seq += 1
+    # Repeat the long second session after stop/start, retaining the stream's
+    # sequence watermark while discarding queued events and the old target.
+    template = rows[250:]
+    for _ in range(restart_cycles):
+        for action, event in (("stop", ""), ("", "begin_cut")):
+            rows.append(
+                dict(
+                    tick=len(rows),
+                    phase="stopped",
+                    action=action,
+                    packet=Command(seq, (0.1, 0, 0), (0, 0.2, 0), event).packet(),
+                )
+            )
+            seq += 1
+        rows.append(dict(tick=len(rows), phase="restart", action="start"))
+        rows.append(
+            dict(
+                tick=len(rows),
+                phase="duplicate",
+                action="",
+                reject=True,
+                packet=Command(seq - 1, (0.1, 0, 0), (0, 0.2, 0), "begin_cut").packet(),
+            )
+        )
+        for source in template:
+            row = dict(source, tick=len(rows))
+            if "packet" in row:
+                row["packet"] = dict(row["packet"], seq=seq)
+                seq += 1
+            rows.append(row)
     return rows
 
 
@@ -125,7 +160,7 @@ def replay(rows, on_frame=None):
                 command, events, stale = live.teleop.sample(now=now)
                 assert stale and not events and not any(command.velocity) and not any(command.omega)
                 target, session = new_target(), session + 1
-                # Scene creation is outside this input replay; the CUDA callback
+                # Scene creation is outside this input replay; the material callback
                 # creates a fresh solver on the first frame of the new session.
                 live.restart.clear()
                 live.autostart = False
@@ -201,9 +236,12 @@ class MaterialReplay:
             )
 
         if session != self.session:
+            from scripts.stress_multi_tool import cut_code_capacity
+
             self.solver = Solver(
                 Config(pose_servo=True, cache_topology=True, grid_storage="compact"), device=self.device
             )
+            self.capacity = cut_code_capacity(solver=self.solver)
             self.solver.tool_pos.assign(
                 [np.asarray(INITIAL_EDGE) + [0, 0, self.solver.config.blade_half_size[2]]]
             )
@@ -299,6 +337,7 @@ class MaterialReplay:
             assert self.max_broken_links > 0
         return dict(
             frames=self.frames,
+            capacity=self.capacity,
             material_entries=int(self.entered),
             material_exits=int(self.exited),
             cut_particles=self.cut_particles,
@@ -361,46 +400,86 @@ def franka_stress():
     return report
 
 
-def main():
+def run_replay(rows, device="cpu", surface=False):
+    if surface and device == "cpu":
+        raise ValueError("Surface replay requires CUDA")
+    material = MaterialReplay(device, surface) if device != "cpu" else None
+    trace, report = replay(rows, material)
+    again, repeated = replay(rows)
+    assert trace == again and report == repeated, "Input replay is not deterministic"
+    if material:
+        report["material"] = material.report()
+    return trace, report, material
+
+
+def main(argv=None):
+    from scripts.stress_multi_tool import cut_code_capacity
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seed", type=int, default=17)
+    seeds = parser.add_mutually_exclusive_group()
+    seeds.add_argument("--seed", type=int, default=17)
+    seeds.add_argument("--seeds", type=int, nargs="+")
     parser.add_argument("--device", default="cpu", help="cpu: input replay; cuda:0: also evolve material")
     parser.add_argument(
         "--surface", action="store_true", help="Check surface history using every actual tool substep"
     )
-    parser.add_argument("--extra-cuts", type=int, default=0)
+    history = parser.add_mutually_exclusive_group()
+    history.add_argument("--extra-cuts", type=int, default=0)
+    history.add_argument("--near-capacity", action="store_true")
+    parser.add_argument("--restart-cycles", type=int, default=0)
     parser.add_argument(
         "--franka", action="store_true", help="Also run the MuJoCo Franka full-rotation fixture"
     )
     parser.add_argument("--replay", type=Path)
     parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if (args.surface or args.franka) and args.device == "cpu":
         parser.error("--surface and --franka require a CUDA material replay")
-    rows = json.loads(args.replay.read_text()) if args.replay else seeded_replay(args.seed, args.extra_cuts)
-    material = MaterialReplay(args.device, args.surface) if args.device != "cpu" else None
-    trace, report = replay(rows, material)
-    again, _ = replay(rows)
-    assert trace == again, "Input replay is not deterministic"
-    report.update(
-        revision=git_revision(),
-        seed=None if args.replay else args.seed,
-        device=args.device,
-        control_dt_s=CONTROL_DT,
-        status="passed",
-    )
-    if material:
-        report["material"] = material.report()
-        if not args.replay:
-            assert material.entered >= 2 + args.extra_cuts, "Repeated strokes missed the material"
+    if args.replay and (
+        args.seeds is not None or args.extra_cuts or args.near_capacity or args.restart_cycles
+    ):
+        parser.error("--replay cannot be combined with generated history or seed batches")
+    capacity = cut_code_capacity()
+    extra_cuts = capacity["max_cut_index"] if args.near_capacity else args.extra_cuts
+    selected_seeds = args.seeds if args.seeds is not None else [args.seed]
+    if len(set(selected_seeds)) != len(selected_seeds):
+        parser.error("Seeds must be distinct")
+    if args.output:
+        args.output.mkdir(parents=True, exist_ok=False)
+    reports = []
+    for seed in selected_seeds:
+        rows = (
+            json.loads(args.replay.read_text())
+            if args.replay
+            else seeded_replay(seed, extra_cuts, args.restart_cycles)
+        )
+        trace, report, material = run_replay(rows, args.device, args.surface)
+        report.update(
+            revision=git_revision(),
+            seed=None if args.replay else seed,
+            device=args.device,
+            control_dt_s=CONTROL_DT,
+            capacity=capacity,
+            status="passed",
+        )
+        if material and not args.replay:
+            entries = 2 + extra_cuts + args.restart_cycles * (1 + extra_cuts)
+            assert material.entered >= entries, "Repeated strokes missed the material"
+        reports.append(report)
+        if args.output:
+            output = args.output if args.seeds is None else args.output / f"seed-{seed}"
+            output.mkdir(exist_ok=True)
+            for name, data in (("commands", rows), ("trace", trace), ("report", report)):
+                (output / f"{name}.json").write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")
+            if material:
+                (output / "material.json").write_text(
+                    json.dumps(material.trace, indent=2, allow_nan=False) + "\n"
+                )
+    report = reports[0] if args.seeds is None else dict(status="passed", runs=reports)
     if args.franka:
         report["franka"] = franka_stress()
     if args.output:
-        args.output.mkdir(parents=True, exist_ok=False)
-        for name, data in (("commands", rows), ("trace", trace), ("report", report)):
-            (args.output / f"{name}.json").write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")
-        if material:
-            (args.output / "material.json").write_text(json.dumps(material.trace, indent=2) + "\n")
+        (args.output / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     print(json.dumps(report, indent=2, allow_nan=False))
 
 

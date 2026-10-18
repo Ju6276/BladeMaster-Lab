@@ -95,7 +95,7 @@ class ExternalToolPort:
             raise ValueError("Coupling duration must be an integer number of material substeps")
         # Validate before mutating state. No interpolation, trajectory limits,
         # local PD controller, or table clamp is applied to the external tool.
-        s._set_cut(cut_index)
+        cut_index = s._set_cut(cut_index)
         held_pose = s.config.tool_substep == "hold"
         samples = 2 if held_pose else steps + 1
         if self.record_trajectory:

@@ -15,7 +15,32 @@ import warp as wp
 
 from blademaster_warp.provenance import git_revision
 from blademaster_warp.solver import Config, Solver
-from blademaster_warp.teleop_input import rotation_increment
+from blademaster_warp.teleop_input import quaternion_product, rotation_increment
+
+
+def cut_code_capacity(config=None, solver=None):
+    """Budget complete ternary digits for code * node_count + node int64 keys."""
+    from blademaster_warp.geometry import grid_cells
+
+    config = solver.config if solver is not None else (Config() if config is None else config)
+    if solver is None:
+        node_count = int(np.prod(grid_cells(config.size, config.grid_spacing) + 1))
+        digits, key_range = 0, node_count
+        while key_range * 3 <= np.iinfo(np.int64).max:
+            digits += 1
+            key_range *= 3
+    else:
+        node_count = solver.node_count
+        digits = solver.max_cut_index + 1
+        key_range = node_count * 3**digits
+    assert key_range - 1 <= np.iinfo(np.int64).max < key_range * 3 - 1
+    return dict(
+        node_count=node_count,
+        digits=digits,
+        max_cut_index=digits - 1,
+        complete_strokes=digits // config.tool_count,
+        max_key=key_range - 1,
+    )
 
 
 class ContactProbe(Solver):
@@ -72,7 +97,10 @@ class ContactProbe(Solver):
         self.extra_histories = zeros((k, self.n)) if k > 1 else None
         self.impulses, self.board = zeros(self.n), zeros(1)
         self.speed, self.work = zeros(1, float), zeros(1, float)
-        self.cut_index, self.max_cut_index = 0, 30
+        self.codes = zeros(self.n, wp.int64)
+        self.topology_dirty = zeros(1, int)
+        self.cut_index = 0
+        self.max_cut_index = cut_code_capacity(config)["max_cut_index"]
 
     def contact(self, poses, velocities, rotations, omegas, cutting=True, cut_index=0):
         self._set_cut(cut_index)
@@ -118,6 +146,121 @@ def canonical_codes(codes, order, strokes):
     return result
 
 
+def capacity_stress(seed=17, device="cpu", tool_count=3, config=None):
+    """Exercise production side assignment and hash registration through the final digit."""
+    from blademaster_warp import material
+    from blademaster_warp.topology import components
+
+    cfg = Config(free_blade=True, tool_count=tool_count) if config is None else config
+    tool_count = cfg.tool_count
+    production = Solver(cfg, device=device) if wp.get_device(device).is_cuda else None
+    capacity = cut_code_capacity(cfg, solver=production)
+    last = capacity["digits"] - tool_count
+    if last < 0:
+        raise ValueError("Not enough cut digits for the tool count")
+    rng = np.random.default_rng(seed)
+    x = np.array([[-0.0007, 0, 0.041], [-0.0006, 0, 0.041], [0.0006, 0, 0.041], [0.0007, 0, 0.041]])
+    x[:, 1] = rng.uniform(-0.0003, 0.0003, len(x))
+    poses = np.tile([0, 0, 0.06], (tool_count, 1))
+    rotations = np.array([rotation_increment(v) for v in rng.uniform(-0.003, 0.003, (tool_count, 3))])
+    velocities = np.tile([0, 0, -0.2], (tool_count, 1))
+    indices = list(range(0, last + 1, tool_count))
+    # A partially filled final group still must allow the highest legal window;
+    # its overlapping digits must retain their original labels.
+    if indices[-1] != last:
+        indices.append(last)
+    finals = []
+    for _ in range(2):
+        probe = ContactProbe(cfg, x, device)
+        assert probe.max_cut_index == capacity["max_cut_index"]
+        assert not probe.codes.numpy().any()
+        assert all(not damage.numpy().any() for damage in probe.tool_damage)
+        old = np.zeros(len(x), dtype=np.int64)
+        for index in indices:
+            for damage in probe.tool_damage:
+                damage.fill_(0.75)
+            previous_index = probe.cut_index
+            probe._set_cut(index)
+            if index != previous_index:
+                assert all(not damage.numpy().any() for damage in probe.tool_damage)
+            else:
+                assert all(np.all(damage.numpy() == 0.75) for damage in probe.tool_damage)
+            probe.contact(poses, velocities, rotations, np.zeros((tool_count, 3)), cut_index=index)
+            probe.assign_sides(index, cutting=False)
+            np.testing.assert_array_equal(probe.codes.numpy(), old)
+            probe.assign_sides(index)
+            codes = probe.codes.numpy()
+            for digit in range(capacity["digits"]):
+                before, after = (old // 3**digit) % 3, (codes // 3**digit) % 3
+                np.testing.assert_array_equal(after[before != 0], before[before != 0])
+            expected = np.array([1, 1, 2, 2], dtype=np.int64) * ((3 ** (index + tool_count) - 1) // 2)
+            np.testing.assert_array_equal(codes, expected)
+            # Relabeling from the opposite side cannot rewrite an existing digit.
+            probe.tool_rot.assign(np.tile([0, 0, 1, 0], (tool_count, 1)))
+            probe.assign_sides(index)
+            np.testing.assert_array_equal(probe.codes.numpy(), codes)
+            old = codes
+        for slot, damage in enumerate(probe.tool_damage):
+            damage.fill_(0.125 * (slot + 1))
+        for invalid in (-1, last + 1, last - 1):
+            before = contact_state(probe)
+            try:
+                probe._set_cut(invalid)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"Invalid cut index accepted: {invalid}")
+            assert probe.cut_index == last
+            np.testing.assert_array_equal(probe.codes.numpy(), old)
+            after = contact_state(probe)
+            for key, value in before.items():
+                np.testing.assert_array_equal(after[key], value)
+        # Include the highest grid node, where an overflow would first appear.
+        nodes = np.tile([0, 1, 2, 3, 4, 5, 6, capacity["node_count"] - 1], (len(x), 1))
+        keys = wp.full(128, -1, dtype=wp.int64, device=device)
+        slots = wp.zeros(nodes.shape, dtype=int, device=device)
+        errors = wp.zeros(1, dtype=int, device=device)
+        wp.launch(
+            material.register,
+            nodes.shape,
+            [
+                wp.array(nodes, dtype=int, device=device),
+                probe.codes,
+                keys,
+                slots,
+                capacity["node_count"],
+                128,
+                errors,
+            ],
+            device=device,
+        )
+        assert not errors.numpy().any()
+        expected_keys = np.array(
+            [
+                [int(code) * capacity["node_count"] + int(node) for node in row]
+                for code, row in zip(old, nodes)
+            ],
+            dtype=np.int64,
+        )
+        np.testing.assert_array_equal(keys.numpy()[slots.numpy()], expected_keys)
+        assert int(expected_keys.max()) == capacity["max_key"]
+        _, sizes = components(nodes, np.ones(nodes.shape), old)
+        np.testing.assert_array_equal(sizes, [2, 2])
+        finals.append(old)
+    np.testing.assert_array_equal(*finals)
+    return dict(
+        capacity=capacity,
+        capacity_source="solver" if production is not None else "reference_grid",
+        sessions=2,
+        cut_indices=indices,
+        labeled_digits=capacity["digits"],
+        highest_code=int(finals[-1].max()),
+        highest_registered_key=int(expected_keys.max()),
+        fixture_component_sizes=sizes.tolist(),
+        rejected_indices=[-1, last + 1, last - 1],
+    )
+
+
 def trajectory_tolerances(config):
     """Absolute bounds in SI units, except strain, quaternion and damage fractions."""
     spacing, dt = config.grid_spacing, config.dt
@@ -143,9 +286,11 @@ def trajectory_tolerances(config):
     )
 
 
-def contact_stress(seed=17, device="cpu", tool_count=3):
+def contact_stress(seed=17, device="cpu", tool_count=3, motion="fixed"):
     if tool_count not in (2, 3):
         raise ValueError("Use two or three simultaneous knives")
+    if motion not in ("fixed", "crossing"):
+        raise ValueError("motion must be fixed or crossing")
     rng = np.random.default_rng(seed)
     cfg = Config(free_blade=True, tool_count=tool_count, cutting_energy=80.0)
     # All knives contact these same particles, with different sliding velocities.
@@ -158,6 +303,10 @@ def contact_stress(seed=17, device="cpu", tool_count=3):
     velocities[:, 2] = -np.linspace(0.25, 0.65, tool_count)
     omegas = rng.uniform(-0.3, 0.3, (tool_count, 3))
     rotations = np.array([rotation_increment(v) for v in rng.uniform(-0.004, 0.004, (tool_count, 3))])
+    if motion == "crossing":
+        velocities[:, 0] = -2 * poses[:, 0] / (9 * cfg.dt)
+        omegas[:, 2] += np.linspace(8.0, -8.0, tool_count)
+        rotations = np.array([rotation_increment([0, 0, a]) for a in np.linspace(-0.08, 0.08, tool_count)])
     baseline = None
     worst_balance = 0.0
     independent_errors = {key: np.zeros(tool_count) for key in ("damage", "friction", "reaction", "torque")}
@@ -170,23 +319,33 @@ def contact_stress(seed=17, device="cpu", tool_count=3):
         trace = []
         for tick in range(12):
             p, v, w = poses.copy(), velocities.copy(), omegas.copy()
+            q = rotations.copy()
+            if motion == "crossing":
+                elapsed = (tick - min(2, max(0, tick - 5))) * cfg.dt
+                p[:, 0] += velocities[:, 0] * elapsed
+                q = np.array(
+                    [
+                        quaternion_product(rotation_increment(omega * elapsed), rotation)
+                        for omega, rotation in zip(omegas, rotations)
+                    ]
+                )
             if tick in (3, 4):
                 p[0, 0] += 0.2  # One knife leaves; its neighbors keep their histories.
             if tick in (6, 7):
                 v[:] = w[:] = 0.0
             if tick >= 8:
-                v[:, :2] *= -1
+                v[:, 1] *= -1
+                if motion == "fixed":
+                    v[:, 0] *= -1
             cutting = tick not in (6, 7)
             cut_index = tool_count if tick >= 9 else 0
             if tick == 9:
                 assert any(d.numpy().any() for d in combined.tool_damage)
                 combined._set_cut(cut_index)
                 assert all(not d.numpy().any() for d in combined.tool_damage)
-            state = combined.contact(p[order], v[order], rotations[order], w[order], cutting, cut_index)
+            state = combined.contact(p[order], v[order], q[order], w[order], cutting, cut_index)
             singles = [
-                probe.contact(
-                    p[i : i + 1], v[i : i + 1], rotations[i : i + 1], w[i : i + 1], cutting, cut_index
-                )
+                probe.contact(p[i : i + 1], v[i : i + 1], q[i : i + 1], w[i : i + 1], cutting, cut_index)
                 for i, probe in enumerate(independent)
             ]
             for key in ("damage", "friction", "reaction", "torque"):
@@ -238,8 +397,20 @@ def contact_stress(seed=17, device="cpu", tool_count=3):
                         atol=1e-9,
                         err_msg=f"permutation {permutation}, tick {tick}, {key}",
                     )
+    crossed_pairs = sum(
+        (poses[a, 0] - poses[b, 0]) * (p[a, 0] - p[b, 0]) < 0
+        for a in range(tool_count)
+        for b in range(a + 1, tool_count)
+    )
+    rotation_change = float(np.max(2 * np.arccos(np.clip(abs(np.sum(q * rotations, axis=1)), 0, 1))))
+    if motion == "crossing":
+        assert crossed_pairs == tool_count * (tool_count - 1) // 2
+        assert rotation_change > 0.03
     return dict(
         config=asdict(cfg),
+        motion=motion,
+        crossed_tool_pairs=int(crossed_pairs),
+        max_rotation_change_rad=rotation_change,
         permutations=len(list(permutations(range(tool_count)))),
         contact_steps=12,
         shared_damaged_particles=common,
@@ -366,23 +537,31 @@ def trajectory_stress(seed=17, device="cuda:0", steps=120, tool_count=3):
     )
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--seed", type=int, default=17)
+    seeds = parser.add_mutually_exclusive_group()
+    seeds.add_argument("--seed", type=int, default=17)
+    seeds.add_argument("--seeds", type=int, nargs="+")
     parser.add_argument("--tools", type=int, choices=(2, 3), default=3)
     parser.add_argument("--steps", type=int, default=120)
     parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
-    report = dict(
-        revision=git_revision(),
-        seed=args.seed,
-        device=args.device,
-        contacts=contact_stress(args.seed, args.device, args.tools),
-    )
-    if wp.get_device(args.device).is_cuda:
-        report["trajectories"] = trajectory_stress(args.seed, args.device, args.steps, args.tools)
-    report["status"] = "passed"
+    args = parser.parse_args(argv)
+    reports = []
+    for seed in args.seeds if args.seeds is not None else [args.seed]:
+        report = dict(
+            revision=git_revision(),
+            seed=seed,
+            device=args.device,
+            contacts=contact_stress(seed, args.device, args.tools),
+            crossing_contacts=contact_stress(seed, args.device, args.tools, motion="crossing"),
+            capacity=capacity_stress(seed, args.device, args.tools),
+        )
+        if wp.get_device(args.device).is_cuda:
+            report["trajectories"] = trajectory_stress(seed, args.device, args.steps, args.tools)
+        report["status"] = "passed"
+        reports.append(report)
+    report = reports[0] if args.seeds is None else dict(status="passed", runs=reports)
     result = json.dumps(report, indent=2, allow_nan=False)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

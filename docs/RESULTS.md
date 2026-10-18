@@ -26,6 +26,8 @@
 
 `python -m blademaster_warp.franka_run --motion sequence --controller libfranka --stiffness 1000 --material paper-banana --duration 30 --surface --surface-embedding cuda --surface-ccd cuda --record --output <目录>`：21.037 / 34.478 s，**0.610×**；四块 778 / 294 / 236 / 144，退刀后保持，任务成功。峰值反力 4.794 N，min det F=0.9910。两组 GPU 错误、MuJoCo 警告均为零。配置、轨迹、偏移/斜切探针与测试日志在 `runs/sampling_regression_255d453_20261018/`。
 
+**恢复设置的 3 mm 复测（`ca585f7`，干净提交）。** `python -m scripts.check_cut_release --spacing .003 --surface --output runs/sampling_regression_255d453_20261018/release3_regular`：规则采样、40 μs、0.75 mm 刀距、1.5 mm 表面格距；完成切透、保持和退刀，两块各 5,760 粒子。峰值反力 0.541 N，切透窗口最大片块平移速度 13.2 mm/s、横向速度 6.4 mm/s；左右横移 −0.520 / +0.545 mm，min det F=0.9872，GPU 错误和 MuJoCo 警告均为零。5.4 s 仿真耗时 37.009 s（0.146×，含表面和录制）；测试与用户的 6 mm 在线服务共用 GPU，独占计时另测。
+
 ![相同 6 mm 网格和 Franka 输入：旧扰动设置与恢复规则采样](media/cut_release_sampling_6mm.png)
 
 ## 2026-10-18 旧随机采样配置的 6 / 3 mm 对照

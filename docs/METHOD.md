@@ -14,6 +14,7 @@
 | §III-B | PIC/FLIP G2P + MUSL 重映射 | `material.g2p_remap`，`material.update_F_plastic` |
 | 式 10–13 | 粒子间接触与切向历史 | `contact.pair_at`，`contact.friction` |
 | 式 14–16 | 刀具接触、有效质量、反力 | `contact.rigid_at` |
+| 网格刀面约束 | 外部刀位保持期间，补足网格传输后的刀面法向冲量 | `blade_constraint.py`，`Solver._material_transfers` |
 | §III-F | linked-volume + 局部 dual contouring 表面 | `surface.py`，`surface_gpu.py`，`surface_ccd_gpu.py` |
 | §III-G | 紧凑活动网格；外部刚体接口，区间平均 wrench | `Solver(grid_storage='compact')`，`coupling.ExternalToolPort` |
 
@@ -42,6 +43,14 @@
 
 切割功阈值只通过 \(G_c(1-\zeta)/\zeta\) 使用切割能和锋利度。保持这个组合不变的参数对产生相同阈值；力曲线标定时固定其中一个，或用额外测量约束二者。损伤影响刃口接触分量，几何侧标签独立决定网格分离。
 
+## 外部刀位保持时的网格刀面约束
+
+`external_tool=True, tool_substep="hold"` 在原有接触和弹性冲量完成 P2G 后、G2P 推进位置前检查刀身两侧平面。接触响应使用本步节点质量及相容场交换：`W = Bᵀ M⁻¹ C B`，其中 B 将各接触的法向冲量按粒子权重散到逻辑节点，C 是现有的场间动量交换。所有接触同时迭代，避免把单粒子的对角有效质量直接放大后产生过冲。补充冲量的反向合力和力矩返回原有机器人耦合接口。
+
+刀位在这些子步中保持不动，因此补充约束使用实际网格速度和当前刀面；原有罚接触仍使用机器人提供的速度与移动性矩阵。刀身接触保存进入侧，绕过有限边缘后释放侧别。已重叠的粒子只阻止继续向内运动，不增加位置回弹。刃口斜面、损伤功、摩擦、粒子对接触和表面计算保持原实现；自由刀和 `predict` 模式仍走原有接触路径。
+
+GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384 次；未收敛时耦合接口报错。无约束违反的子步跳过迭代。`scripts.check_blade_penetration` 用保存的穿刀状态检查 1、0.5、0.25 ms 下各 3 ms 的双向穿越；`--graph` 同时核对 CUDA 图执行。
+
 ## Maxwell 黏弹性
 
 `Config.maxwell_tau` \(\tau\) > 0 且 `maxwell_fraction` \(\beta\) > 0 时启用（广义标准线性固体）。弹性变形 \(f = F F_p^{-1}\) 分两支：平衡支为共旋弹性，\(\mu_\infty = (1-\beta)\mu\)、\(\lambda + \tfrac23\beta\mu\)；Maxwell 支 \(f_m = f F_v^{-1}\)，Kirchhoff 应力 \(2\beta\mu\,\mathrm{dev}\log V_m\)。两支之和的小应变剪切、体积模量与关闭时相同，长期剪切模量为 \((1-\beta)\mu\)，体积部分不松弛。每步在塑性投影之后把 \(f_m\) 的偏 Hencky 应变乘以 \(e^{-\Delta t/\tau}\)（应变保持不变时是精确解，对任意 \(\Delta t/\tau\) 稳定；\(\tau \ll \Delta t\) 时该支每步归零），\(F_v\) 按等容增量更新。每步增量 \((\Delta t/\tau)\,\varepsilon\) 远小于 \(F_v\) 在 float32 下的分辨率，所以 \(F_v - I\) 存为 float64。屈服仍按瞬时模量的 Hencky 应变判定，加载慢于 \(\tau\) 时流动应力为 \((1-\beta)\sigma_y\)。关闭时调用原来的 kernel。
@@ -51,6 +60,7 @@
 | 项 | 论文 | 这里 |
 |---|---|---|
 | 粒子位置更新 | 未写明 | 用插值网格速度推进（de Vaucorbeil 2020 TLMPM 式 13），速度用 PIC/FLIP |
+| 刀身穿透处理 | 粒子罚接触 | 外部 `hold` 模式补充网格刀面法向约束，见上节 |
 | 接触刚度 | 每步常数 \(s_n\) | 默认按参考步长固定物理刚度，见上节 |
 | 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |
 | 耦合区间内的刀具 | 位姿与速度保持不变 | 默认相同；`tool_substep='predict'` 用 6×6 移动性矩阵逐子步更新刀速并推进位姿 |

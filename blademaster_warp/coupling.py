@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 from . import tool
 from .material import validate_interval
+from .blade_constraint import store_residual
 
 
 def vector(value, length, name):
@@ -77,7 +78,7 @@ class ExternalToolPort:
             raise ValueError("ExternalToolPort requires Config(external_tool=True)")
         self.solver = solver
         self.packed = wp.zeros(49, dtype=float, device=solver.device)
-        self.result = wp.zeros(9, dtype=float, device=solver.device)
+        self.result = wp.zeros(10, dtype=float, device=solver.device)
         self.record_trajectory = record_trajectory
         self.trajectory = None
         self.trajectory_times = None
@@ -100,7 +101,7 @@ class ExternalToolPort:
         samples = 2 if held_pose else steps + 1
         if self.record_trajectory:
             if steps not in self._results:
-                self._results[steps] = wp.zeros(9 + 7 * samples, dtype=float, device=s.device)
+                self._results[steps] = wp.zeros(10 + 7 * samples, dtype=float, device=s.device)
             self.result = self._results[steps]
         self.packed.assign(
             np.concatenate(
@@ -131,6 +132,8 @@ class ExternalToolPort:
             (validate_interval, s.n, [s.x, s.v, s.F, s.errors]),
             (tool.store_interval, 1, [s.interval_impulse, s.interval_angular_impulse, s.errors, self.result]),
         ]
+        if s.blade_constraint is not None:
+            finish.append((store_residual, 1, [s.blade_constraint.max_violation, self.result]))
         before = [load]
         sample = None
         if self.record_trajectory:
@@ -173,7 +176,7 @@ class ExternalToolPort:
         self.timing_s["completion_and_readback"] += time.perf_counter() - readback_begin
         impulse, angular, errors = out[:3], out[3:6], out[6:9]
         if self.record_trajectory:
-            self.trajectory = out[9:].reshape(samples, 7)
+            self.trajectory = out[9 : 9 + 7 * samples].reshape(samples, 7)
             self.trajectory_times = np.linspace(0.0, duration_s, samples)
         (px, py, pz), (ix, iy, iz) = state.position, impulse
         angular -= (py * iz - pz * iy, pz * ix - px * iz, px * iy - py * ix)
@@ -181,4 +184,6 @@ class ExternalToolPort:
             raise RuntimeError(
                 f"Invalid material coupling interval: GPU errors {errors.astype(int).tolist()}"
             )
+        if not np.isfinite(out[-1]) or out[-1] > 1.0e-6:
+            raise RuntimeError(f"Blade grid contact did not converge: inward residual {out[-1]:.6g} m/s")
         return Reaction(float(duration_s), impulse, angular, state.position.copy())

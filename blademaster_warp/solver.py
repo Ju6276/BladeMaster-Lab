@@ -6,6 +6,7 @@ import numpy as np
 import warp as wp
 from . import material as m, contact as c, tool
 from .geometry import points, stencil
+from .blade_constraint import BladeConstraint
 
 
 @dataclass(frozen=True)
@@ -310,6 +311,9 @@ class Solver:
         self._batches = {}
         self.graph_build_s = 0.0
         self.refresh_stress()
+        self.blade_constraint = (
+            BladeConstraint(self) if cfg.external_tool and cfg.tool_substep == "hold" else None
+        )
 
     def refresh_stress(self):
         """Recompute the stored stress; needed after writing F, Fp or viscous from the host."""
@@ -469,6 +473,8 @@ class Solver:
                     self.node_count,
                 ],
             )
+        if self.blade_constraint is not None:
+            self.blade_constraint.solve()
         self.launch(
             m.g2p_remap,
             self.n,

@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <numeric>
 #include <stdexcept>
+#include <sstream>
 #include <vector>
 #include "cpu_mls_mpm_solver.h"
 #include "mls_mpm_algorithm.h"
@@ -80,6 +81,19 @@ int main(int argc, char **argv) {
         float lo[3], hi[3];
         for (auto &value : lo) input >> value;
         for (auto &value : hi) input >> value;
+        int firstCutFrame;
+        input >> firstCutFrame;
+        if (firstCutFrame <= 0 || firstCutFrame >= frames)
+            throw std::runtime_error("Invalid first cut completion frame");
+        int gridNodes[3];
+        float safeLo[3], safeHi[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            // Match upstream's float arithmetic, including integer truncation.
+            gridNodes[axis] = int((hi[axis] - lo[axis]) / dx + 1.0f);
+            // The quadratic stencil must not touch either constrained node layer.
+            safeLo[axis] = lo[axis] + 2.5f * dx;
+            safeHi[axis] = lo[axis] + (gridNodes[axis] - 3.5f) * dx;
+        }
         std::vector<float4> positions(n), materials(n);
         std::vector<Vec3f> velocities(n);
         std::vector<ParticleMaterialType> materialTypes(n, ParticleMaterialType::eCoRotational);
@@ -92,7 +106,6 @@ int main(int argc, char **argv) {
             input >> positions[p].x >> positions[p].y >> positions[p].z;
             positions[p].w = mass;
             materials[p] = make_float4(lambda, mu, 0, 0);
-            left[p] = positions[p].x < cutX;
         }
         ParticleData particles(n);
         particles.positionMass = positions.data();
@@ -150,16 +163,31 @@ int main(int argc, char **argv) {
         solver.initialize();
         solver.computeInitialData(n, indices.data());
 
+        float minimumMargin = std::numeric_limits<float>::infinity();
+        auto guard = [&](int frame, int step) {
+            for (int p = 0; p < n; ++p) {
+                const float row[3] = {positions[p].x, positions[p].y, positions[p].z};
+                for (int axis = 0; axis < 3; ++axis) {
+                    if (!std::isfinite(row[axis])) throw std::runtime_error("Nonfinite particle state");
+                    float margin = std::min(row[axis] - safeLo[axis], safeHi[axis] - row[axis]);
+                    minimumMargin = std::min(minimumMargin, margin);
+                    if (margin <= 0) {
+                        std::ostringstream error;
+                        error << "Particle reached grid support boundary guard frame=" << frame
+                              << " substep=" << step << " particle=" << p << " axis=" << axis
+                              << " position=" << row[axis] << " safe=(" << safeLo[axis]
+                              << ',' << safeHi[axis] << ')';
+                        throw std::runtime_error(error.str());
+                    }
+                }
+            }
+        };
         auto save = [&]() {
             for (int p = 0; p < n; ++p) {
                 float row[6] = {positions[p].x, positions[p].y, positions[p].z,
                                 velocities[p].x(), velocities[p].y(), velocities[p].z()};
                 for (float value : row)
                     if (!std::isfinite(value)) throw std::runtime_error("Nonfinite particle state");
-                // Detect approach to the grid boundary before the upstream clamp.
-                for (int axis = 0; axis < 3; ++axis)
-                    if (row[axis] <= lo[axis] + dx || row[axis] >= hi[axis] - dx)
-                        throw std::runtime_error("Particle reached grid boundary guard");
                 output.write(reinterpret_cast<char *>(row), sizeof(row));
             }
             output.write(reinterpret_cast<char *>(&force[0]), 3 * sizeof(float));
@@ -168,6 +196,7 @@ int main(int argc, char **argv) {
             float boardImpulse[3] = {-force[1].x, -force[1].y, -force[1].z};
             output.write(reinterpret_cast<char *>(boardImpulse), sizeof(boardImpulse));
         };
+        guard(0, 0);
         save();
         int kicks = 0;
         for (int frame = 0; frame < frames; ++frame) {
@@ -186,10 +215,21 @@ int main(int argc, char **argv) {
                 }
             }
             for (int k = 0; k < 2; ++k) force[k] = torque[k] = make_float4(0, 0, 0, 0);
-            for (int step = 0; step < substeps; ++step) solver.step();
+            for (int step = 0; step < substeps; ++step) {
+                solver.step();
+                guard(frame + 1, step + 1);
+            }
+            if (frame + 1 == firstCutFrame)
+                for (int p = 0; p < n; ++p) left[p] = positions[p].x < cutX;
             save();
         }
         if (kicks != 1) throw std::runtime_error("Missing initial velocity assignment");
+        std::cout << std::setprecision(10) << "{\"grid_nodes\":[" << gridNodes[0] << ','
+                  << gridNodes[1] << ',' << gridNodes[2] << "],\"safe_lower_m\":["
+                  << safeLo[0] << ',' << safeLo[1] << ',' << safeLo[2]
+                  << "],\"safe_upper_m\":[" << safeHi[0] << ',' << safeHi[1] << ',' << safeHi[2]
+                  << "],\"minimum_support_margin_m\":" << minimumMargin
+                  << ",\"checked_every_substep\":true}\n";
         return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

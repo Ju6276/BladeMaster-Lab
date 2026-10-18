@@ -18,6 +18,7 @@ from .fig5 import (
     protocol,
     reference_particles,
     half_depth_gap,
+    moving_piece_ids,
 )
 from .provenance import git_revision
 
@@ -69,6 +70,8 @@ def run_blademaster(cfg, output, device="cuda:0", graph=True):
     start = time.perf_counter()
     for i, (_, p, v, cut) in enumerate(cmds):
         if i == withdrawn_index:
+            pieces = moving_piece_ids(cfg, positions)
+            solver.fig5_pieces.assign(pieces.astype(np.int32))
             before = solver.v.numpy().copy()
             solver.v.assign(initial_left_velocity(before, pieces, cfg.left_velocity))
             after = solver.v.numpy().copy()
@@ -96,6 +99,7 @@ def run_blademaster(cfg, output, device="cuda:0", graph=True):
         "pair_impulse_by_piece_ns": pair_impulses,
         "velocity_before_kick": before,
         "velocity_after_kick": after,
+        "measurement_piece_ids": pieces,
         "topology_event_names": np.array(list(protocol(cfg)[1])),
         "component_labels_by_event": np.array(event_labels),
         "cut_codes_by_event": np.array(event_codes),
@@ -179,6 +183,8 @@ def compare(blademaster, cressim):
     cr_fixture = asdict(Fig5Config(**cr["fixture"]))
     bm_fixture.pop("cressim_mass_unit_kg")
     mass_unit = cr_fixture.pop("cressim_mass_unit_kg")
+    bm_fixture.pop("cressim_domain_margin")
+    domain_margin = cr_fixture.pop("cressim_domain_margin")
     if bm_fixture != cr_fixture or bm["protocol"] != cr["protocol"]:
         raise ValueError("Comparison requires identical fixture and trajectory configurations")
     statuses = [result["fixture_validity"]["status"] for result in (bm_result, cr_result)]
@@ -187,11 +193,27 @@ def compare(blademaster, cressim):
         comparison_status = "invalid"
     elif statuses == ["matched", "matched"]:
         comparison_status = "matched"
+    material_status = "invalid"
+    if (
+        bm_result["actual_partition"]["status"] == "matched"
+        and cr_result["actual_partition"]["status"] in ("matched", "geometric")
+        and all(
+            result["middle_volume"]["valid_for_material_region_volume"] for result in (bm_result, cr_result)
+        )
+        and all(
+            volume["valid"]
+            for result in (bm_result, cr_result)
+            for volume in result["full_material_volume"]["after_cuts"].values()
+        )
+    ):
+        material_status = "matched"
     return {
         "fixture": bm_fixture,
         "cressim_mass_unit_kg": mass_unit,
+        "cressim_domain_margin_m": domain_margin,
         "cressim_fix_corotated_dispatch": cr["source_build"].get("fix_corotated_dispatch", False),
         "fixture_comparison_status": comparison_status,
+        "material_measurement_comparison_status": material_status,
         "blademaster": bm_result,
         "cressim_cpu": cr_result,
         "published_fig5": PAPER_RESULTS,

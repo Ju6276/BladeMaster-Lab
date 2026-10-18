@@ -422,7 +422,7 @@ def test_build_rejects_changed_header_mode_and_executable_identity(tmp_path, cor
 )
 @pytest.mark.parametrize("mass_unit", [1.0, 0.001])
 def test_cressim_executes_complete_protocol(cfg, tmp_path, mass_unit):
-    cfg = replace(cfg, dt=0.00025, cressim_mass_unit_kg=mass_unit)
+    cfg = replace(cfg, dt=0.00025, cressim_mass_unit_kg=mass_unit, cressim_domain_margin=0.08)
     result = run(cfg, tmp_path / "original", "cressim_cpu", build_dir=os.environ["FIG5_CRESSIM_BUILD"])
     assert result["initial_velocity_assignment"]["changed_middle_right_particles"] == 0
     assert result["first_half_depth_opening"]["pairs"] == 8
@@ -440,6 +440,9 @@ def test_cressim_executes_complete_protocol(cfg, tmp_path, mass_unit):
     )
     assert meta["solver_config"]["stress_function"] == expected
     assert meta["solver_config"]["grid_mass_cutoff_kg"] == pytest.approx(1e-4 * mass_unit)
+    guard = meta["solver_config"]["grid_support_guard"]
+    assert guard["checked_every_substep"]
+    assert guard["minimum_support_margin_m"] > 0
     header = (path / "cressim_input.txt").read_text().splitlines()[0].split()
     assert float(header[5]) == pytest.approx(cfg.density * (cfg.grid_spacing / 2) ** 3 / mass_unit)
     assert float(header[6]) == pytest.approx(cfg.young_modulus / mass_unit)

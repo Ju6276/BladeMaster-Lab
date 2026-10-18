@@ -34,6 +34,7 @@ class Fig5Config:
     cressim_smooth_distance: float = 0.0
     cressim_drag: float = 1.0
     cressim_mass_unit_kg: float = 1.0
+    cressim_domain_margin: float = 0.0
 
     def __post_init__(self):
         values = np.concatenate([np.atleast_1d(v) for v in asdict(self).values()])
@@ -63,7 +64,10 @@ class Fig5Config:
             raise ValueError("Cut planes must be ordered inside the block")
         if self.blade_half_length < self.size[1] / 2 or 2 * self.blade_half_height < self.size[2] + 0.002:
             raise ValueError("Blade must span the block width and full cut depth")
-        if min(self.friction, self.cressim_smooth_distance, self.cressim_drag) < 0:
+        if (
+            min(self.friction, self.cressim_smooth_distance, self.cressim_drag, self.cressim_domain_margin)
+            < 0
+        ):
             raise ValueError("Negative contact parameter")
         if self.friction != 0 or self.cressim_drag != 1:
             raise ValueError("The post-withdrawal momentum test requires friction=0 and cressim_drag=1")
@@ -92,7 +96,7 @@ def piece_ids(reference, cuts):
 
 
 def initial_left_velocity(velocity, pieces, speed):
-    """Assign the left reference region's velocity; preserve all other particles bitwise."""
+    """Assign the selected left material region; preserve other velocities bitwise."""
     result = np.array(velocity, dtype=np.result_type(np.asarray(velocity).dtype, np.float32), copy=True)
     if (
         result.shape != (len(pieces), 3)
@@ -149,6 +153,24 @@ def commands(cfg):
     return result
 
 
+def cut_completion_indices(cfg):
+    rows, _ = protocol(cfg)
+    return [round(max(t for t, _, cut in rows if cut == i) / cfg.interval) for i in range(2)]
+
+
+def moving_piece_ids(cfg, position):
+    """Freeze each cut's material membership in the deformed, fully inserted pose.
+
+    The first cut's left region stays fixed while the second cut subdivides the
+    remainder. Mechanical component equality is checked independently.
+    """
+    first, second = cut_completion_indices(cfg)
+    x = np.asarray(position)
+    pieces = np.where(x[first, :, 0] < cfg.cut_x[0], 0, 1)
+    pieces[(pieces == 1) & (x[second, :, 0] >= cfg.cut_x[1])] = 2
+    return pieces
+
+
 def _lattice(reference):
     ref = np.asarray(reference, dtype=float)
     if ref.ndim != 2 or ref.shape[1] != 3 or not np.isfinite(ref).all():
@@ -164,7 +186,7 @@ def _lattice(reference):
     return axes, grid
 
 
-def middle_tetrahedra(reference, cuts):
+def middle_tetrahedra(reference, cuts, *, pieces=None):
     """Six tetrahedra per particle-lattice cell wholly within the middle piece."""
     _, grid = _lattice(reference)
     base = np.indices(np.asarray(grid.shape) - 1).reshape(3, -1).T
@@ -177,7 +199,8 @@ def middle_tetrahedra(reference, cuts):
         coords = base[:, None, :] + offsets
         tets.append(grid[coords[..., 0], coords[..., 1], coords[..., 2]])
     tets = np.concatenate(tets)
-    tets = tets[np.all(piece_ids(reference, cuts)[tets] == 1, axis=1)]
+    pieces = piece_ids(reference, cuts) if pieces is None else np.asarray(pieces)
+    tets = tets[np.all(pieces[tets] == 1, axis=1)]
     if len(tets) == 0:
         raise ValueError("Middle piece needs at least two particle columns")
     volumes = signed_tetra_volumes(reference, tets)
@@ -309,29 +332,52 @@ def evaluate(cfg, data, *, component_sizes_by_event=None):
         raise ValueError("Initial state differs from the stationary fixture")
     events = protocol(cfg)[1]
     idx = {k: round(t / cfg.interval) for k, t in events.items()}
+    from .fig5_metrics import measure_actual_partition
+
+    actual_pieces, actual_partition, full_volume = measure_actual_partition(cfg, data)
     pieces = piece_ids(ref, cfg.cut_x)
-    tets = middle_tetrahedra(ref, cfg.cut_x)
+    moving_membership = "measurement_piece_ids" in data
+    if moving_membership:
+        measured = np.asarray(data["measurement_piece_ids"])
+        if measured.dtype.kind not in "iu" or not np.array_equal(measured, actual_pieces):
+            raise ValueError("Saved material partition differs from moving cut membership")
+        pieces = actual_pieces
+    try:
+        tets = middle_tetrahedra(ref, cfg.cut_x, pieces=pieces)
+    except ValueError:
+        tets = np.empty((0, 4), dtype=int)
     topology = topology_diagnostics(data, pieces, tets, events, component_sizes_by_event)
     cut_topology = topology["events"].get("both_cuts_complete", {})
     valid_volume = bool(
-        cut_topology.get("reference_pieces_match_components", False)
+        len(tets)
+        and cut_topology.get("reference_pieces_match_components", False)
         and cut_topology["middle_tetrahedra_crossing_components"] == 0
         and cut_topology["middle_tetrahedra_crossing_cut_codes"] == 0
     )
     rest = signed_tetra_volumes(ref, tets)
     volume = signed_tetra_volumes(x[idx["both_cuts_complete"]], tets)
+    topology_valid_volume = valid_volume
+    positive_tets = bool(len(tets) and np.all(volume > 0))
+    valid_volume &= positive_tets
+    material_volume_valid = bool(
+        moving_membership and actual_partition["status"] != "invalid" and positive_tets
+    )
+    if moving_membership:
+        valid_volume &= material_volume_valid
+    full_reference_volume = float((pieces == 1).sum() * (cfg.grid_spacing / 2) ** 3)
+    coverage = float(rest.sum() / full_reference_volume) if full_reference_volume else 0.0
     displacement = x[-1] - x[idx["withdrawn"]]
     motions = {}
     for p, name in enumerate(("left", "middle", "right")):
         d = displacement[pieces == p]
         motions[name] = {
-            "membership": "fixed reference region",
+            "membership": "moving cut material region" if moving_membership else "fixed reference region",
             "particles": len(d),
-            "com_displacement_before_kick_m": (x[idx["withdrawn"], pieces == p] - ref[pieces == p])
-            .mean(0)
-            .tolist(),
-            "com_displacement_m": d.mean(0).tolist(),
-            "mean_displacement_norm_m": float(np.linalg.norm(d, axis=1).mean()),
+            "com_displacement_before_kick_m": (
+                (x[idx["withdrawn"], pieces == p] - ref[pieces == p]).mean(0).tolist() if len(d) else None
+            ),
+            "com_displacement_m": d.mean(0).tolist() if len(d) else None,
+            "mean_displacement_norm_m": float(np.linalg.norm(d, axis=1).mean()) if len(d) else None,
         }
     before = np.asarray(data["velocity_before_kick"])
     after = np.asarray(data["velocity_after_kick"])
@@ -357,34 +403,50 @@ def evaluate(cfg, data, *, component_sizes_by_event=None):
     momentum_closed = bool(np.linalg.norm(residual[:2]) <= tolerance)
     clear = contact_clear and momentum_closed and topology["status"] == "matched"
     for p, name in enumerate(("left", "middle", "right")):
+        selected = pieces == p
+        ballistic = after[selected].astype(float).mean(0) * cfg.manipulation_s if selected.any() else None
+        motions[name]["ballistic_displacement_from_kick_state_m"] = (
+            ballistic.tolist() if selected.any() else None
+        )
+        motions[name]["displacement_beyond_ballistic_m"] = (
+            (displacement[selected].mean(0) - ballistic).tolist() if selected.any() else None
+        )
         change = mass * (v[-1, pieces == p].astype(float) - after[pieces == p]).sum(0)
         pair = pair_moving[:, p].sum(0)
         motions[name]["momentum_change_ns"] = change.tolist()
         motions[name]["explicit_pair_contact_impulse_ns"] = pair.tolist()
         motions[name]["material_exchange_horizontal_ns"] = change[:2].tolist() if clear else None
         motions[name]["transfer_residual_horizontal_ns"] = (change[:2] - pair[:2]).tolist() if clear else None
-    return {
+    result = {
         "events_s": events,
         "fixture_validity": topology,
+        "actual_partition": actual_partition,
+        "full_material_volume": full_volume,
         "first_half_depth_opening": half_depth_gap(
             ref, x[idx["first_half_depth"]], cfg.cut_x[0], cfg.size[2] / 2
         ),
         "middle_volume": {
             "valid_for_fragment_volume": valid_volume,
+            "valid_for_material_region_volume": material_volume_valid,
             "reference_m3": float(rest.sum()),
-            "after_cuts_m3": float(np.abs(volume).sum()) if valid_volume else None,
-            "contraction_percent": (
-                float(100 * (1 - np.abs(volume).sum() / rest.sum())) if valid_volume else None
+            "after_cuts_m3": float(volume.sum()) if valid_volume else None,
+            "contraction_percent": (float(100 * (1 - volume.sum() / rest.sum())) if valid_volume else None),
+            "material_region_after_cuts_m3": float(volume.sum()) if material_volume_valid else None,
+            "material_region_contraction_percent": (
+                float(100 * (1 - volume.sum() / rest.sum())) if material_volume_valid else None
             ),
-            "inverted_or_degenerate_tetrahedra": int((volume <= 0).sum()) if valid_volume else None,
+            "inverted_or_degenerate_tetrahedra": int((volume <= 0).sum()) if topology_valid_volume else None,
             "reference_lattice_after_cuts_m3": float(np.abs(volume).sum()),
-            "reference_lattice_contraction_percent": float(100 * (1 - np.abs(volume).sum() / rest.sum())),
-            "reference_lattice_nonpositive_tetrahedra": int((volume <= 0).sum()),
-            "reference_region_coverage_fraction": float(
-                rest.sum() / ((cfg.cut_x[1] - cfg.cut_x[0]) * cfg.size[1] * cfg.size[2])
+            "reference_lattice_contraction_percent": (
+                float(100 * (1 - np.abs(volume).sum() / rest.sum())) if len(tets) else None
             ),
+            "reference_lattice_nonpositive_tetrahedra": int((volume <= 0).sum()),
+            "full_reference_material_m3": full_reference_volume,
+            "reference_region_coverage_fraction": coverage,
+            "reference_coverage_fraction": coverage,
             "tetrahedra": len(tets),
-            "definition": "interior reference particle-lattice tetrahedra",
+            "definition": "interior particle-lattice tetrahedra wholly within the selected material region",
+            "membership": "moving cut material region" if moving_membership else "fixed reference region",
         },
         "manipulation": motions,
         "horizontal_exchange_isolated": clear,
@@ -415,3 +477,4 @@ def evaluate(cfg, data, *, component_sizes_by_event=None):
             "after_withdrawal_sum_interval_norms_ns": float(np.linalg.norm(board_moving, axis=1).sum()),
         },
     }
+    return result

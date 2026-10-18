@@ -35,6 +35,11 @@ def main(argv=None):
     runner.add_argument("--dt", type=float)
     runner.add_argument("--cressim-build")
     runner.add_argument(
+        "--cressim-domain-margin",
+        type=float,
+        help="Minimum domain padding in metres; 0 retains travel plus four-cell automatic padding",
+    )
+    runner.add_argument(
         "--cressim-mass-unit-kg",
         type=float,
         help="Kilograms per CRESSim internal mass unit (default 1); metre/second unchanged",
@@ -67,6 +72,8 @@ def main(argv=None):
             values["dt"] = args.dt
         if args.cressim_mass_unit_kg is not None:
             values["cressim_mass_unit_kg"] = args.cressim_mass_unit_kg
+        if args.cressim_domain_margin is not None:
+            values["cressim_domain_margin"] = args.cressim_domain_margin
         result = run(
             Fig5Config(**values),
             args.output,

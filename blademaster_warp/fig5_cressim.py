@@ -9,7 +9,14 @@ import subprocess
 import time
 import numpy as np
 
-from .fig5 import commands, integer_steps, protocol, reference_particles
+from .fig5 import (
+    commands,
+    cut_completion_indices,
+    integer_steps,
+    moving_piece_ids,
+    protocol,
+    reference_particles,
+)
 from .provenance import git_revision
 
 
@@ -191,8 +198,10 @@ def run(cfg, output, build_dir):
     cmds = commands(cfg)
     events = protocol(cfg)[1]
     withdrawn_index = round(events["withdrawn"] / cfg.interval)
-    # Include expected leftward travel plus four grid cells around the body.
-    margin = max(4 * cfg.grid_spacing, abs(cfg.left_velocity) * cfg.manipulation_s + 4 * cfg.grid_spacing)
+    # Expansion during cutting can exceed the prescribed post-cut translation.
+    margin = max(
+        cfg.cressim_domain_margin, abs(cfg.left_velocity) * cfg.manipulation_s + 4 * cfg.grid_spacing
+    )
     lower = np.floor((ref.min(0) - margin) / cfg.grid_spacing) * cfg.grid_spacing
     upper = np.ceil((ref.max(0) + margin) / cfg.grid_spacing) * cfg.grid_spacing
     input_path, raw_path, kick_path = [
@@ -218,6 +227,7 @@ def run(cfg, output, build_dir):
             cfg.left_velocity,
             *lower,
             *upper,
+            cut_completion_indices(cfg)[0],
         ]
         stream.write(" ".join(map(str, header)) + "\n")
         np.savetxt(stream, ref, fmt="%.17g")
@@ -241,6 +251,7 @@ def run(cfg, output, build_dir):
         "pair_impulse_by_piece_ns": np.zeros((len(cmds) + 1, 3, 3)),
         "velocity_before_kick": particles[withdrawn_index, :, 3:].copy(),
         "velocity_after_kick": np.fromfile(kick_path, dtype=np.float32).reshape(len(ref), 3),
+        "measurement_piece_ids": moving_piece_ids(cfg, particles[..., :3]),
     }
     meta = {
         "backend": "cressim_cpu",
@@ -260,6 +271,7 @@ def run(cfg, output, build_dir):
             ),
             "grid_lower_m": lower.tolist(),
             "grid_upper_m": upper.tolist(),
+            "grid_support_guard": json.loads((output / "cressim_stdout.log").read_text()),
             "contact_model": "eKinematic",
             "blade_geometry": "eQuadSlicer",
             "shape_type": "eDynamic",

@@ -51,10 +51,15 @@ def material_config(args):
         for name in ("dt", "cutting_energy", "maxwell_tau", "maxwell_fraction")
         if getattr(args, name, None) is not None
     }
-    if args.spacing is not None:
-        overrides["grid_spacing"] = args.spacing
+    spacing = args.spacing
+    if spacing is None and args.material == "paper-banana" and getattr(args, "motion", None) == "teleop":
+        # The 6 mm grid over-wedges the banana and releases that compression at
+        # breakthrough. Use the finer grid for arbitrary operator-driven cuts.
+        spacing = 0.003
+    if spacing is not None:
+        overrides["grid_spacing"] = spacing
         if args.material == "paper-banana" and args.dt is None:
-            overrides["dt"] = banana_dt(cfg, args.spacing, args.interval)
+            overrides["dt"] = banana_dt(cfg, spacing, args.interval)
     if getattr(args, "sampling_seed", None) is not None:
         overrides["sampling_seed"] = args.sampling_seed
     if getattr(args, "contact_scaling", "physical") == "per-step":
@@ -813,7 +818,12 @@ def parser():
         default="hold",
         help="Tool state within a coupling interval: held (paper) or mobility-predicted",
     )
-    p.add_argument("--spacing", type=float, default=None)
+    p.add_argument(
+        "--spacing",
+        type=float,
+        default=None,
+        help="Material grid spacing in meters: banana teleop defaults to 0.003, other banana runs to 0.006",
+    )
     p.add_argument(
         "--sampling-seed",
         type=int,

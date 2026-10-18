@@ -56,6 +56,26 @@ def test_banana_step_follows_grid_spacing_unless_given():
     assert dt(0.003, given=31.25e-6) == 31.25e-6
 
 
+def test_teleop_resolution_defaults_and_explicit_overrides():
+    from blademaster_warp.franka_run import material_config, parser
+
+    def config(*options):
+        return material_config(parser().parse_args(["--material", "paper-banana", *options]))
+
+    teleop = config("--motion", "teleop")
+    assert teleop.grid_spacing == 0.003
+    assert teleop.dt == pytest.approx(40e-6)
+    # Resolution selection keeps physical contact stiffness and material parameters.
+    coarse = config("--motion", "teleop", "--spacing", "0.006")
+    assert coarse.grid_spacing == 0.006
+    assert coarse.dt == pytest.approx(62.5e-6)
+    for field in ("young_modulus", "yield_stress", "contact_reference_dt", "sampling_seed", "flip_fraction"):
+        assert getattr(teleop, field) == getattr(coarse, field)
+    custom = config("--motion", "teleop", "--spacing", "0.0045", "--dt", "0.000025")
+    assert custom.grid_spacing == 0.0045 and custom.dt == 25e-6
+    assert config("--motion", "sequence").grid_spacing == 0.006
+
+
 def test_jacobian_finite_difference():
     r = Franka()
     analytic = r.jacobian()[:3, :7]

@@ -2,6 +2,28 @@
 
 硬件：tams61，RTX 4060 8 GB，Warp 1.18.0，MuJoCo 3.3.7。运行目录在 tams61 的 `runs/` 下（不进仓库）。
 
+## 2026-10-18 表面、独立对照与压力测试
+
+代码 `bd9c014`；tams61 全套 372 项、18 个子用例通过（79.29 s），7 项外部构建测试跳过。CRESSim 原版及修正模式分别通过 47 项本地集成测试。以下开发验证保留各自 manifest 中的提交与 dirty 状态，最终干净提交的计时单列。
+
+**表面几何。** QEF 单元内缩和多区域弱正则消除了 1.5 mm 参考香蕉的 18 处相交、斜切参考几何的 19 处同块相交。解析切割总体积误差 +0.188%～+0.215%，单片体积误差小于 0.367%；八组弯曲、扭转和分离片块均无相交。实际第 418 帧的点夹连通过拆分不相连的顶点扇修复，三角形位置保持完全一致。
+
+`scripts.surface_observations <recording> --backend cpu --strides 1 --check-all-observations` 对 `review_fix_sequence_final_20261018` 的 532 帧重新重建并检查：所有帧闭合、定向一致、边/顶点流形、无退化三角形；31 帧仍有同块内部穿越（最多 22 处），238 帧存在不同块之间的内部穿越（最多 86 处）。第 63 帧的四处穿越也存在于参考构形，已保存独立交点验证。最终帧同块内部穿越为零、块间为 74 处。报告：`runs/recorded-all-frames-final.json`。
+
+`franka_run ... --motion sequence --record --observation-interval .01` 得到 2,125 个状态；再用 `scripts.surface_observations runs/sequence_10ms_review_20261018 --backend cuda --strides 1 2 4` 比较：10/20/40 ms 最终均为四块、123 条断链、无同块内部穿越，最终体积差 −0.00159% / +0.00161%。相对 10 ms，过程中的断链最多相差 3 / 2 条、节点标签最多相差 5 / 8 个；三角网格不一致的观测为 920/1,063 和 464/532。网格匹配时最大顶点差 2.094 / 0.333 mm。材料观测间的插值仍需改进。报告：`runs/cadence_10_20_40_20261018.json`。
+
+**遥操作与多刀。** `scripts.stress_teleop --device cuda:0 --seed 17 --extra-cuts 20 --surface`：1,905 个物理帧、两次会话、23 次进入/离开材料，重启后保留 21 刀历史，最多两块、560 条断链，全部历史检查通过。`stress_multi_tool --device cuda:0 --seed 17 --steps 120`：三把刀六种排列，分块 `[512,512]` 与切割码完全一致；最大位置差 1.12e-8 m、损伤差 4.18e-5、反力冲量差 7.89e-10 N·s，动量残差 3.50e-8 N·s。同序重复的对应位置/损伤差为 9.31e-9 m / 2.47e-5。Franka 全旋转模拟输入运行 4 s、两刀，GPU 错误为零，min det F = 0.96725。长回放在 `runs/stress_teleop_20_20261018`。
+
+**Fig. 5 独立对照。** 新增原版 CRESSim-MPM `09aa5009` 构建器、共同刀路与评价器。原版共旋分支漏 `break`，结果被线弹性覆盖；`build-cressim --fix-corotated-dispatch` 在构建目录的头文件副本中只补这一行。配置和评价量见 METHOD。
+
+5 mm、0.25 ms 的 BladeMaster 夹具在第二刀后实际分块为 `[1152,864,1440]`，初始坐标划分为 `[1152,1152,1152]`；部分评价四面体跨越实际切口。评价器现在核对粒子成员和切割码，失配时片块体积输出 `null`，比较标记为 `invalid`。原来的 −64% 和 165 个非正四面体属于跨裂口参考点阵的数值，不作为片块收缩结果。
+
+原版 CRESSim 质量单位 1 / 0.01 / 0.001 kg 下，水平动量残差为 5.94e-4 / 5.27e-4 / 5.88e-5 N·s。补齐共旋分支后，质量单位 1e-3 / 1e-5 / 1e-6 kg 的三组在 3.460 / 3.438 / 3.446 s 触发网格边界保护，未完成退刀后的推动；后两组在共同 3.438 s 的粒子位置 RMS 差为 0.440 mm、最大差 7.688 mm。下一步先修正夹具的分块评价、扩大并核对有效计算域及基线收敛，再对齐论文数字。汇总：`runs/blademaster-fig5-mass-unit-sweep.json`、`runs/blademaster-fig5-fixed-unit-sweep.json`。
+
+**优化与在线链路。** `3c328ed` 的按需梯度插值，在同一份 532 帧材料/刀路上做 eager/lazy/lazy/eager CUDA 表面对照：平均 8.092 → 6.622 s（减少 18.2%），所有帧的顶点、三角形和切割码完全相同。另缓存顶点嵌入权重与 GPU 缓冲区。材料、接触和步长保持原设置。报告：`runs/surface_interpolation_ab_20261018.json`。
+
+Mac 经 SSH 到独立 18766 服务，`scripts.live_latency --port 18766 --seconds 15 --rate 60 --start --stop`：624 个已发送输入中，215 个在状态帧中得到准确序号确认；延迟中位数 92.6 ms、p95 132.2 ms、最大 169.2 ms，状态帧间隔中位数 67.4 ms。统计止于 HTTP 接收，浏览器 WebGL 提交与屏幕显示另测。修复跳过的输入被误计为确认、大型场景下载共用 5 s 状态超时，以及关闭表面时的在线初始化错误。报告：`runs/live_latency_review_20261018.json`。
+
 ## 2026-10-18 复查：遥操作事件与表面退化情形
 
 commit `e2fc014`。tams61 全套 **294 项测试、18 个子用例通过（56.08 s）**，Ruff、Black（修改文件）与差异空白检查通过。

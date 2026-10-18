@@ -1,6 +1,6 @@
 # BladeMaster-Lab
 
-[BladeMaster](https://arxiv.org/html/2609.27342v2)（拓扑感知 TLMPM 切割仿真）的 Warp/CUDA 实现，带 MuJoCo Franka 双向耦合、linked-volume 表面重建和浏览器实时显示。
+[BladeMaster](https://arxiv.org/html/2609.27342v2)（拓扑感知 TLMPM 切割仿真）的 Warp/CUDA 实现，带 MuJoCo Franka 双向耦合、linked-volume 表面重建和浏览器在线显示。
 
 - SpaceMouse 遥操作 Franka 切香蕉（论文 §IV-C 材料，6 mm 网格，62.5 μs 子步），浏览器支持开始、暂停、结束和重启。表面保留实际子步刀路，包含两帧之间的进退刀和换刀。
 - 连续三刀 + 推开 + 表面 + 录制：**四块，0.59× 实时**（6 mm，21.246 s 仿真 / 35.908 s 计算，RTX 4060；不含客户端渲染）。最新验证与计时见 RESULTS。
@@ -96,13 +96,14 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 | 选项 | 作用 |
 |---|---|
+| `--observation-interval` | 表面与状态观测间隔，默认 0.04 s；须为机器人步长的整数倍，可用 0.01 s 检查插值误差 |
 | `--dt` | 材料步长，必须整除 1 ms；香蕉默认 \(\min(62.5\,\mu s,\ 0.5\,\Delta x/c)\)，6 mm 为 62.5 μs，3 mm 为 40 μs |
 | `--contact-scaling per-step` | 使用论文的固定 \(s_n\)（接触刚度随步长变化） |
 | `--tool-substep predict` | 耦合区间内用移动性矩阵更新刀具状态 |
 | `--pair-search {auto,list,hash,all}` | 接触检测方式；auto 使用带位移余量的邻居表，hash 每子步重建，all 完整搜索 |
 | `--controller {serl,libfranka}` | 笛卡尔阻抗控制器 |
 
-`report.json` 里的 `time_s` 给出材料、机器人、观测各阶段耗时，`task_evaluation` 给出切割结果。
+`report.json` 的 `time_s` 分列材料、机器人、刀路记录、观测和状态发布耗时；`surface_phase_s` 再分节点嵌入、链接扫掠、网格构建和顶点嵌入。`material_interval_phase_s` 的读回时间包含等待 GPU 完成本区间，`task_evaluation` 给出切割结果。
 
 表面帧的 `tool_path` 保存完整刀路，列定义在 `surface/method.json`。`scripts.force_convergence` 在干净的 Git 提交上运行；复用缓存时核对配置、试验协议和提交，换参数使用新的输出目录。已有历史汇总仍可用 `--plot` 读取。
 
@@ -118,7 +119,13 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | `scripts/probe_substep.py` | 单子步耗时测量 |
 | `scripts/topocut_compare.py` | 同一刀路下 BladeMaster 与 TopoCut 式单场 MLS-MPM（`mlsmpm.py` + `topocut_topology.py`）对比，谱奖励评价；`scripts/render_compare.py` 把结果渲染成三栏对比视频 |
 | `scripts/surface_deformed.py` | 已知变形下的表面嵌入误差与自交 |
-| `scripts/live_latency.py` | 在线遥操作路径延迟（对运行中的 `franka_run --live --motion teleop`；只有给 `--start`、`--restart`、`--stop` 才改变运行状态） |
+| `scripts/surface_observations.py` | 保留完整刀路，对比不同材料观测间隔；默认 CUDA，可逐帧检查几何 |
+| `scripts/stress_teleop.py` | 固定种子的六轴输入、暂停、停止、重启和断线重连回放 |
+| `scripts/stress_multi_tool.py` | 同一材料上的多刀接触、换序、独立损伤和动量检查 |
+| `scripts/fig5_compare.py` | Fig. 5 两刀三块、退刀后独立推动；构建固定版本的 CRESSim-MPM 独立对照 |
+| `scripts/live_latency.py` | 明确被画面确认的命令到 HTTP 帧的延迟，`--output` 保存统计；`--start`、`--restart`、`--stop` 控制运行状态 |
+
+浏览器的 `window.liveDiagnostics` 记录 WebGL 提交、显示循环间隔、收到的状态帧间隔和已绘制的命令序号。模拟输入的延迟测量应使用单独的服务端口，避免与 SpaceMouse 客户端同时发送序号。
 
 ## 测试
 

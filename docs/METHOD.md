@@ -31,7 +31,8 @@
 | 香蕉材料 | E=400 kPa，ν=0.45，ρ=1100，屈服 30 kPa，\(G_c\)=700，ζ=0.9，刀 0.1 kg，μ=0.2 | 论文 §IV-C |
 | 香蕉步长 | 62.5 μs，接触参数以 25 μs 为参考 | 本地选择，见 RESULTS.md 步长扫描 |
 | 机器人耦合间隔 | 1 ms（MuJoCo 步长） | 本地选择 |
-| 表面刀路 | 记录实际材料子步的刀位、切割开关和刀次；保持不动的子步只存首尾。网格每 40 ms 更新，材料节点在观测间线性插值 | 本地选择 |
+| 表面刀路 | 记录实际材料子步的刀位、切割开关和刀次；保持不动的子步只存首尾。默认每 40 ms 更新，可用 `--observation-interval` 加密；材料节点在观测间线性插值 | 本地选择 |
+| 表面 QEF 边界 | 解约束在参考单元每侧内缩 0.001×表面格距的盒中；1.5 mm 格距时为 1.5 μm；多区域单元以 1e-3×Hermite 样本数弱正则到各区域质心 | 消除相邻单元边界上的重合折叠，材料参数与粒子运动不变 |
 
 ## 接触刚度与步长
 
@@ -65,5 +66,7 @@
 | 砧板罚因子 | 与刀共用 \(s_n\) | 单独的 `board_normal_scale`；Fig. 3/4/7/8 在论文步长下刀与砧板都取 \(s_n\) = 1（0.1 时每步穿透约 \(N g\Delta t^2/s_n\)，底层沉入砧板），香蕉仍为 0.1 |
 | 扰动采样 | 未写明 | 每轴 ±Δx/4 均匀扰动后，把低于 \(R_p\) = Δx/4 的粒子按 \(z \to R_p + |z - R_p|\) 反射到砧板以上（`geometry.points`）；否则初始穿透的恢复冲量把整块抬起（修正前 6 mm 香蕉最低粒子弹起 8.4 mm，3 mm 1.2 mm） |
 | 场景设置 | Franka 操作 | Fig. 4/7/8 用规定刀路（`scenarios.py`，非 Franka）；Fig. 8 每刀后把切片推倒；Fig. 3 刀绕刀厚轴倾斜（论文只给角度）；Fig. 4/7/8 的 \(G_c\) = 10 J/m² 为本地取值；导向刀驱动 1000 N/m、20 N·s/m（论文材料预设，DexLab 250 N/m）；摩擦默认 0.3 / 0.2（DexLab），论文香蕉 0.2 / 0.2。详见 RESULTS |
+| Fig. 5 独立对照 | 两刀三块、0.5 mm 刀厚、相同采样与弹性参数 | 新夹具使用 60×30×30 mm 方块、E=6 kPa、ν=0.4、ρ=1100、5 mm 网格、0.25 ms 步长；退刀后左块速度 −30 mm/s。切口用粒子列间距减初始间距，中块体积用内部粒子四面体，评价量与论文切口宽度/全块体积定义不同 |
+| CRESSim-MPM 对照实现 | 论文使用 CRESSim-MPM | 直接编译原版 `09aa5009` 的 `CpuMlsMpmSolver`。CPU/CUDA 共用的 `computeStress` 共旋分支缺少 `break`，结果被线弹性覆盖；构建选项 `--fix-corotated-dispatch` 只在独立头文件副本中补上此行，原版模式也保留。质量单位扫描将固定网格质量阈值 1e-4 换算为 SI，并检查总动量 |
 | TopoCut 基线损伤 | 按体积比阈值 | 先在重力下静置（默认 1 s）再开启损伤，\(J\) 相对静置后的构形计（`MlsSolver.start_damage`）：软材料（10 kPa）自重压缩本身会越过阈值，静置算作损伤时 Fig. 4 有 23% 粒子在刀动之前就损伤 |
 | 已与论文核对 | — | ① 自接触：论文 §III-E"For self-contact, nearby reference neighbors are excluded … Pairs with conflicting cut-side codes are exempt"，没有给距离。代码对切割码兼容且参考距离 \(< 2\Delta x\) 的粒子对不算接触（`contact.pair_at`）：三线性权重下两粒子共享网格节点的条件是每轴参考距离 \(< 2\Delta x\)，这里用欧氏距离，对角方向共享节点的少数粒子对仍是接触候选。② 式 5：\(d_k\) 是"front–back direction … obtained by transforming their fixed tool-frame counterparts using the current tool pose"，即刀坐标系里固定的方向，代码取刀的 −z 轴（`resist_cut`、`assign`），与论文一致；\(u_{c,p}\) 默认用相对速度（`cut_work="relative"`），也与论文一致。论文的 \(u_\text{min}\) 没有给值，代码取 0（`advance > 0`） |

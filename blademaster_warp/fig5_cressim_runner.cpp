@@ -38,7 +38,8 @@ void checkUnits(double massUnit) {
     computeLinearElasticStress(deformation, lambda, mu, linearStress);
     float4 impulse = make_float4(0, 0, 0, 0), torque = make_float4(0, 0, 0, 0);
     addMomentumToRigidBody<false>(Vec3f(0.1f, -0.2f, 0.3f) * mass, Vec3f(0.01f, 0.02f, 0.03f), impulse, torque);
-    std::cout << std::setprecision(12) << "{\"volume_m3\":" << volume
+    std::cout << std::setprecision(12) << "{\"fix_corotated_dispatch\":"
+              << (FIG5_FIX_COROTATED_DISPATCH ? "true" : "false") << ",\"volume_m3\":" << volume
               << ",\"stress_diagonal_pa\":[" << stress.col0.x * massUnit << ','
               << stress.col1.y * massUnit << ',' << stress.col2.z * massUnit
               << "],\"corotated_stress_diagonal_pa\":[" << corotatedStress.col0.x * massUnit << ','
@@ -57,7 +58,9 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (argc == 2 && std::string(argv[1]) == "--identity") {
-            std::cout << FIG5_SOURCE_REVISION << '\n' << FIG5_DRIVER_REVISION << '\n';
+            std::cout << FIG5_SOURCE_REVISION << '\n' << FIG5_DRIVER_REVISION << '\n'
+                      << FIG5_FIX_COROTATED_DISPATCH << '\n' << FIG5_HEADER_SNAPSHOT << '\n'
+                      << FIG5_DRIVER_SNAPSHOT << '\n';
             return 0;
         }
         if (argc != 4) throw std::runtime_error("Expected input.txt states.bin kick.bin");

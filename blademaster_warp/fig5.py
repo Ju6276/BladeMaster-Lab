@@ -87,12 +87,12 @@ def reference_particles(cfg):
 
 
 def piece_ids(reference, cuts):
-    """Material membership is fixed in reference space, including after deformation."""
+    """Reference regions are fixed; mechanical component membership is checked separately."""
     return np.searchsorted(cuts, np.asarray(reference)[:, 0], side="right")
 
 
 def initial_left_velocity(velocity, pieces, speed):
-    """Assign the left piece's initial velocity; preserve all other particles bitwise."""
+    """Assign the left reference region's velocity; preserve all other particles bitwise."""
     result = np.array(velocity, dtype=np.result_type(np.asarray(velocity).dtype, np.float32), copy=True)
     if (
         result.shape != (len(pieces), 3)
@@ -220,7 +220,73 @@ def half_depth_gap(reference, position, cut_x, edge_z):
     }
 
 
-def evaluate(cfg, data):
+def topology_diagnostics(data, pieces, tets, events, component_sizes_by_event=None):
+    """Check exact region/component equality, independent of component label order."""
+    keys = ("topology_event_names", "component_labels_by_event", "cut_codes_by_event")
+    present = [key in data for key in keys]
+    sizes = np.bincount(pieces, minlength=3).tolist()
+    result = {"status": "unverified", "reference_piece_sizes": sizes, "events": {}}
+    required = ("both_cuts_complete", "withdrawn", "final")
+    if not any(present):
+        # Older archives only retained sizes: unequal sizes disprove equality,
+        # but equal sizes cannot establish particle membership.
+        for event, actual in (component_sizes_by_event or {}).items():
+            if event in required and sorted(actual) != sorted(sizes):
+                result["status"] = "mismatched"
+        result["component_sizes_by_event"] = component_sizes_by_event or {}
+        return result
+    if not all(present):
+        raise ValueError("Incomplete topology event arrays")
+    names = np.asarray(data[keys[0]])
+    labels, codes = (np.asarray(data[key]) for key in keys[1:])
+    if (
+        names.tolist() != list(events)
+        or labels.shape != (len(events), len(pieces))
+        or codes.shape != labels.shape
+        or labels.dtype.kind not in "iu"
+        or codes.dtype.kind not in "iu"
+        or np.any(labels < 0)
+        or np.any(codes < 0)
+    ):
+        raise ValueError("Invalid topology event arrays")
+    for event, label, code in zip(names.tolist(), labels, codes):
+        _, dense = np.unique(label, return_inverse=True)
+        counts = np.zeros((3, int(dense.max()) + 1), dtype=int)
+        np.add.at(counts, (pieces, dense), 1)
+        matches = [
+            bool(np.count_nonzero(row) == 1 and np.count_nonzero(counts[:, row > 0]) == 1) for row in counts
+        ]
+        crossing = np.any(dense[tets] != dense[tets[:, :1]], axis=1)
+        crack_crossing = np.zeros(len(tets), dtype=bool)
+        for a in range(4):
+            for b in range(a + 1, 4):
+                ca, cb = code[tets[:, a]].copy(), code[tets[:, b]].copy()
+                while np.any(ca) or np.any(cb):
+                    da, db = ca % 3, cb % 3
+                    crack_crossing |= (da != 0) & (db != 0) & (da != db)
+                    ca //= 3
+                    cb //= 3
+        result["events"][event] = {
+            "component_sizes": counts.sum(0).tolist(),
+            "reference_component_counts": counts.tolist(),
+            "piece_matches_component": matches,
+            "reference_pieces_match_components": all(matches),
+            "middle_tetrahedra_crossing_components": int(crossing.sum()),
+            "middle_tetrahedra_crossing_cut_codes": int(crack_crossing.sum()),
+        }
+    result["status"] = (
+        "matched"
+        if all(
+            result["events"][event]["reference_pieces_match_components"]
+            and result["events"][event]["middle_tetrahedra_crossing_cut_codes"] == 0
+            for event in required
+        )
+        else "mismatched"
+    )
+    return result
+
+
+def evaluate(cfg, data, *, component_sizes_by_event=None):
     """Evaluate exact event frames; reject partial or nonfinite trajectories."""
     ref = np.asarray(data["reference"], dtype=float)
     time = np.asarray(data["time"], dtype=float)
@@ -245,6 +311,13 @@ def evaluate(cfg, data):
     idx = {k: round(t / cfg.interval) for k, t in events.items()}
     pieces = piece_ids(ref, cfg.cut_x)
     tets = middle_tetrahedra(ref, cfg.cut_x)
+    topology = topology_diagnostics(data, pieces, tets, events, component_sizes_by_event)
+    cut_topology = topology["events"].get("both_cuts_complete", {})
+    valid_volume = bool(
+        cut_topology.get("reference_pieces_match_components", False)
+        and cut_topology["middle_tetrahedra_crossing_components"] == 0
+        and cut_topology["middle_tetrahedra_crossing_cut_codes"] == 0
+    )
     rest = signed_tetra_volumes(ref, tets)
     volume = signed_tetra_volumes(x[idx["both_cuts_complete"]], tets)
     displacement = x[-1] - x[idx["withdrawn"]]
@@ -252,7 +325,11 @@ def evaluate(cfg, data):
     for p, name in enumerate(("left", "middle", "right")):
         d = displacement[pieces == p]
         motions[name] = {
+            "membership": "fixed reference region",
             "particles": len(d),
+            "com_displacement_before_kick_m": (x[idx["withdrawn"], pieces == p] - ref[pieces == p])
+            .mean(0)
+            .tolist(),
             "com_displacement_m": d.mean(0).tolist(),
             "mean_displacement_norm_m": float(np.linalg.norm(d, axis=1).mean()),
         }
@@ -278,7 +355,7 @@ def evaluate(cfg, data):
     residual = total_change - gravity_impulse - board_moving.sum(0) + moving.sum(0)
     tolerance = max(1e-8, 1e-3 * mass * np.linalg.norm(after.astype(float), axis=1).sum())
     momentum_closed = bool(np.linalg.norm(residual[:2]) <= tolerance)
-    clear = contact_clear and momentum_closed
+    clear = contact_clear and momentum_closed and topology["status"] == "matched"
     for p, name in enumerate(("left", "middle", "right")):
         change = mass * (v[-1, pieces == p].astype(float) - after[pieces == p]).sum(0)
         pair = pair_moving[:, p].sum(0)
@@ -288,14 +365,21 @@ def evaluate(cfg, data):
         motions[name]["transfer_residual_horizontal_ns"] = (change[:2] - pair[:2]).tolist() if clear else None
     return {
         "events_s": events,
+        "fixture_validity": topology,
         "first_half_depth_opening": half_depth_gap(
             ref, x[idx["first_half_depth"]], cfg.cut_x[0], cfg.size[2] / 2
         ),
         "middle_volume": {
+            "valid_for_fragment_volume": valid_volume,
             "reference_m3": float(rest.sum()),
-            "after_cuts_m3": float(np.abs(volume).sum()),
-            "contraction_percent": float(100 * (1 - np.abs(volume).sum() / rest.sum())),
-            "inverted_or_degenerate_tetrahedra": int((volume <= 0).sum()),
+            "after_cuts_m3": float(np.abs(volume).sum()) if valid_volume else None,
+            "contraction_percent": (
+                float(100 * (1 - np.abs(volume).sum() / rest.sum())) if valid_volume else None
+            ),
+            "inverted_or_degenerate_tetrahedra": int((volume <= 0).sum()) if valid_volume else None,
+            "reference_lattice_after_cuts_m3": float(np.abs(volume).sum()),
+            "reference_lattice_contraction_percent": float(100 * (1 - np.abs(volume).sum() / rest.sum())),
+            "reference_lattice_nonpositive_tetrahedra": int((volume <= 0).sum()),
             "reference_region_coverage_fraction": float(
                 rest.sum() / ((cfg.cut_x[1] - cfg.cut_x[0]) * cfg.size[1] * cfg.size[2])
             ),
@@ -314,6 +398,9 @@ def evaluate(cfg, data):
             "left_particles": int((pieces == 0).sum()),
             "changed_middle_right_particles": 0,
             "left_velocity_m_s": [cfg.left_velocity, 0.0, 0.0],
+            "selected_complete_component": topology["events"]
+            .get("withdrawn", {})
+            .get("piece_matches_component", [None, None, None])[0],
         },
         "blade_contact": {
             "minimum_vertical_clearance_after_withdrawal_m": clearance,

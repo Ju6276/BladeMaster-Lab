@@ -1,6 +1,7 @@
 """Build and run the pinned upstream CRESSim-MPM CPU MLS solver in a subprocess."""
 
 from dataclasses import asdict
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -14,6 +15,20 @@ from .provenance import git_revision
 
 CRESSIM_URL = "https://github.com/yafei-ou/CRESSim-MPM.git"
 CRESSIM_REVISION = "09aa5009b8580351f516b6df7660e87821fc5eb6"
+CONSTITUTIVE_HEADER = "src/solver/constitutive_models.h"
+
+
+def constitutive_snapshot(original, fix_corotated_dispatch):
+    if not fix_corotated_dispatch:
+        return original
+    target = (
+        b"            computeCoRotationalStress(gradientDeformationTensor, particleMaterialProperties0.x, "
+        b"particleMaterialProperties0.y, stress);\n"
+        b"        case ParticleMaterialType::eLinearElastic:"
+    )
+    if original.count(target) != 1:
+        raise ValueError("Pinned corotated dispatch patch site does not match")
+    return original.replace(target, target.replace(b"\n        case", b"\n            break;\n        case"))
 
 
 def material_in_solver_units(cfg):
@@ -40,7 +55,7 @@ def source_revision(source):
     return revision
 
 
-def build(source, output, compiler="c++"):
+def build(source, output, compiler="c++", *, fix_corotated_dispatch=False):
     source, output = Path(source).resolve(), Path(output).resolve()
     if not source.exists():
         subprocess.run(["git", "clone", CRESSIM_URL, str(source)], check=True)
@@ -51,6 +66,16 @@ def build(source, output, compiler="c++"):
     driver_revision = git_revision()
     driver_snapshot = output / driver.name
     shutil.copyfile(driver, driver_snapshot)
+    original = (source / CONSTITUTIVE_HEADER).read_bytes()
+    compiled = constitutive_snapshot(original, fix_corotated_dispatch)
+    (output / "constitutive_models.original.h").write_bytes(original)
+    header = output / "constitutive_models.h"
+    header.write_bytes(compiled)
+    snapshots = {
+        "original_header_sha256": hashlib.sha256(original).hexdigest(),
+        "compiled_header_sha256": hashlib.sha256(compiled).hexdigest(),
+        "driver_sha256": hashlib.sha256(driver_snapshot.read_bytes()).hexdigest(),
+    }
     includes = [
         "include/core",
         "include/math",
@@ -78,6 +103,11 @@ def build(source, output, compiler="c++"):
     command += [
         f'-DFIG5_SOURCE_REVISION="{CRESSIM_REVISION}"',
         f'-DFIG5_DRIVER_REVISION="{driver_revision["commit"]}"',
+        f"-DFIG5_FIX_COROTATED_DISPATCH={int(fix_corotated_dispatch)}",
+        f'-DFIG5_HEADER_SNAPSHOT="{snapshots["compiled_header_sha256"]}"',
+        f'-DFIG5_DRIVER_SNAPSHOT="{snapshots["driver_sha256"]}"',
+        "-include",
+        str(header),
     ]
     command += [f"-I{source / include}" for include in includes]
     command += [
@@ -94,6 +124,11 @@ def build(source, output, compiler="c++"):
         "source": str(source),
         "command": command,
         "driver_revision": driver_revision,
+        "fix_corotated_dispatch": fix_corotated_dispatch,
+        "constitutive_source": CONSTITUTIVE_HEADER,
+        "original_header_snapshot": "constitutive_models.original.h",
+        "compiled_header_snapshot": header.name,
+        "snapshot_integrity": snapshots,
         "compiler": subprocess.check_output([compiler, "--version"], text=True),
         "status": "building",
     }
@@ -117,11 +152,33 @@ def validate_build(build_dir):
     driver = Path(__file__).with_name("fig5_cressim_runner.cpp")
     if driver.read_bytes() != (build_dir / driver.name).read_bytes():
         raise ValueError("CRESSim driver changed since compilation; rebuild in a new directory")
+    fix = meta.get("fix_corotated_dispatch")
+    if type(fix) is not bool:
+        raise ValueError("CRESSim build lacks an explicit dispatch mode; rebuild")
+    original = (Path(meta["source"]) / CONSTITUTIVE_HEADER).read_bytes()
+    compiled = constitutive_snapshot(original, fix)
+    if (build_dir / "constitutive_models.original.h").read_bytes() != original or (
+        build_dir / "constitutive_models.h"
+    ).read_bytes() != compiled:
+        raise ValueError("CRESSim constitutive snapshots differ from pinned source/dispatch mode")
+    snapshots = {
+        "original_header_sha256": hashlib.sha256(original).hexdigest(),
+        "compiled_header_sha256": hashlib.sha256(compiled).hexdigest(),
+        "driver_sha256": hashlib.sha256(driver.read_bytes()).hexdigest(),
+    }
+    if meta.get("snapshot_integrity") != snapshots:
+        raise ValueError("CRESSim snapshot integrity differs from build metadata")
     identity = subprocess.check_output(
         [str(build_dir / "fig5_cressim_cpu"), "--identity"], text=True
     ).splitlines()
-    if identity != [CRESSIM_REVISION, str(meta["driver_revision"]["commit"])]:
-        raise ValueError("CRESSim executable source/driver identity differs from build metadata")
+    if identity != [
+        CRESSIM_REVISION,
+        str(meta["driver_revision"]["commit"]),
+        str(int(fix)),
+        snapshots["compiled_header_sha256"],
+        snapshots["driver_sha256"],
+    ]:
+        raise ValueError("CRESSim executable source/driver/patch identity differs from build metadata")
     return meta
 
 
@@ -191,8 +248,16 @@ def run(cfg, output, build_dir):
         "command": command,
         "solver_config": {
             "material_selection": "eCoRotational",
-            "stress_function": "computeLinearElasticStress",
-            "stress_dispatch": "upstream computeStress falls through from eCoRotational to eLinearElastic",
+            "stress_function": (
+                "computeCoRotationalStress"
+                if build_meta["fix_corotated_dispatch"]
+                else "computeLinearElasticStress"
+            ),
+            "stress_dispatch": (
+                "missing break inserted after eCoRotational in build-local header"
+                if build_meta["fix_corotated_dispatch"]
+                else "upstream computeStress falls through from eCoRotational to eLinearElastic"
+            ),
             "grid_lower_m": lower.tolist(),
             "grid_upper_m": upper.tolist(),
             "contact_model": "eKinematic",

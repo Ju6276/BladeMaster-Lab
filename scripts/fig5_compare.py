@@ -22,6 +22,11 @@ def main(argv=None):
     build.add_argument("--source", required=True)
     build.add_argument("--output", required=True)
     build.add_argument("--compiler", default="c++")
+    build.add_argument(
+        "--fix-corotated-dispatch",
+        action="store_true",
+        help="Insert the missing eCoRotational break in a build-local header snapshot",
+    )
     runner = commands.add_parser("run")
     runner.add_argument("--backend", choices=("blademaster", "cressim_cpu"), required=True)
     runner.add_argument("--output", required=True)
@@ -48,7 +53,12 @@ def main(argv=None):
     if args.command == "build-cressim":
         from blademaster_warp.fig5_cressim import build
 
-        result = build(args.source, args.output, args.compiler)
+        result = build(
+            args.source,
+            args.output,
+            args.compiler,
+            fix_corotated_dispatch=args.fix_corotated_dispatch,
+        )
     elif args.command == "run":
         values = json.loads(Path(args.config).read_text()) if args.config else {}
         if args.spacing is not None:

@@ -53,6 +53,9 @@ def trajectory(cfg):
         "pair_impulse_by_piece_ns": np.zeros((len(times), 3, 3)),
         "velocity_before_kick": velocity[index].copy(),
         "velocity_after_kick": initial_left_velocity(velocity[index], pieces, cfg.left_velocity),
+        "topology_event_names": np.array(list(protocol(cfg)[1])),
+        "component_labels_by_event": np.tile(pieces, (4, 1)),
+        "cut_codes_by_event": np.tile(np.array([1, 5, 8])[pieces], (4, 1)),
     }
 
 
@@ -205,6 +208,59 @@ def test_inverted_tets_are_counted(cfg, trajectory):
     assert result["inverted_or_degenerate_tetrahedra"] == result["tetrahedra"]
 
 
+def test_topology_membership_ignores_component_label_order(cfg, trajectory):
+    trajectory["component_labels_by_event"] = np.array([19, 4, 8])[trajectory["component_labels_by_event"]]
+    result = evaluate(cfg, trajectory)
+    assert result["fixture_validity"]["status"] == "matched"
+    assert result["middle_volume"]["valid_for_fragment_volume"]
+    assert result["initial_velocity_assignment"]["selected_complete_component"]
+
+
+def test_equal_component_sizes_do_not_prove_reference_membership(cfg, trajectory):
+    pieces = piece_ids(trajectory["reference"], cfg.cut_x)
+    left, middle = np.flatnonzero(pieces == 0)[0], np.flatnonzero(pieces == 1)[0]
+    labels = trajectory["component_labels_by_event"]
+    labels[:, [left, middle]] = labels[:, [middle, left]]
+    result = evaluate(cfg, trajectory)
+    assert result["fixture_validity"]["status"] == "mismatched"
+    cut = result["fixture_validity"]["events"]["both_cuts_complete"]
+    assert cut["component_sizes"] == np.bincount(pieces).tolist()
+    assert cut["middle_tetrahedra_crossing_components"] > 0
+    assert result["middle_volume"]["contraction_percent"] is None
+    assert result["middle_volume"]["inverted_or_degenerate_tetrahedra"] is None
+    assert result["middle_volume"]["reference_lattice_contraction_percent"] == pytest.approx(0)
+    assert not result["initial_velocity_assignment"]["selected_complete_component"]
+    assert not result["horizontal_exchange_isolated"]
+
+
+def test_cut_codes_detect_crack_even_within_one_component(cfg, trajectory):
+    middle = np.flatnonzero(piece_ids(trajectory["reference"], cfg.cut_x) == 1)
+    trajectory["cut_codes_by_event"][:, middle[0]] = 8
+    result = evaluate(cfg, trajectory)
+    assert (
+        result["fixture_validity"]["events"]["both_cuts_complete"]["middle_tetrahedra_crossing_cut_codes"] > 0
+    )
+    assert not result["middle_volume"]["valid_for_fragment_volume"]
+    assert result["middle_volume"]["after_cuts_m3"] is None
+
+
+@pytest.mark.parametrize("sizes, status", [([32, 16, 16], "unverified"), ([31, 17, 16], "mismatched")])
+def test_legacy_component_sizes_gate_without_inventing_labels(cfg, trajectory, sizes, status):
+    for key in ("topology_event_names", "component_labels_by_event", "cut_codes_by_event"):
+        trajectory.pop(key)
+    # This small fixture has 16/32/16 reference particles.
+    result = evaluate(cfg, trajectory, component_sizes_by_event={"both_cuts_complete": sizes})
+    assert result["fixture_validity"]["status"] == status
+    assert result["middle_volume"]["contraction_percent"] is None
+    assert result["initial_velocity_assignment"]["selected_complete_component"] is None
+
+
+def test_missing_topology_array_is_rejected(cfg, trajectory):
+    trajectory.pop("cut_codes_by_event")
+    with pytest.raises(ValueError, match="Incomplete topology"):
+        evaluate(cfg, trajectory)
+
+
 def test_failed_backend_records_failure_and_does_not_overwrite(cfg, tmp_path):
     path = tmp_path / "failed"
     with pytest.raises(ValueError, match="requires"):
@@ -251,7 +307,7 @@ def test_build_validation_checks_source_and_exact_driver(tmp_path, monkeypatch):
         validate_build(tmp_path)
 
 
-@pytest.mark.parametrize("mass_unit", [1.0, 1e-2, 1e-3])
+@pytest.mark.parametrize("mass_unit", [1.0, 1e-2, 1e-3, 1e-5, 1e-6])
 def test_internal_mass_units_preserve_volume_wave_speed_and_impulse(cfg, mass_unit):
     material = material_in_solver_units(replace(cfg, cressim_mass_unit_kg=mass_unit))
     assert material["particle_mass"] * mass_unit == pytest.approx(cfg.density * (cfg.grid_spacing / 2) ** 3)
@@ -262,7 +318,8 @@ def test_internal_mass_units_preserve_volume_wave_speed_and_impulse(cfg, mass_un
     np.testing.assert_allclose(measured, cfg.density * (cfg.grid_spacing / 2) ** 3 * velocity_change)
 
 
-def test_comparison_matches_physics_across_internal_mass_units(cfg, trajectory, tmp_path):
+@pytest.mark.parametrize("fix", [False, True])
+def test_comparison_matches_physics_across_internal_mass_units(cfg, trajectory, tmp_path, fix):
     paths = [tmp_path / name for name in ("bm", "cr")]
     for path, backend, unit in zip(paths, ("blademaster", "cressim_cpu"), (1.0, 0.001)):
         path.mkdir()
@@ -274,13 +331,18 @@ def test_comparison_matches_physics_across_internal_mass_units(cfg, trajectory, 
                 "backend": backend,
                 "fixture": asdict(replace(cfg, cressim_mass_unit_kg=unit)),
                 "protocol": protocol(cfg)[0],
-                "source_build": {"commit": CRESSIM_REVISION},
+                "source_build": {"commit": CRESSIM_REVISION, "fix_corotated_dispatch": fix},
             },
         )
         np.savez(path / "states.npz", **trajectory)
     result = compare(*paths)
     assert result["cressim_mass_unit_kg"] == 0.001
+    assert result["cressim_fix_corotated_dispatch"] == fix
+    assert result["fixture_comparison_status"] == "matched"
     assert "cressim_mass_unit_kg" not in result["fixture"]
+    trajectory["component_labels_by_event"][:, 0] = 99
+    np.savez(paths[0] / "states.npz", **trajectory)
+    assert compare(*paths)["fixture_comparison_status"] == "invalid"
     meta = json.loads((paths[1] / "manifest.json").read_text())
     meta["fixture"]["young_modulus"] *= 2
     write_json(paths[1] / "manifest.json", meta)
@@ -291,18 +353,24 @@ def test_comparison_matches_physics_across_internal_mass_units(cfg, trajectory, 
 @pytest.mark.skipif(
     not os.environ.get("FIG5_CRESSIM_BUILD"), reason="Set FIG5_CRESSIM_BUILD for upstream integration"
 )
-def test_original_upstream_constitutive_volume_and_impulse_unit_invariance():
+def test_upstream_constitutive_volume_and_impulse_unit_invariance():
     from pathlib import Path
 
-    executable = Path(os.environ["FIG5_CRESSIM_BUILD"]) / "fig5_cressim_cpu"
+    build = Path(os.environ["FIG5_CRESSIM_BUILD"])
+    meta = validate_build(build)
+    executable = build / "fig5_cressim_cpu"
     values = [
         json.loads(subprocess.check_output([str(executable), "--check-units", str(unit)], text=True))
-        for unit in (1, 0.01, 0.001)
+        for unit in (1, 0.01, 0.001, 1e-5, 1e-6)
     ]
     assert values[0]["volume_m3"] > 0
     assert np.linalg.norm(values[0]["stress_diagonal_pa"]) > 0
-    np.testing.assert_array_equal(values[0]["stress_diagonal_pa"], values[0]["linear_stress_diagonal_pa"])
-    assert not np.allclose(values[0]["stress_diagonal_pa"], values[0]["corotated_stress_diagonal_pa"])
+    fixed = meta["fix_corotated_dispatch"]
+    assert values[0]["fix_corotated_dispatch"] == fixed
+    expected = "corotated_stress_diagonal_pa" if fixed else "linear_stress_diagonal_pa"
+    other = "linear_stress_diagonal_pa" if fixed else "corotated_stress_diagonal_pa"
+    np.testing.assert_array_equal(values[0]["stress_diagonal_pa"], values[0][expected])
+    assert not np.allclose(values[0]["stress_diagonal_pa"], values[0][other])
     for value in values[1:]:
         for key in values[0]:
             np.testing.assert_allclose(value[key], values[0][key], rtol=3e-6, atol=1e-14)
@@ -311,17 +379,66 @@ def test_original_upstream_constitutive_volume_and_impulse_unit_invariance():
 @pytest.mark.skipif(
     not os.environ.get("FIG5_CRESSIM_BUILD"), reason="Set FIG5_CRESSIM_BUILD for upstream integration"
 )
+@pytest.mark.parametrize("corruption", ["original", "compiled", "flag", "identity"])
+def test_build_rejects_changed_header_mode_and_executable_identity(tmp_path, corruption):
+    import hashlib
+    from pathlib import Path
+    import shutil
+    from blademaster_warp.fig5_cressim import constitutive_snapshot
+
+    build = tmp_path / "build"
+    shutil.copytree(os.environ["FIG5_CRESSIM_BUILD"], build)
+    meta = validate_build(build)
+    original = (build / "constitutive_models.original.h").read_bytes()
+    compiled = (build / "constitutive_models.h").read_bytes()
+    assert original == (Path(meta["source"]) / meta["constitutive_source"]).read_bytes()
+    if meta["fix_corotated_dispatch"]:
+        assert (
+            compiled.replace(
+                b"            break;\n        case ParticleMaterialType::eLinearElastic:",
+                b"        case ParticleMaterialType::eLinearElastic:",
+                1,
+            )
+            == original
+        )
+    else:
+        assert compiled == original
+    if corruption in ("original", "compiled"):
+        key = "original_header_snapshot" if corruption == "original" else "compiled_header_snapshot"
+        (build / meta[key]).write_bytes(b"stale snapshot")
+    else:
+        meta["fix_corotated_dispatch"] = not meta["fix_corotated_dispatch"]
+        if corruption == "identity":
+            changed = constitutive_snapshot(original, meta["fix_corotated_dispatch"])
+            (build / "constitutive_models.h").write_bytes(changed)
+            meta["snapshot_integrity"]["compiled_header_sha256"] = hashlib.sha256(changed).hexdigest()
+        write_json(build / "build.json", meta)
+    with pytest.raises(ValueError, match="identity" if corruption == "identity" else "snapshots"):
+        validate_build(build)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("FIG5_CRESSIM_BUILD"), reason="Set FIG5_CRESSIM_BUILD for upstream integration"
+)
 @pytest.mark.parametrize("mass_unit", [1.0, 0.001])
-def test_original_cressim_executes_complete_protocol(cfg, tmp_path, mass_unit):
-    cfg = replace(cfg, cressim_mass_unit_kg=mass_unit)
+def test_cressim_executes_complete_protocol(cfg, tmp_path, mass_unit):
+    cfg = replace(cfg, dt=0.00025, cressim_mass_unit_kg=mass_unit)
     result = run(cfg, tmp_path / "original", "cressim_cpu", build_dir=os.environ["FIG5_CRESSIM_BUILD"])
     assert result["initial_velocity_assignment"]["changed_middle_right_particles"] == 0
     assert result["first_half_depth_opening"]["pairs"] == 8
     assert result["blade_contact"]["after_withdrawal_sum_interval_norms_ns"] == 0
     assert result["board_contact"]["after_withdrawal_impulse_on_material_ns"][2] > 0
     assert result["momentum_balance"]["horizontal_external_contacts_clear"]
+    assert result["fixture_validity"]["status"] == "unverified"
+    assert result["middle_volume"]["contraction_percent"] is None
     path = tmp_path / "original"
     meta = json.loads((path / "manifest.json").read_text())
+    expected = (
+        "computeCoRotationalStress"
+        if meta["source_build"]["fix_corotated_dispatch"]
+        else "computeLinearElasticStress"
+    )
+    assert meta["solver_config"]["stress_function"] == expected
     assert meta["solver_config"]["grid_mass_cutoff_kg"] == pytest.approx(1e-4 * mass_unit)
     header = (path / "cressim_input.txt").read_text().splitlines()[0].split()
     assert float(header[5]) == pytest.approx(cfg.density * (cfg.grid_spacing / 2) ** 3 / mass_unit)

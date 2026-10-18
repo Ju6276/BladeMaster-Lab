@@ -64,6 +64,7 @@ def run_blademaster(cfg, output, device="cuda:0", graph=True):
     before = after = None
     current_cut = 0
     connectivity = {}
+    event_labels, event_codes = [], []
     event_indices = {round(t / cfg.interval): name for name, t in protocol(cfg)[1].items()}
     start = time.perf_counter()
     for i, (_, p, v, cut) in enumerate(cmds):
@@ -80,8 +81,11 @@ def run_blademaster(cfg, output, device="cuda:0", graph=True):
         board_impulses[i + 1] = solver.fig5_board_sum.numpy()[0]
         pair_impulses[i + 1] = solver.fig5_pair_sum.numpy()
         if i + 1 in event_indices:
-            _, sizes = components(solver.node_numpy, solver.weight_numpy, solver.codes.numpy())
+            codes = solver.codes.numpy().copy()
+            labels, sizes = components(solver.node_numpy, solver.weight_numpy, codes)
             connectivity[event_indices[i + 1]] = sizes.tolist()
+            event_labels.append(labels)
+            event_codes.append(codes)
     return {
         "reference": ref,
         "time": np.arange(len(cmds) + 1) * cfg.interval,
@@ -92,6 +96,9 @@ def run_blademaster(cfg, output, device="cuda:0", graph=True):
         "pair_impulse_by_piece_ns": pair_impulses,
         "velocity_before_kick": before,
         "velocity_after_kick": after,
+        "topology_event_names": np.array(list(protocol(cfg)[1])),
+        "component_labels_by_event": np.array(event_labels),
+        "cut_codes_by_event": np.array(event_codes),
     }, {
         "backend": "blademaster",
         "solver_config": asdict(solver_config),
@@ -130,12 +137,14 @@ def run(cfg, output, backend, *, build_dir=None, device="cuda:0", graph=True):
             if build_dir is None:
                 raise ValueError("CRESSim requires --cressim-build")
             from .fig5_cressim import run as run_cressim
+            from .fig5_cressim import validate_build
 
+            manifest["source_build"] = validate_build(build_dir)
             data, meta = run_cressim(cfg, output, build_dir)
         else:
             data, meta = run_blademaster(cfg, output, device, graph)
         np.savez_compressed(output / "states.npz", **data)
-        result = evaluate(cfg, data)
+        result = evaluate(cfg, data, component_sizes_by_event=meta.get("component_sizes_by_event"))
         write_json(output / "result.json", result)
         manifest.update(meta, status="complete")
     except Exception as exc:
@@ -153,7 +162,7 @@ def load_run(path):
         raise ValueError(f"Incomplete Fig5 run: {path}")
     cfg = Fig5Config(**meta["fixture"])
     with np.load(path / "states.npz", allow_pickle=False) as archive:
-        result = evaluate(cfg, archive)
+        result = evaluate(cfg, archive, component_sizes_by_event=meta.get("component_sizes_by_event"))
     return meta, result
 
 
@@ -172,9 +181,17 @@ def compare(blademaster, cressim):
     mass_unit = cr_fixture.pop("cressim_mass_unit_kg")
     if bm_fixture != cr_fixture or bm["protocol"] != cr["protocol"]:
         raise ValueError("Comparison requires identical fixture and trajectory configurations")
+    statuses = [result["fixture_validity"]["status"] for result in (bm_result, cr_result)]
+    comparison_status = "unverified"
+    if "mismatched" in statuses:
+        comparison_status = "invalid"
+    elif statuses == ["matched", "matched"]:
+        comparison_status = "matched"
     return {
         "fixture": bm_fixture,
         "cressim_mass_unit_kg": mass_unit,
+        "cressim_fix_corotated_dispatch": cr["source_build"].get("fix_corotated_dispatch", False),
+        "fixture_comparison_status": comparison_status,
         "blademaster": bm_result,
         "cressim_cpu": cr_result,
         "published_fig5": PAPER_RESULTS,

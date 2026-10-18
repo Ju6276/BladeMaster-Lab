@@ -9,6 +9,11 @@ from .topology import compatible
 
 OFFSETS = np.array(list(product((0, 1), repeat=3)), int)
 QUAD_SPLIT_MARGIN = 1.0e-6
+# Keep bounded QEF solutions off shared cell planes. Coincident clamped edges
+# can cross there even when every quad is split consistently. A finite margin
+# (1.5 micrometres on a 1.5 mm grid) also survives material-grid interpolation.
+QEF_CELL_INSET = 1.0e-3
+QEF_REGION_REGULARIZATION = 1.0e-3
 LOCAL_EDGES = [
     (a, b) for a in range(8) for b in range(a + 1, 8) if np.abs(OFFSETS[a] - OFFSETS[b]).sum() == 1
 ]
@@ -468,6 +473,7 @@ class LinkedSurface:
         corners = self.cells[ci]
         es = self.cell_edges[ci]
         active = set(np.flatnonzero(self.inside[corners]).tolist())
+        corner_count = len(active)
         regions = []
         while active:
             region = {active.pop()}
@@ -502,12 +508,20 @@ class LinkedSurface:
             rhs = np.einsum("ij,ij->i", normals, points - centre)
             # Solve offset relative to mass point to avoid drifting in the QEF
             # nullspace; bounded solve is only needed if unconstrained is outside.
+            if len(region) < corner_count:
+                # Distinct regions in one cell can drift into each other along
+                # weak QEF directions. Anchor each to its own Hermite centroid;
+                # normalize the penalty by sample count. Flat cuts stay exact.
+                anchor = np.sqrt(QEF_REGION_REGULARIZATION * len(normals)) * np.eye(3)
+                normals = np.vstack([normals, anchor])
+                rhs = np.r_[rhs, np.zeros(3)]
             offset = np.linalg.lstsq(normals, rhs, rcond=None)[0]
             lower = self.reference[corners].min(0)
             upper = lower + self.h
             p = centre + offset
-            if ((p < lower - 1.0e-10) | (p > upper + 1.0e-10)).any():
-                p = centre + box_lstsq(normals, rhs, lower - centre - 1.0e-12, upper - centre + 1.0e-12)
+            inset = self.h * QEF_CELL_INSET
+            if ((p < lower + inset) | (p > upper - inset)).any():
+                p = centre + box_lstsq(normals, rhs, lower + inset - centre, upper - inset - centre)
             local = (p - lower) / self.h
             regions.append((region, p, np.where(OFFSETS == 1, local, 1 - local).prod(1)))
         return regions
@@ -568,12 +582,18 @@ class LinkedSurface:
             )
         faces, self.split_changes = triangulate(rings, others)
         owner = np.nonzero(valid)[0]
+        # A local volume region can have several disconnected boundary fans when
+        # crack fronts meet. They must not share a surface vertex merely because
+        # their material corners still belong to one cell region.
+        candidates = np.flatnonzero(self.broken[self.cell_edges[owner]].any(axis=1))
+        faces, source = split_vertex_fans(faces, len(region_points), candidates)
+        self.vertex_splits = len(source) - len(region_points)
         self._mesh_cache = Mesh(
-            region_points,
+            region_points[source],
             faces,
-            self.region_code[valid],
-            self.cells[owner].reshape(-1, 8),
-            self.region_weights[valid],
+            self.region_code[valid][source],
+            self.cells[owner[source]].reshape(-1, 8),
+            self.region_weights[valid][source],
         )
         return self._mesh_cache
 
@@ -586,6 +606,61 @@ def _edge_uses(keys, uses, key_base, pair):
         return np.zeros(key.shape, int)
     at = np.minimum(np.searchsorted(keys, key), len(keys) - 1)
     return np.where(keys[at] == key, uses[at], 0)
+
+
+def split_vertex_fans(triangles, vertex_count, candidates=None):
+    """Split disconnected closed vertex links; return faces and source vertex ids.
+
+    Each duplicate inherits all geometry and embedding data from its source.
+    No triangles are added or removed. Open or branched links are left intact;
+    those require an edge-topology repair rather than splitting a point pinch.
+    """
+    source = list(range(vertex_count))
+    if candidates is None:
+        candidates = np.arange(vertex_count)
+    if not len(candidates) or not len(triangles):
+        return triangles, np.asarray(source, dtype=int)
+    flat = triangles.ravel()
+    order = np.argsort(flat, kind="stable")
+    offsets = np.r_[0, np.cumsum(np.bincount(flat, minlength=vertex_count))]
+    result = triangles
+    for vertex in candidates:
+        corners = order[offsets[vertex] : offsets[vertex + 1]]
+        # Two disjoint simple cycles require at least six incident triangles.
+        if len(corners) < 6:
+            continue
+        face, slot = corners // 3, corners % 3
+        a = triangles[face, (slot + 1) % 3]
+        b = triangles[face, (slot + 2) % 3]
+        adjacency = {}
+        for i, j in zip(a, b):
+            adjacency.setdefault(int(i), []).append(int(j))
+            adjacency.setdefault(int(j), []).append(int(i))
+        if any(len(neighbors) != 2 for neighbors in adjacency.values()):
+            continue
+        remaining = set(adjacency)
+        first = True
+        for seed in a:
+            if seed not in remaining:
+                continue
+            fan, pending = set(), [int(seed)]
+            while pending:
+                neighbor = pending.pop()
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    fan.add(neighbor)
+                    pending.extend(adjacency[neighbor])
+            if first:
+                first = False
+            else:
+                if result is triangles:
+                    result = triangles.copy()
+                selected = np.fromiter((int(i) in fan for i in a), bool, count=len(a))
+                result.ravel()[corners[selected]] = len(source)
+                source.append(int(vertex))
+            if not remaining:
+                break
+    return result, np.asarray(source, dtype=int)
 
 
 def triangulate(rings, others):

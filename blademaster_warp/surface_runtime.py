@@ -16,6 +16,26 @@ def _write_json(path, value):
     path.write_text(json.dumps(value, indent=2))
 
 
+class InterpolatedDeformation:
+    """Evaluate only the nodal gradients a swept link actually intersects.
+
+    Most substeps sever no links. Interpolating the whole (nodes, 3, 3)
+    field at every knife sample otherwise dominates the surface sweep.
+    """
+
+    def __init__(self, previous, current, fraction):
+        self.previous = previous
+        self.current = current
+        self.fraction = fraction
+
+    def __getitem__(self, nodes):
+        a = self.fraction
+        return (1 - a) * self.previous[nodes] + a * self.current[nodes]
+
+    def __array__(self, dtype=None, copy=None):
+        return np.asarray(self[:], dtype=dtype)
+
+
 @dataclass
 class ToolSample:
     time_s: float
@@ -93,7 +113,9 @@ class SurfaceRecorder:
             "embedding_backend": embedding_backend,
             "ccd_backend": ccd_backend,
             "gpu_scope": (
-                ["compatible nodal position/deformation fields"] if embedding_backend == "cuda" else []
+                ["compatible nodal position/deformation fields", "final trilinear vertex interpolation"]
+                if embedding_backend == "cuda"
+                else []
             )
             + (
                 ["finite moving-segment CCD, FP64 polynomial roots and segment bounds"]
@@ -101,11 +123,15 @@ class SurfaceRecorder:
                 else []
             ),
             "cpu_scope": (["link CCD"] if ccd_backend == "cpu" else [])
+            + (
+                ["nodal fields and final trilinear vertex interpolation"]
+                if embedding_backend == "cpu"
+                else []
+            )
             + [
                 "Hermite updates",
                 "local regions and bounded QEF",
                 "triangle construction",
-                "final trilinear interpolation",
                 "recording",
             ],
             "topology_cache": "reference mesh reused only while no cut-dependent cell is dirty; world-space vertex deformation still recomputed every observation",
@@ -189,9 +215,15 @@ class SurfaceRecorder:
                 else np.empty(0, int)
             )
 
-            def interpolate(previous, current, time_s):
+            def interpolate(previous, current, time_s, deformation=False):
                 a = np.clip((time_s - start) / span, 0.0, 1.0) if span > 0 else 1.0
-                return previous if a == 0 else current if a == 1 else (1 - a) * previous + a * current
+                if a == 0:
+                    return previous
+                if a == 1:
+                    return current
+                if deformation:
+                    return InterpolatedDeformation(previous, current, a)
+                return (1 - a) * previous + a * current
 
             previous_time, interpolated_nodes, interpolated_F = None, None, None
             for a, b in zip(samples, samples[1:]):
@@ -209,12 +241,16 @@ class SurfaceRecorder:
                 a_F = (
                     interpolated_F
                     if previous_time == a.time_s
-                    else interpolate(self.previous_deformation, nodeF, a.time_s)
+                    else interpolate(self.previous_deformation, nodeF, a.time_s, deformation=True)
                 )
                 b_nodes = (
                     a_nodes if a.time_s == b.time_s else interpolate(self.previous_nodes, nodes, b.time_s)
                 )
-                b_F = a_F if a.time_s == b.time_s else interpolate(self.previous_deformation, nodeF, b.time_s)
+                b_F = (
+                    a_F
+                    if a.time_s == b.time_s
+                    else interpolate(self.previous_deformation, nodeF, b.time_s, deformation=True)
+                )
                 s.sweep(
                     a.edge,
                     b.edge,

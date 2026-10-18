@@ -5,6 +5,7 @@ are accumulated over its substeps and returned as an interval-average wrench.
 All quantities are SI in the material frame."""
 
 from dataclasses import dataclass
+import time
 import numpy as np
 import warp as wp
 from . import tool
@@ -81,8 +82,10 @@ class ExternalToolPort:
         self.trajectory = None
         self.trajectory_times = None
         self._results = {}
+        self.timing_s = dict(submission=0.0, completion_and_readback=0.0)
 
     def advance(self, state, duration_s, *, cutting=True, cut_index=0, graph=True):
+        submission_begin = time.perf_counter()
         state = state.checked()
         s = self.solver
         if not np.isfinite(duration_s) or duration_s <= 0:
@@ -162,7 +165,12 @@ class ExternalToolPort:
                     sample(_)
             for launch in finish:
                 s.launch(*launch)
+        readback_begin = time.perf_counter()
+        self.timing_s["submission"] += readback_begin - submission_begin
+        # This wait includes any kernels still running when the host reaches
+        # the readback; it is not a standalone PCIe transfer measurement.
         out = self.result.numpy().astype(np.float64)
+        self.timing_s["completion_and_readback"] += time.perf_counter() - readback_begin
         impulse, angular, errors = out[:3], out[3:6], out[6:9]
         if self.record_trajectory:
             self.trajectory = out[9:].reshape(samples, 7)

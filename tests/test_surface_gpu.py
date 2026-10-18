@@ -87,3 +87,28 @@ def test_cuda_empty_support_stays_invalid_instead_of_freezing_or_zeroing(embeddi
     assert np.isnan(gpu.field(x, F, codes, 1)).all()
     with pytest.raises(ValueError):
         gpu.field(x, F, codes, -1)
+
+
+def test_vertex_buffer_reuse_tracks_changed_coordinates_codes_and_sizes(embeddings):
+    from dataclasses import replace
+
+    surface, ref, cpu, gpu = embeddings
+    F = np.tile(np.eye(3), (len(ref), 1, 1))
+    codes = np.where(ref[:, 0] < 0, 1, 2)
+    mesh = surface.mesh()
+    for step in range(5):
+        if step == 1:
+            surface.sweep([[0, -0.04, 0.04], [0, 0.04, 0.04]], [[0, -0.04, -0.01], [0, 0.04, -0.01]])
+            mesh = surface.mesh()
+        elif step == 2:
+            mesh.reference[:] += [0, 0, 1e-6]
+        elif step == 3:
+            mesh = replace(mesh, reference=mesh.reference[:10], codes=mesh.codes[:10])
+        elif step == 4:
+            mesh.codes[:] = 0
+        x = ref + np.column_stack([np.where(codes == 1, -0.001, 0.002), np.zeros((len(ref), 2))])
+        x[:, 2] += step * 0.0001
+        actual = gpu.vertices(mesh, x, F, codes)
+        expected = cpu.vertices(mesh, x, F, codes)
+        assert len(actual) == len(mesh.reference)
+        np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=1e-12)

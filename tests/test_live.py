@@ -199,6 +199,40 @@ def test_recording_is_opt_in(tmp_path):
             assert {p.name for p in out.iterdir()} == {"manifest.json", "report.json"}
 
 
+def test_observation_interval_controls_recorded_times(tmp_path):
+    from blademaster_warp.franka_run import parser, run
+
+    out = tmp_path / "dense-observations"
+    args = parser().parse_args(
+        [
+            "--no-material",
+            "--duration",
+            ".006",
+            "--observation-interval",
+            ".002",
+            "--record",
+            "--output",
+            str(out),
+        ]
+    )
+    assert run(args)["status"] == "completed"
+    with np.load(out / "trajectory.npz") as data:
+        np.testing.assert_allclose(data["control_tcp"][:, 0], [0.001, 0.003, 0.005, 0.006])
+        assert data["frame_stride"] == 2
+
+
+def test_invalid_observation_interval_rejected_before_initialization(tmp_path):
+    import pytest
+    from blademaster_warp.franka_run import parser, FrankaCuttingRun
+
+    for interval in ("0", "-1", "nan", "inf", ".0015"):
+        out = tmp_path / interval
+        args = parser().parse_args(["--observation-interval", interval, "--output", str(out)])
+        with pytest.raises(ValueError, match="Observation interval"):
+            FrankaCuttingRun(args)
+        assert not out.exists()
+
+
 def test_surface_can_run_without_storage(tmp_path, monkeypatch):
     from blademaster_warp.solver import Solver
     from blademaster_warp.surface_runtime import SurfaceRecorder

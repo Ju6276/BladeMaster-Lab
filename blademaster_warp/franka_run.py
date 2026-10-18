@@ -163,6 +163,14 @@ class FrankaCuttingRun:
             raise ValueError("--video requires --record; live display does not use a video file")
         if not np.isfinite([args.duration, args.interval]).all() or min(args.duration, args.interval) <= 0:
             raise ValueError("Duration and timesteps must be finite and positive")
+        observation_interval = getattr(args, "observation_interval", 0.04)
+        if not np.isfinite(observation_interval) or observation_interval <= 0:
+            raise ValueError("Observation interval must be finite and positive")
+        self.frame_stride = round(observation_interval / args.interval)
+        if self.frame_stride < 1 or not np.isclose(
+            self.frame_stride * args.interval, observation_interval, atol=1e-12, rtol=1e-10
+        ):
+            raise ValueError("Observation interval must be an integer multiple of the robot interval")
         self.out = Path(args.output) if args.output else None
         if self.out is not None:
             self.out.mkdir(parents=True, exist_ok=False)
@@ -196,7 +204,16 @@ class FrankaCuttingRun:
                 self.surface = self._make_surface()
 
         self.data = Recording()
-        self.phase_time = dict(robot_state=0.0, material=0.0, robot_step=0.0, observation=0.0)
+        if self.port:
+            self.port.timing_s = dict.fromkeys(self.port.timing_s, 0.0)
+        self.phase_time = dict(
+            robot_state=0.0,
+            material=0.0,
+            robot_step=0.0,
+            trajectory_record=0.0,
+            observation=0.0,
+            state_publication=0.0,
+        )
         self.paused_s = 0.0
         self.cutting = False
         self.cut_index = 0
@@ -348,7 +365,7 @@ class FrankaCuttingRun:
             tick = time.perf_counter()
             times = self.robot.data.time + self.port.trajectory_times
             self.surface.record_trajectory(times, self.port.trajectory, self.cutting, self.cut_index)
-            self._timed("observation", tick)
+            self._timed("trajectory_record", tick)
         if self.strokes is not None:
             self.strokes.update(self.solver.embedded_particles_previous() > 0, self.args.interval)
         return np.concatenate((reaction.force_n, reaction.torque_nm))
@@ -457,6 +474,7 @@ class FrankaCuttingRun:
                     self.cut_index,
                 )
         if self.observer:
+            publication_begin = time.perf_counter()
             self.observer.publish(
                 robot,
                 s,
@@ -470,6 +488,7 @@ class FrankaCuttingRun:
                 pieces=self._component_sizes(data.codes[-1]) if s else None,
                 piece_labels=self._last_component_labels if s else None,
             )
+            self._timed("state_publication", publication_begin)
         if not self.record:
             # Live mode keeps only the current state, no history.
             data.drop_snapshots()
@@ -483,7 +502,7 @@ class FrankaCuttingRun:
                 self.surface.timing_s = dict.fromkeys(self.surface.timing_s, 0.0)
         status, exception = "completed", None
         count = int(round(args.duration / args.interval))
-        frame_stride = max(1, round(0.04 / args.interval))
+        frame_stride = self.frame_stride
         print_stride = max(1, round(0.5 / args.interval))
         begin = time.perf_counter()
         try:
@@ -599,11 +618,15 @@ class FrankaCuttingRun:
             pause_wall_s=self.paused_s,
             live_setup_s=getattr(self.observer, "setup_s", 0.0),
             timing_scope="physics, observation and state publication; excludes JIT, viewer initialization, user pause and client rendering",
-            time_s=self.phase_time,
+            time_s={
+                **self.phase_time,
+                "observation": self.phase_time["observation"] - self.phase_time["state_publication"],
+            },
             material_present=s is not None,
             warnings=robot.data.warning.number.tolist(),
             surface_wall_s=surface.wall_s if surface else 0.0,
             surface_phase_s=surface.timing_s if surface else {},
+            material_interval_phase_s=self.port.timing_s if self.port else {},
         )
         if cycle:
             completed = status == "completed"
@@ -759,6 +782,12 @@ def parser():
         help="Dense active grid with unchanged-topology cache, or original hash baseline",
     )
     p.add_argument("--interval", type=float, default=0.001)
+    p.add_argument(
+        "--observation-interval",
+        type=float,
+        default=0.04,
+        help="Material/surface observation interval in seconds, a multiple of --interval",
+    )
     p.add_argument(
         "--material",
         choices=["elastic-block", "paper-banana"],

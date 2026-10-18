@@ -77,7 +77,6 @@ def kernels(scalar):
                 extended = 1
         return position, gradient, total, extended
 
-
     @wp.kernel(module="unique")
     def evaluate_nodes(
         nodes: wp.array(dtype=vec3),
@@ -128,7 +127,6 @@ def kernels(scalar):
         else:
             positions[i] = vec3(nan)
             gradients[i] = mat33(nan)
-
 
     @wp.kernel(module="unique")
     def embed_vertices(
@@ -210,6 +208,8 @@ class CudaMaterialEmbedding(MaterialEmbedding):
         self.g_gradients = wp.empty(len(self.nodes), dtype=self.mat33, device=self.device)
         self.g_extensions = wp.zeros(1, dtype=int, device=self.device)
         self.g_unsupported = wp.zeros(1, dtype=int, device=self.device)
+        self._vertex_reference = None
+        self._vertex_capacity = 0
         return self
 
     def _upload(self, data, dtype):
@@ -299,27 +299,38 @@ class CudaMaterialEmbedding(MaterialEmbedding):
             return super().vertices(mesh, x, F, particle_codes)
         if not len(mesh.reference):
             return np.empty((0, 3))
-        fractional = (mesh.reference - self.grid_origin) / self.h
-        base = np.minimum(np.maximum(np.floor(fractional).astype(int), 0), self.grid_cells - 1)
-        local = fractional - base
-        corners = np.ravel_multi_index(
-            (base[:, None, :] + OFFSETS[None, :, :]).transpose(2, 0, 1), tuple(self.grid_cells + 1)
-        )
-        weights = np.where(OFFSETS[None, :, :] == 1, local[:, None, :], 1 - local[:, None, :]).prod(2)
+        count = len(mesh.reference)
+        # Weights depend only on reference geometry. Compare coordinates as
+        # callers may update a mesh in place; particle motion never invalidates them.
+        if not np.array_equal(mesh.reference, self._vertex_reference):
+            fractional = (mesh.reference - self.grid_origin) / self.h
+            base = np.minimum(np.maximum(np.floor(fractional).astype(int), 0), self.grid_cells - 1)
+            local = fractional - base
+            corners = np.ravel_multi_index(
+                (base[:, None, :] + OFFSETS[None, :, :]).transpose(2, 0, 1), tuple(self.grid_cells + 1)
+            )
+            weights = np.where(OFFSETS[None, :, :] == 1, local[:, None, :], 1 - local[:, None, :]).prod(2)
+            self._g_vertex_corners = self._upload(corners.astype(np.int32), int)
+            self._g_vertex_weights = self._upload(weights, self.scalar)
+            self._vertex_reference = mesh.reference.copy()
+        if count > self._vertex_capacity:
+            self._vertex_capacity = 1 << (count - 1).bit_length()
+            self._g_vertex_codes = wp.empty(self._vertex_capacity, dtype=wp.int64, device=self.device)
+            self._g_vertices = wp.empty(self._vertex_capacity, dtype=self.vec3, device=self.device)
+        self._g_vertex_codes[:count].assign(self._codes(mesh.codes, count))
         grid._upload_particles(x, F, particle_codes)
         device = self.device
-        out = wp.empty(len(mesh.reference), dtype=self.vec3, device=device)
         grid.g_extensions.zero_()
         grid.g_unsupported.zero_()
         wp.launch(
             self.embed_vertices,
-            len(mesh.reference),
+            count,
             [
-                wp.array(self._codes(mesh.codes, len(mesh.codes)), dtype=wp.int64, device=device),
-                wp.array(corners.astype(np.int32), dtype=int, device=device),
-                wp.array(weights.astype(self.np_scalar), dtype=self.scalar, device=device),
+                self._g_vertex_codes,
+                self._g_vertex_corners,
+                self._g_vertex_weights,
                 *grid._support_inputs(),
-                out,
+                self._g_vertices,
                 grid.g_extensions,
                 grid.g_unsupported,
             ],
@@ -331,4 +342,4 @@ class CudaMaterialEmbedding(MaterialEmbedding):
             raise RuntimeError(
                 "Surface region has no compatible material support; refine reference grid/support"
             )
-        return out.numpy().astype(np.float64)
+        return self._g_vertices[:count].numpy().astype(np.float64)

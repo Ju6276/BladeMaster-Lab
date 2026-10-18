@@ -178,3 +178,35 @@ def test_stationary_cut_switch_interpolates_nodes_at_material_observation_times(
     ):
         for a, b in zip(actual, expected):
             np.testing.assert_allclose(a, b, atol=1e-14, equal_nan=True)
+
+
+def test_lazy_deformation_preserves_cut_geometry_under_nonuniform_strain(monkeypatch):
+    from blademaster_warp import surface_runtime
+
+    solver, F = scene()
+    reference = solver.reference
+    codes = np.where(reference[:, 0] < 0, 1, 2)
+
+    def reconstruct():
+        recorder = SurfaceRecorder(solver, None)
+        recorder.update(0, reference, F, codes, tool(pose(0.02)), True)
+        for t in np.linspace(0.002, 0.038, 20):
+            p = pose(0.02 - 0.025 * t / 0.04, yaw=15 * t / 0.04)
+            recorder.record_trajectory([t], p[None], True, 0)
+        deformed = reference.copy()
+        deformed[:, 2] += 4 * reference[:, 0] ** 2
+        gradient = F.copy()
+        gradient[:, 2, 0] = 8 * reference[:, 0]
+        recorder.update(0.04, deformed, gradient, codes, tool(pose(-0.005, yaw=15)), False)
+        return recorder
+
+    lazy = reconstruct()
+    monkeypatch.setattr(
+        surface_runtime, "InterpolatedDeformation", lambda before, after, a: (1 - a) * before + a * after
+    )
+    eager = reconstruct()
+    assert lazy.surface.broken.any()
+    np.testing.assert_array_equal(lazy.surface.codes, eager.surface.codes)
+    np.testing.assert_array_equal(lazy.surface.broken, eager.surface.broken)
+    for key in ("vertices", "triangles", "reference", "codes"):
+        np.testing.assert_array_equal(lazy.current[key], eager.current[key])

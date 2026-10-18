@@ -1,8 +1,8 @@
 """Input-to-frame latency of the live teleoperation path.
 
 Streams the mock operator input at 60 Hz over the same chunked POST /input as the SpaceMouse client,
-polls GET /state like the browser and measures, per command, the delay until the first frame that
-reflects it (packet field input_seq: the command the frame's last step used). Run against `franka_run --live --motion teleop`.
+polls GET /state like the browser and measures the age of the exact command
+acknowledged by each frame's input_seq. Run against `franka_run --live --motion teleop`.
 The script changes the run state only when asked: --start, --restart, --stop.
 """
 
@@ -13,11 +13,13 @@ import json
 import socket
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 
 from blademaster_warp.spacemouse_client import body
 from blademaster_warp.teleop_input import mock_command
+from blademaster_warp.provenance import git_revision
 
 
 def wait_ready(host, port, restart=False, timeout=300.0):
@@ -65,6 +67,21 @@ def percentiles(values):
     return f"median {np.median(v):6.1f}  p95 {np.percentile(v, 95):6.1f}  max {v.max():6.1f} ms"
 
 
+def acknowledged_latencies(sent, frames):
+    """First received frame for each exactly acknowledged input sequence.
+
+    LatestInput coalesces axis updates. A frame using sequence 10 does not
+    establish that sequences 8 and 9 were ever integrated by the simulation.
+    """
+    seen, ages = set(), []
+    for frame in frames:
+        sequence = frame["seq"]
+        if sequence in sent and sequence not in seen:
+            ages.append(frame["received"] - sent[sequence])
+            seen.add(sequence)
+    return ages
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default="127.0.0.1")
@@ -74,7 +91,10 @@ def main():
     p.add_argument("--start", action="store_true", help="Start the run if it is ready or paused")
     p.add_argument("--restart", action="store_true", help="Restart a finished run")
     p.add_argument("--stop", action="store_true", help="Stop the run at the end")
+    p.add_argument("--output", type=Path, help="Save timing samples and configuration as JSON")
     a = p.parse_args()
+    if not np.isfinite([a.seconds, a.rate]).all() or min(a.seconds, a.rate) <= 0:
+        p.error("--seconds and --rate must be finite and positive")
 
     status = wait_ready(a.host, a.port, a.restart)
     sent, stop = {}, threading.Event()
@@ -127,15 +147,11 @@ def main():
         raise RuntimeError(f"Only {len(frames)} running frames with a known input_seq")
 
     interval = np.diff([f["received"] for f in frames])
-    # Each command first becomes visible in the earliest later frame that used it or a newer one.
-    shown = np.array([f["seq"] for f in frames])
-    first = []
-    for seq, t in sent.items():
-        k = np.searchsorted(shown, seq)
-        if frames[0]["seq"] < seq and k < len(frames):
-            first.append(frames[k]["received"] - t)
-    print(f"{len(frames)} frames, sim {frames[0]['sim']:.3f}-{frames[-1]['sim']:.3f} s, ratio {frames[-1]['ratio']:.3f}")
-    print("command -> first frame      ", percentiles(first), f"({len(first)} commands)")
+    first = acknowledged_latencies(sent, frames)
+    print(
+        f"{len(frames)} frames, sim {frames[0]['sim']:.3f}-{frames[-1]['sim']:.3f} s, ratio {frames[-1]['ratio']:.3f}"
+    )
+    print("acknowledged input -> frame ", percentiles(first), f"({len(first)} of {len(sent)} sent commands)")
     print("input age at frame receipt  ", percentiles([f["age"] for f in frames]))
     print("frame interval              ", percentiles(interval))
     print("GET /state request          ", percentiles([f["request"] for f in frames]))
@@ -144,6 +160,24 @@ def main():
         f"payload  gzip {np.median([f['gzip'] for f in frames]) / 1e3:.0f} kB, "
         f"raw {np.median([f['raw'] for f in frames]) / 1e3:.0f} kB (median)"
     )
+    if a.output:
+        report = dict(
+            revision=git_revision(),
+            host=a.host,
+            port=a.port,
+            input_rate_hz=a.rate,
+            elapsed_s=a.seconds,
+            scope="command send to HTTP frame receipt, before browser rendering",
+            sent_commands=len(sent),
+            acknowledged_commands=len(first),
+            acknowledged_latency_ms=dict(
+                zip(["p50", "p95", "max"], (1000 * np.percentile(first, [50, 95, 100])).tolist())
+            ),
+            received_frames_hz=float(1 / np.mean(interval)),
+            frames=frames,
+        )
+        a.output.parent.mkdir(parents=True, exist_ok=True)
+        a.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
 
 
 if __name__ == "__main__":

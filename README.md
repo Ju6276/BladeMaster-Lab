@@ -2,7 +2,7 @@
 
 [BladeMaster](https://arxiv.org/html/2609.27342v2)（拓扑感知 TLMPM 切割仿真）的 Warp/CUDA 实现，带 MuJoCo Franka 双向耦合、linked-volume 表面重建和浏览器在线显示。
 
-- SpaceMouse 遥操作 Franka 切香蕉（论文 §IV-C 材料，6 mm 网格，62.5 μs 子步），浏览器支持开始、暂停、结束和重启。表面保留实际子步刀路，包含两帧之间的进退刀和换刀。
+- SpaceMouse 遥操作 Franka 切香蕉（论文 §IV-C 材料，默认 3 mm 材料网格、40 μs 子步），浏览器支持开始、暂停、结束和重启，并分别显示材料与表面的网格间距。表面保留实际子步刀路。
 - 连续三刀 + 推开 + 表面 + 录制：**四块，0.62× 实时**（6 mm，21.246 s 仿真 / 34.347 s 计算，RTX 4060；不含客户端渲染）。模拟遥操作为 0.50×。最新验证与计时见 RESULTS。
 - 论文 Table I 重力刀（8960 粒子，2 ms）：**0.42–0.44 wall/sim**，切透成两块（论文 RTX 5090 为 0.33）。
 - 已实现 Fig. 1、3、4、6、7、8 对应场景。Fig. 5（CRESSim-MPM 独立操作对照）和 Fig. 3(d) 的停刀深度仍在 TODO；低锋利度切不透使用 `cut_hold` 对照开关。逐项见 RESULTS。
@@ -42,7 +42,7 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 ```bash
 # 服务器（SpaceMouse 插在哪台机器上，客户端就在哪台运行；这里两者都在 tams61）
 .venv/bin/python -m blademaster_warp.franka_run --live --port 18765 --motion teleop --cut-events auto \
-  --controller libfranka --stiffness 1000 --material paper-banana --duration 1800 \
+  --controller libfranka --stiffness 1000 --material paper-banana --spacing 0.003 --duration 1800 \
   --surface --surface-embedding cuda --surface-ccd cuda
 .venv/bin/python -m blademaster_warp.spacemouse_client --port 18765 --seconds 1800
 # Mac：只转发页面
@@ -51,6 +51,7 @@ ssh -N -L 18765:127.0.0.1:18765 dong@100.70.97.92
 
 SpaceMouse 六轴给刀的线速度和角速度。按键默认 `--buttons session`：左键开始（结束后再按为重新开始），右键结束，两键同按暂停，与页面按钮相同；`--buttons cut` 改为左键 `begin_cut`、右键 `end_cut`，配合 `--cut-events manual` 手动开、关每一刀（6 mm 网格最多 33 刀）。`--cut-events auto`（推荐）不用按键分刀：刀每次离开材料后再进入就是新的一刀；用刀面推开切块时应改用手动模式，否则推的动作也会被当成切。只有切割开启时刀刃经过的材料才会被切开，切口位置和形状完全由刀的实际轨迹决定。
 
+- `--spacing` 是材料网格间距，单位 m，可取 0.003、0.004、0.0045、0.006 等任意有效值。香蕉遥操作默认 3 mm（粒子间距 1.5 mm），减少切透时粗网格造成的侧向弹开；`--spacing 0.006` 更快，但反力和弹开更明显。3 mm 在 RTX 4060 上仍慢于实时。
 - `--teleop-view front|behind`：操作者站在机械臂对面（默认，往前推即朝向机械臂）或身后。
 - `--teleop-rotation yaw|full`：`yaw`（默认）只允许绕竖直轴转，刀始终竖直；`full` 用三个转轴。
 - `--surface-precision`：在线显示默认用 float32 的 CUDA 表面嵌入，录制时用 float64。
@@ -117,6 +118,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | `blademaster_warp.convergence` | 步长、耦合间隔、分辨率扫描 |
 | `blademaster_warp.run`，`blademaster_warp.teleop` | 不带机械臂的导向刀与刀遥操作；刀—砧板接触与 Franka 路径相同，由 `tool.step` 处理 |
 | `scripts/probe_substep.py` | 单子步耗时测量 |
+| `scripts/check_cut_release.py` | Franka 以 60 mm/s 输入切到底、保持、退刀，比较不同网格/种子下的实际片块平移、反力和动能；如 `python -m scripts.check_cut_release --spacing .003 --seed 1 --surface --output runs/release-3mm` |
 | `scripts/topocut_compare.py` | 同一刀路下 BladeMaster 与 TopoCut 式单场 MLS-MPM（`mlsmpm.py` + `topocut_topology.py`）对比，谱奖励评价；`scripts/render_compare.py` 把结果渲染成三栏对比视频 |
 | `scripts/surface_deformed.py` | 已知变形下的表面嵌入误差与自交 |
 | `scripts/surface_observations.py` | 保留完整刀路，对比不同材料观测间隔；默认 CUDA，可逐帧检查几何 |

@@ -99,6 +99,7 @@ def test_post_bodies_are_consumed_on_a_kept_alive_connection():
 
 
 def test_live_input_stream_feeds_teleop_source():
+    from contextlib import closing
     import http.client
     from blademaster_warp.teleop_input import Command, LatestInput
 
@@ -115,9 +116,12 @@ def test_live_input_stream_feeds_teleop_source():
         for seq, event in ((0, "begin_cut"), (1, "")):
             data = (json.dumps(Command(seq, (0, 0, -0.01), (0, 0, 0), event).packet()) + "\n").encode()
             chunks += f"{len(data):x}\r\n".encode() + data + b"\r\n"
-        conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
-        conn.request("POST", "/input", body=chunks + b"0\r\n\r\n", headers={"Transfer-Encoding": "chunked"})
-        assert json.loads(gzip.decompress(conn.getresponse().read()))["accepted_packets"] == 2
+        with closing(http.client.HTTPConnection("127.0.0.1", server.server_port)) as conn:
+            conn.request(
+                "POST", "/input", body=chunks + b"0\r\n\r\n", headers={"Transfer-Encoding": "chunked"}
+            )
+            with closing(conn.getresponse()) as response:
+                assert json.loads(gzip.decompress(response.read()))["accepted_packets"] == 2
         command, events, stale = live.teleop.sample()
         assert command.seq == 1 and events == [(0, "begin_cut")] and not stale
     finally:

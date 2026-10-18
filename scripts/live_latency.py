@@ -13,6 +13,7 @@ import json
 import socket
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 
 import numpy as np
@@ -22,18 +23,26 @@ from blademaster_warp.teleop_input import mock_command
 from blademaster_warp.provenance import git_revision
 
 
+def check_status(response, request, expected=(200,)):
+    if response.status not in expected:
+        raise RuntimeError(f"{request} failed: HTTP {response.status}")
+
+
 def wait_ready(host, port, restart=False, timeout=300.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         try:
-            conn = http.client.HTTPConnection(host, port, timeout=2.0)
-            conn.request("GET", "/state")
-            status = json.loads(body(conn.getresponse()))
-            if restart and status.get("state") in ("completed", "stopped", "failed"):
-                # Restart a finished run; it starts playing as soon as it is ready.
-                conn.request("POST", "/command/start")
-                conn.getresponse().read()
-            conn.close()
+            with closing(http.client.HTTPConnection(host, port, timeout=2.0)) as conn:
+                conn.request("GET", "/state")
+                with closing(conn.getresponse()) as response:
+                    check_status(response, "GET /state")
+                    status = json.loads(body(response))
+                if restart and status.get("state") in ("completed", "stopped", "failed"):
+                    # Restart a finished run; it starts playing as soon as it is ready.
+                    conn.request("POST", "/command/start")
+                    with closing(conn.getresponse()) as response:
+                        check_status(response, "POST /command/start")
+                        response.read()
             if status.get("ready"):
                 return status
         except (OSError, http.client.HTTPException, ValueError):
@@ -43,23 +52,27 @@ def wait_ready(host, port, restart=False, timeout=300.0):
 
 
 def stream_input(host, port, first_seq, sent, stop, rate):
-    stream = socket.create_connection((host, port), timeout=2.0)
-    stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    stream.sendall(
-        f"POST /input HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/x-ndjson\r\n"
-        "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n".encode()
-    )
-    seq, phase, start = first_seq, -1, time.monotonic()
-    while not stop.is_set():
-        tick = time.monotonic()
-        command, phase = mock_command(tick - start, seq, phase)
-        data = (json.dumps(command.packet()) + "\n").encode()
-        sent[seq] = time.perf_counter()
-        stream.sendall(f"{len(data):x}\r\n".encode() + data + b"\r\n")
-        seq += 1
-        time.sleep(max(0.0, tick + 1 / rate - time.monotonic()))
-    stream.sendall(b"0\r\n\r\n")
-    stream.close()
+    with closing(socket.create_connection((host, port), timeout=2.0)) as stream:
+        stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        stream.sendall(
+            f"POST /input HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/x-ndjson\r\n"
+            "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n".encode()
+        )
+        seq, phase, start = first_seq, -1, time.monotonic()
+        while not stop.is_set():
+            tick = time.monotonic()
+            command, phase = mock_command(tick - start, seq, phase)
+            data = (json.dumps(command.packet()) + "\n").encode()
+            sent[seq] = time.perf_counter()
+            stream.sendall(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+            seq += 1
+            delay = max(0.0, tick + 1 / rate - time.monotonic())
+            stop.wait(min(delay, threading.TIMEOUT_MAX))
+        stream.sendall(b"0\r\n\r\n")
+        with closing(http.client.HTTPResponse(stream)) as response:
+            response.begin()
+            check_status(response, "POST /input")
+            response.read()
 
 
 def percentiles(values):
@@ -90,59 +103,87 @@ def main():
     p.add_argument("--rate", type=float, default=60.0, help="Operator input rate, Hz")
     p.add_argument("--start", action="store_true", help="Start the run if it is ready or paused")
     p.add_argument("--restart", action="store_true", help="Restart a finished run")
-    p.add_argument("--stop", action="store_true", help="Stop the run at the end")
+    p.add_argument("--stop", action="store_true", help="Stop the run on exit, including after an error")
     p.add_argument("--output", type=Path, help="Save timing samples and configuration as JSON")
     a = p.parse_args()
     if not np.isfinite([a.seconds, a.rate]).all() or min(a.seconds, a.rate) <= 0:
         p.error("--seconds and --rate must be finite and positive")
 
-    status = wait_ready(a.host, a.port, a.restart)
     sent, stop = {}, threading.Event()
-    sender = threading.Thread(
-        target=stream_input, args=(a.host, a.port, status.get("last_seq", -1) + 1, sent, stop, a.rate)
-    )
-    sender.start()
-    time.sleep(0.2)
-    conn = http.client.HTTPConnection(a.host, a.port, timeout=5.0)
-    if a.start and status["state"] in ("ready", "paused"):
-        conn.request("POST", "/command/start")
-        conn.getresponse().read()
+    frames, errors, sender_errors = [], [], []
+    sender = None
 
-    frames, sequence, end = [], -1, time.monotonic() + a.seconds
-    while time.monotonic() < end:
-        t0 = time.perf_counter()
-        conn.request("GET", f"/state?after={sequence}")
-        response = conn.getresponse()
-        body = response.read()
-        t1 = time.perf_counter()
-        if response.status == 204:
-            continue
-        raw = gzip.decompress(body)
-        packet = json.loads(raw)
-        t2 = time.perf_counter()
-        sequence = packet["sequence"]
-        if packet.get("state") == "running" and packet.get("input_seq") in sent:
-            frames.append(
-                dict(
-                    seq=packet["input_seq"],
-                    age=t1 - sent[packet["input_seq"]],
-                    request=t1 - t0,
-                    decode=t2 - t1,
-                    received=t1,
-                    gzip=len(body),
-                    raw=len(raw),
-                    sim=packet["sim_s"],
-                    ratio=packet["ratio"],
-                )
-            )
-        if packet.get("state") in ("completed", "stopped", "failed"):
-            break
-    stop.set()
-    sender.join()
-    if a.stop:
-        conn.request("POST", "/command/stop")
-        conn.getresponse().read()
-    conn.close()
+    def send_input():
+        try:
+            stream_input(a.host, a.port, status.get("last_seq", -1) + 1, sent, stop, a.rate)
+        except BaseException as error:
+            sender_errors.append(error)
+            stop.set()
+
+    try:
+        status = wait_ready(a.host, a.port, a.restart)
+        sender = threading.Thread(target=send_input)
+        sender.start()
+        if not stop.wait(0.2):
+            with closing(http.client.HTTPConnection(a.host, a.port, timeout=5.0)) as conn:
+                if a.start and status["state"] in ("ready", "paused"):
+                    conn.request("POST", "/command/start")
+                    with closing(conn.getresponse()) as response:
+                        check_status(response, "POST /command/start")
+                        response.read()
+
+                sequence, end = -1, time.monotonic() + a.seconds
+                while not stop.is_set() and time.monotonic() < end:
+                    t0 = time.perf_counter()
+                    conn.request("GET", f"/state?after={sequence}")
+                    with closing(conn.getresponse()) as response:
+                        check_status(response, "GET /state", expected=(200, 204))
+                        data = response.read()
+                        t1 = time.perf_counter()
+                        if response.status == 204:
+                            continue
+                    raw = gzip.decompress(data)
+                    packet = json.loads(raw)
+                    t2 = time.perf_counter()
+                    sequence = packet["sequence"]
+                    if packet.get("state") == "running" and packet.get("input_seq") in sent:
+                        frames.append(
+                            dict(
+                                seq=packet["input_seq"],
+                                age=t1 - sent[packet["input_seq"]],
+                                request=t1 - t0,
+                                decode=t2 - t1,
+                                received=t1,
+                                gzip=len(data),
+                                raw=len(raw),
+                                sim=packet["sim_s"],
+                                ratio=packet["ratio"],
+                            )
+                        )
+                    if packet.get("state") in ("completed", "stopped", "failed"):
+                        break
+    except BaseException as error:
+        errors.append(error)
+    finally:
+        stop.set()
+        if sender is not None and sender.ident is not None:
+            sender.join()
+        errors.extend(sender_errors)
+        if a.stop:
+            # A failed poll may leave its HTTP connection unusable.
+            try:
+                with closing(http.client.HTTPConnection(a.host, a.port, timeout=2.0)) as conn:
+                    conn.request("POST", "/command/stop")
+                    with closing(conn.getresponse()) as response:
+                        check_status(response, "POST /command/stop")
+                        response.read()
+            except BaseException as error:
+                errors.append(error)
+    if errors:
+        primary = errors[0]
+        for error in errors[1:]:
+            primary.add_note(f"Additional failure during shutdown: {error!r}")
+        raise primary
     if len(frames) < 3:
         raise RuntimeError(f"Only {len(frames)} running frames with a known input_seq")
 

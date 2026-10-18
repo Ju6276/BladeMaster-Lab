@@ -94,8 +94,11 @@ class LiveState:
         asset["generation"] = self.generation
         self.asset = asset
         if solver:
-            x, F, codes = solver.x.numpy(), solver.F.numpy(), solver.codes.numpy()
-            surface.update(0.0, x, F, codes, robot.state(), cutting=False, record_frame=False)
+            x, codes = solver.x.numpy(), solver.codes.numpy()
+            if surface is not None:
+                surface.update(
+                    0.0, x, solver.F.numpy(), codes, robot.state(), cutting=False, record_frame=False
+                )
         else:
             x = codes = None
         with self.lock:

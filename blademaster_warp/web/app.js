@@ -88,29 +88,76 @@ async function fetchJson(url, timeoutMs) {
   clearTimeout(timer);
  }
 }
-async function poll(){
- let delay=0;
- try{
-  const t0=performance.now();
-  const packet=await fetchJson('/state?after='+seq,POLL_TIMEOUT_MS);
-  if(packet!==null){
-   const p=packet.data,t2=performance.now();
-   if(p.generation!==undefined&&p.generation!==assetGeneration){
-    $('connection').textContent='正在加载机器人场景…';
-    const asset=await fetchJson('/scene',SCENE_TIMEOUT_MS);
-    if(asset?.data){const a=asset.data;if(pageVersion===null)pageVersion=a.web_version;else if(a.web_version!==pageVersion){location.reload();return}installAsset(a)}
+function showStatus(packet) {
+ const state = packet.state;
+ $('connection').textContent = states[state] || state;
+ $('connection').className = 'connection' + (state === 'failed' ? ' error' : '');
+ $('start').disabled = ['loading', 'running'].includes(state) || packet.can_restart === false;
+ $('pause').disabled = state !== 'running';
+ $('stop').disabled = !['running', 'paused', 'ready'].includes(state);
+ $('start').textContent = ['completed', 'stopped', 'failed'].includes(state)
+  ? '重新开始' : state === 'paused' ? '继续' : '开始';
+ if (packet.report) {
+  const report = packet.report;
+  const success = report.task_evaluation?.success;
+  let result = '本次运行已结束';
+  if (success === true) result = '切割流程通过';
+  else if (state === 'stopped') result = '用户结束';
+  else if (success === false) result = '切割流程未完成';
+  $('result').textContent = report.exception || result;
+  $('result').className = success ? 'good' : 'slow';
+  $('storage').textContent = report.recording ? '本次已开启原始数据记录' : '本次未保存逐帧快照';
+ } else {
+  $('result').textContent = packet.phase === 'ready' ? '' : packet.phase || '';
+ }
+}
+
+async function poll() {
+ let delay = 0;
+ try {
+  const begin = performance.now();
+  const response = await fetchJson('/state?after=' + seq, POLL_TIMEOUT_MS);
+  if (response !== null) {
+   const packet = response.data;
+   const parsedAt = performance.now();
+   if (packet.generation !== undefined && packet.generation !== assetGeneration) {
+    $('connection').textContent = '正在加载机器人场景…';
+    const asset = await fetchJson('/scene', SCENE_TIMEOUT_MS);
+    if (asset?.data) {
+     if (pageVersion === null) pageVersion = asset.data.web_version;
+     else if (asset.data.web_version !== pageVersion) {
+      location.reload();
+      return;
+     }
+     installAsset(asset.data);
+    }
    }
-   if(p.geom_positions&&assetGeneration===p.generation){const appliedAt=performance.now();applyPacket(p);const t3=performance.now();keep(timing.fetchMs,packet.receivedAt-t0);keep(timing.parseMs,t2-packet.receivedAt);keep(timing.applyMs,t3-appliedAt);keep(timing.bytes,packet.bytes);pendingPacket={appliedAt:t3,sequence:p.sequence,inputSequence:p.input_seq,simS:p.sim_s}}
-   seq=p.sequence;lastReceive=performance.now();packetCount++;lastState=p.state;
-   $('connection').textContent=states[p.state]||p.state;$('connection').className='connection'+(p.state==='failed'?' error':'');
-   $('start').disabled=['loading','running'].includes(p.state)||p.can_restart===false;$('pause').disabled=p.state!=='running';$('stop').disabled=!['running','paused','ready'].includes(p.state);
-   $('start').textContent=['completed','stopped','failed'].includes(p.state)?'重新开始':p.state==='paused'?'继续':'开始';
-   if(p.report){const success=p.report.task_evaluation?.success;$('result').textContent=p.report.exception|| (success===true?'切割流程通过':p.state==='stopped'?'用户结束':success===false?'切割流程未完成':'本次运行已结束');$('result').className=success?'good':'slow';$('storage').textContent=p.report.recording?'本次已开启原始数据记录':'本次未保存逐帧快照';}
-   else $('result').textContent=p.phase==='ready'?'':p.phase||'';
+   if (packet.geom_positions && assetGeneration === packet.generation) {
+    const beginApply = performance.now();
+    applyPacket(packet);
+    const appliedAt = performance.now();
+    keep(timing.fetchMs, response.receivedAt - begin);
+    keep(timing.parseMs, parsedAt - response.receivedAt);
+    keep(timing.applyMs, appliedAt - beginApply);
+    keep(timing.bytes, response.bytes);
+    pendingPacket = {
+     appliedAt, sequence: packet.sequence, inputSequence: packet.input_seq, simS: packet.sim_s
+    };
+   }
+   seq = packet.sequence;
+   lastReceive = performance.now();
+   packetCount++;
+   lastState = packet.state;
+   showStatus(packet);
   }
- }catch(e){$('connection').textContent=e.name==='AbortError'?'连接超时，重试中':'连接中断：'+e.message;$('connection').className='connection error';delay=500}
+ } catch (error) {
+  $('connection').textContent = error.name === 'AbortError'
+   ? '连接超时，重试中' : '连接中断：' + error.message;
+  $('connection').className = 'connection error';
+  delay = 500;
+ }
  // The server holds the request until a new frame, so polling again at once does not spin.
- setTimeout(poll,delay);
+ setTimeout(poll, delay);
 }
 for(const command of ['start','pause','stop'])$(command).onclick=async()=>{const r=await fetch('/command/'+command,{method:'POST'});if(!r.ok)$('connection').textContent=await r.text()};
 function draw() {

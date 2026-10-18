@@ -282,6 +282,18 @@ def test_live_preview_does_not_insert_unpaired_recorded_frame(tmp_path):
     np.testing.assert_allclose([f["time_s"] for f in frames], trajectory["control_tcp"][:, 0])
 
 
+def test_live_material_can_start_without_surface_reconstruction():
+    from blademaster_warp.franka_run import parser, run
+
+    args = parser().parse_args(["--material", "paper-banana", "--duration", ".002"])
+    live = LiveState()
+    live.autostart = True
+    report = run(args, observer=live)
+    assert report["status"] == "completed"
+    assert len(live.snapshot["particles"]) > 0
+    assert not live.snapshot.get("vertices")
+
+
 def test_piece_ids_survive_later_cuts():
     from types import SimpleNamespace
 

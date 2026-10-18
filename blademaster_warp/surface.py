@@ -152,6 +152,56 @@ def box_lstsq(A, b, lower, upper):
     return best
 
 
+def constrained_box_lstsq(A, b, planes, offsets, lower, upper):
+    """Minimise the QEF inside a cell while keeping a crack front on its planes.
+
+    Return None when the planes have no common point in the box. Curved cuts
+    can supply inconsistent tangent planes; those cells retain the bounded QEF.
+    Coordinates are offsets from the Hermite centroid, in metres.
+    """
+    tolerance = 1e-10 * float(np.max(upper - lower))
+
+    def solve(constraints, values):
+        _, singular, directions = np.linalg.svd(constraints, full_matrices=True)
+        rank = np.count_nonzero(singular > singular[0] * 1e-10)
+        origin = np.linalg.lstsq(constraints, values, rcond=1e-10)[0]
+        if np.max(np.abs(constraints @ origin - values)) > tolerance:
+            return None
+        nullspace = directions[rank:].T
+        u, singular, directions = np.linalg.svd(A @ nullspace, full_matrices=False)
+        # A cut-plane row is zero in its own nullspace. Use the original
+        # QEF scale so roundoff in these rows cannot choose an arbitrary cell corner.
+        retained = singular > 1e-10 * np.linalg.norm(A)
+        free = directions[retained].T @ ((u[:, retained].T @ (b - A @ origin)) / singular[retained])
+        point = origin + nullspace @ free
+        if np.any(point < lower - tolerance) or np.any(point > upper + tolerance):
+            return None
+        return point
+
+    point = solve(planes, offsets)
+    if point is not None:
+        return point
+    best, best_key = None, None
+    for choice in product((0, 1, 2), repeat=3):
+        choice = np.asarray(choice)
+        fixed = np.flatnonzero(choice)
+        if not len(fixed):
+            continue
+        constraints = np.vstack([planes, np.eye(3)[fixed]])
+        values = np.r_[offsets, np.where(choice[fixed] == 1, lower[fixed], upper[fixed])]
+        point = solve(constraints, values)
+        if point is None:
+            continue
+        key = (float(np.linalg.norm(A @ point - b)), float(np.linalg.norm(point)))
+        if (
+            best_key is None
+            or key[0] < best_key[0] - tolerance
+            or (abs(key[0] - best_key[0]) <= tolerance and key[1] < best_key[1])
+        ):
+            best, best_key = point, key
+    return best
+
+
 @dataclass
 class Mesh:
     reference: np.ndarray
@@ -490,6 +540,7 @@ class LinkedSurface:
                         todo.append(b)
             points = []
             normals = []
+            front_planes = []
             # At a crack front both ends of a severed edge may still connect
             # around intact edges within the cell. That connected region still
             # needs a Hermite representative; omitting it leaves an open front.
@@ -500,6 +551,7 @@ class LinkedSurface:
                     p, n = self.hermite[e]
                     points.append(p)
                     normals.append(n)
+                    front_planes.append(self.broken[e] and a in region and b in region)
             if not points:
                 continue
             points = np.array(points)
@@ -522,6 +574,16 @@ class LinkedSurface:
             inset = self.h * QEF_CELL_INSET
             if ((p < lower + inset) | (p > upper - inset)).any():
                 p = centre + box_lstsq(normals, rhs, lower + inset - centre, upper - inset - centre)
+            if any(front_planes):
+                # Both banks share this vertex until the crack separates the
+                # local region. A soft QEF fit can push it through either bank.
+                planes = normals[: len(points)][front_planes]
+                offsets = np.einsum("ij,ij->i", planes, points[front_planes] - centre)
+                front = constrained_box_lstsq(
+                    normals, rhs, planes, offsets, lower + inset - centre, upper - inset - centre
+                )
+                if front is not None:
+                    p = centre + front
             local = (p - lower) / self.h
             regions.append((region, p, np.where(OFFSETS == 1, local, 1 - local).prod(1)))
         return regions

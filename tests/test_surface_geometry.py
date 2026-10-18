@@ -197,6 +197,54 @@ def test_recorded_partial_crack_crossing_is_not_a_seam_contact():
         assert segment_triangle_pairs(a[None], b[None], np.array([[p, q, r]]), strict=True).item()
 
 
+def test_partial_crack_front_stays_on_the_cut_plane(monkeypatch):
+    import blademaster_warp.surface as module
+
+    surface = LinkedSurface(BANANA_DEMO_SIZE_M, 0.003, "banana")
+    # First severed link at frame 63; the remaining links still connect both
+    # banks in three cells. Their shared rim must lie on this Hermite plane.
+    node = np.ravel_multi_index((33, 9, 7), surface.dims)
+    edge = int(np.flatnonzero((surface.edges[:, 0] == node) & (surface.axes == 0))[0])
+    point = np.array([0.040068095115760365, -0.0045, 0.0195])
+    normal = np.array([0.9998799731904567, 0.014900775404051499, 0.004243360108371719])
+    surface.broken[edge] = True
+    surface.hermite[edge] = point, normal
+    with monkeypatch.context() as context:
+        context.setattr(module, "constrained_box_lstsq", lambda *args: None)
+        before = surface.mesh()
+    assert geometry_report(before.reference, before.triangles)["self_interior_crossings"] == 4
+    surface.cell_geometry.clear()
+    surface.dirty.update(surface.cells_around(edge))
+    after = surface.mesh()
+    geometry = geometry_report(after.reference, after.triangles)
+    assert_closed_oriented(geometry, 1)
+    assert geometry["self_interior_crossings"] == 0
+    np.testing.assert_allclose(
+        (surface.reference[after.cells] * after.weights[:, :, None]).sum(1),
+        after.reference,
+        rtol=0,
+        atol=2e-16,
+    )
+
+
+@pytest.mark.parametrize("scale", [1e-6, 1e-3, 1.0, 1e3])
+def test_crack_plane_constrained_fit_respects_box_and_infeasible_planes(scale):
+    from blademaster_warp.surface import constrained_box_lstsq
+
+    lower, upper = np.zeros(3), np.ones(3) * scale
+    plane = np.array([[1.0, 1, 0]]) / np.sqrt(2)
+    fit = constrained_box_lstsq(
+        np.eye(3), np.array([3.0, 2, -1]) * scale, plane, np.array([scale / np.sqrt(2)]), lower, upper
+    )
+    # Projection of (3,2,-1) onto x+y=1 inside the unit cube is (1,0,0).
+    np.testing.assert_allclose(fit / scale, [1, 0, 0], rtol=0, atol=1e-12)
+    assert constrained_box_lstsq(np.eye(3), lower, plane, np.array([3 * scale]), lower, upper) is None
+    assert (
+        constrained_box_lstsq(np.eye(3), lower, np.r_[plane, plane], np.array([0, scale]), lower, upper)
+        is None
+    )
+
+
 @pytest.mark.parametrize("spacing", [0.003, 0.0015])
 def test_banana_reference_has_no_contacts_or_volume_loss(spacing):
     surface = LinkedSurface(BANANA_DEMO_SIZE_M, spacing, "banana")

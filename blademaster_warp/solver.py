@@ -90,6 +90,8 @@ class Config:
             raise ValueError("pair_search must be auto, hash, all or list")
         if self.pair_skin < 0:
             raise ValueError("pair_skin must be non-negative")
+        if self.blade_contact_radius < 0:
+            raise ValueError("blade_contact_radius must be non-negative")
         if self.cut_work not in ("relative", "advance"):
             raise ValueError("cut_work must be relative or advance")
         if self.tool_substep not in ("hold", "predict"):

@@ -17,13 +17,12 @@ def banana_config(*, paper_material=True):
         blade_half_size=DEMO_KNIFE_HALF_SIZE_M,
         blade_bevel_height=DEMO_KNIFE_BEVEL_HEIGHT_M,
         shape="banana",
-        # A regular lattice puts the cut plane between two particle columns, so the
-        # blade wedges them apart and the cutting-work resistance never engages.
-        sampling_seed=1,
-        # Fixed knife contact distance: with the particle radius h/4 the effective
-        # blade thickness, and the steady cutting force, grow linearly with h.
-        # On this 6 mm grid the solver raises it to h/4 minus the half thickness, 1 mm.
-        blade_contact_radius=0.0005,
+        # Full-cell jitter amplifies the release kick in coarse banana cuts.
+        # Keep regular sub-cell samples; seeds > 0 remain available
+        # for sampling sensitivity studies. The particle-radius contact envelope
+        # also reaches a blade placed between the regular particle columns.
+        sampling_seed=0,
+        blade_contact_radius=0.0,
     )
     if not paper_material:
         return replace(cfg, contact_reference_dt=cfg.dt)

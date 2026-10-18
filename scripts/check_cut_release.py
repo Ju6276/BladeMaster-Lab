@@ -1,6 +1,6 @@
 """Reproduce a Franka teleop cut through the banana, hold, withdraw and settle.
 
-python -m scripts.check_cut_release --spacing 0.003 --seed 1 --output runs/release-3mm
+python -m scripts.check_cut_release --spacing 0.006 --output runs/release-6mm
 Use the same seed and protocol at another spacing to compare breakthrough motion.
 """
 
@@ -76,8 +76,9 @@ def summarize(folder):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--spacing", type=float, default=0.003)
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--spacing", type=float, default=0.006)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--blade-contact-radius", type=float, default=None)
     parser.add_argument("--surface", action="store_true")
     args = parser.parse_args()
     if args.output.exists():
@@ -105,6 +106,8 @@ def main():
     ]
     if args.surface:
         options += ["--surface", "--surface-embedding", "cuda", "--surface-ccd", "cuda"]
+    if args.blade_contact_radius is not None:
+        options += ["--blade-contact-radius", str(args.blade_contact_radius)]
     run = CutReleaseRun(run_parser().parse_args(options))
     run.execute()
     protocol = dict(

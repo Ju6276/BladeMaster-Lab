@@ -48,14 +48,10 @@ def material_config(args):
     )
     overrides = {
         name: getattr(args, name)
-        for name in ("dt", "cutting_energy", "maxwell_tau", "maxwell_fraction")
+        for name in ("dt", "cutting_energy", "maxwell_tau", "maxwell_fraction", "blade_contact_radius")
         if getattr(args, name, None) is not None
     }
     spacing = args.spacing
-    if spacing is None and args.material == "paper-banana" and getattr(args, "motion", None) == "teleop":
-        # The 6 mm grid over-wedges the banana and releases that compression at
-        # breakthrough. Use the finer grid for arbitrary operator-driven cuts.
-        spacing = 0.003
     if spacing is not None:
         overrides["grid_spacing"] = spacing
         if args.material == "paper-banana" and args.dt is None:
@@ -822,7 +818,13 @@ def parser():
         "--spacing",
         type=float,
         default=None,
-        help="Material grid spacing in meters: banana teleop defaults to 0.003, other banana runs to 0.006",
+        help="Material grid spacing in meters; banana defaults to 0.006",
+    )
+    p.add_argument(
+        "--blade-contact-radius",
+        type=float,
+        default=None,
+        help="Particle-to-blade contact distance in meters; 0 uses the particle radius (banana default)",
     )
     p.add_argument(
         "--sampling-seed",

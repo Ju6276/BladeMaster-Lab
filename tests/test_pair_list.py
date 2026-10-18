@@ -58,7 +58,15 @@ def pair_impulses(s, listed):
 
 
 def test_neighbour_list_matches_the_per_step_grid_query_during_a_cut():
-    cfg = replace(banana_config(), external_tool=True, grid_storage="compact")
+    # Jitter creates contacting pairs during this path; the regular lattice opens
+    # a clean gap, which would leave the list/grid force comparison unexercised.
+    cfg = replace(
+        banana_config(),
+        external_tool=True,
+        grid_storage="compact",
+        sampling_seed=1,
+        blade_contact_radius=0.0005,
+    )
     s = Solver(cfg)
     port = ExternalToolPort(s)
     half, interval, speed = cfg.blade_half_size[2], 0.001, 0.02

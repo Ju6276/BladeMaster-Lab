@@ -135,8 +135,14 @@ def test_instantaneous_and_volumetric_response_match_elastic_model():
     np.testing.assert_allclose(first, np.diag(np.diag(first)), atol=1e-5 * scale)
 
 
-def test_held_indentation_force_relaxes_with_tau():
+def test_held_indentation_force_relaxes_with_tau(monkeypatch):
     """Paper banana (with plasticity), knife indentation on the 6 mm grid held at 6 mm depth."""
+    from scripts import indentation
+
+    # The measured 1.2*tau structural response below includes this fixed contact
+    # compliance. Keep that fixture independent of interactive preset changes.
+    base = indentation.banana_config()
+    monkeypatch.setattr(indentation, "banana_config", lambda: replace(base, blade_contact_radius=0.0005))
     tau, fraction, hold = 0.05, 0.5, 0.35
     off = indent(0.006, 1, hold=hold)[3]
     on = indent(0.006, 1, hold=hold, maxwell_tau=tau, maxwell_fraction=fraction)[3]

@@ -63,17 +63,52 @@ def test_teleop_resolution_defaults_and_explicit_overrides():
         return material_config(parser().parse_args(["--material", "paper-banana", *options]))
 
     teleop = config("--motion", "teleop")
-    assert teleop.grid_spacing == 0.003
-    assert teleop.dt == pytest.approx(40e-6)
+    assert teleop.grid_spacing == 0.006
+    assert teleop.dt == pytest.approx(62.5e-6)
+    assert teleop.sampling_seed == 0 and teleop.blade_contact_radius == 0
     # Resolution selection keeps physical contact stiffness and material parameters.
-    coarse = config("--motion", "teleop", "--spacing", "0.006")
-    assert coarse.grid_spacing == 0.006
-    assert coarse.dt == pytest.approx(62.5e-6)
+    fine = config("--motion", "teleop", "--spacing", "0.003")
+    assert fine.grid_spacing == 0.003
+    assert fine.dt == pytest.approx(40e-6)
     for field in ("young_modulus", "yield_stress", "contact_reference_dt", "sampling_seed", "flip_fraction"):
-        assert getattr(teleop, field) == getattr(coarse, field)
+        assert getattr(teleop, field) == getattr(fine, field)
     custom = config("--motion", "teleop", "--spacing", "0.0045", "--dt", "0.000025")
     assert custom.grid_spacing == 0.0045 and custom.dt == 25e-6
     assert config("--motion", "sequence").grid_spacing == 0.006
+    old = config("--motion", "teleop", "--sampling-seed", "1", "--blade-contact-radius", "0.0005")
+    assert old.sampling_seed == 1 and old.blade_contact_radius == 0.0005
+    with pytest.raises(ValueError, match="blade_contact_radius"):
+        config("--blade-contact-radius", "-0.001")
+
+
+def test_banana_breakthrough_keeps_contact_without_a_lateral_kick(tmp_path):
+    from blademaster_warp.franka_run import parser
+    from scripts.check_cut_release import CutReleaseRun, summarize
+
+    output = tmp_path / "release"
+    args = parser().parse_args(
+        [
+            "--material",
+            "paper-banana",
+            "--motion",
+            "teleop",
+            "--cut-events",
+            "auto",
+            "--spacing",
+            "0.006",
+            "--duration",
+            "5.4",
+            "--record",
+            "--output",
+            str(output),
+        ]
+    )
+    run = CutReleaseRun(args)
+    run.execute()
+    result = summarize(output)
+    assert result["peak_force_n"] > 0.1  # A blade passing through a sampling gap is not a valid fix.
+    assert max(p["peak_lateral_speed_m_s"] for p in result["pieces"]) < 0.02
+    assert max(abs(p["displacement_at_hold_m"][0]) for p in result["pieces"]) < 0.003
 
 
 def test_jacobian_finite_difference():

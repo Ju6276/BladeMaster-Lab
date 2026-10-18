@@ -220,7 +220,6 @@ def resist_cut(
     ahead_of_edge = (
         front >= 0.0
         and front <= 2.0 * radius
-        and advance > 0.0
         and wp.abs(local_edge[0]) <= 6.0 * spacing
         and wp.abs(local_edge[1]) <= half[1]
     )
@@ -228,10 +227,13 @@ def resist_cut(
         return j
     push = wp.max(wp.dot(j, down), 0.0)
     if damage[p] >= 1.0:
+        # Completed damage persists when the tool holds or reverses. Only the
+        # accumulation of new work requires positive relative advance.
         return j - push * down
-    delta = push * advance
-    wp.atomic_add(work, 0, delta)
-    damage[p] = wp.min(1.0, damage[p] + delta / threshold)
+    if advance > 0.0:
+        delta = push * advance
+        wp.atomic_add(work, 0, delta)
+        damage[p] = wp.min(1.0, damage[p] + delta / threshold)
     return j
 
 

@@ -2,12 +2,69 @@
 
 import numpy as np
 import pytest
+import warp as wp
 from scipy.spatial.transform import Rotation
+from blademaster_warp import contact
 from blademaster_warp.coupling import ExternalToolPort, ToolState
 from blademaster_warp.paper_impact import SIDE_ROTATION, edge_height, penetration
 from blademaster_warp.solver import Config, Solver
 
 SIZE = (0.04, 0.02, 0.024)
+
+
+@wp.kernel
+def edge_resistance_probe(
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    tool_velocity: wp.array(dtype=wp.vec3),
+    rotation: wp.quat,
+    damage: wp.array(dtype=float),
+    work: wp.array(dtype=float),
+    result: wp.array(dtype=wp.vec3),
+):
+    p = wp.tid()
+    result[p] = contact.resist_cut(
+        p,
+        wp.quat_rotate(rotation, wp.vec3(0.002, 0.001, -0.004)),
+        x,
+        v,
+        wp.vec3(0.0, 0.0, 0.02),
+        tool_velocity[p],
+        rotation,
+        wp.vec3(0.0),
+        wp.vec3(0.0005, 0.025, 0.02),
+        0.0015,
+        0.006,
+        damage,
+        0.001,
+        contact.CUT_ON,
+        work,
+    )
+
+
+@pytest.mark.parametrize("angle", [0, 35])
+def test_completed_cut_resistance_stays_released_during_hold_and_reversal(angle):
+    rotation = Rotation.from_euler("y", angle, degrees=True)
+    edge = np.array([0.0, 0.0, 0.02]) + rotation.apply([0.0, 0.0, -0.02])
+    positions = edge + rotation.apply([[0, 0, -0.001]] * 5 + [[0, 0, 0.001]])
+    velocities = rotation.apply([[0, 0, -speed] for speed in [0.01, 0, -0.01, -0.01, 0.01, 0]])
+    device = wp.get_preferred_device()
+    x = wp.array(positions, dtype=wp.vec3, device=device)
+    v = wp.zeros(6, dtype=wp.vec3, device=device)
+    tool_velocity = wp.array(velocities, dtype=wp.vec3, device=device)
+    damage = wp.array([1, 1, 1, 0.5, 0.5, 1], dtype=float, device=device)
+    work = wp.zeros(1, dtype=float, device=device)
+    result = wp.zeros(6, dtype=wp.vec3, device=device)
+    wp.launch(
+        edge_resistance_probe,
+        6,
+        [x, v, tool_velocity, wp.quat(*rotation.as_quat()), damage, work, result],
+        device=device,
+    )
+    expected = rotation.apply([[0.002, 0.001, 0]] * 3 + [[0.002, 0.001, -0.004]] * 3)
+    np.testing.assert_allclose(result.numpy(), expected, atol=2e-9)
+    np.testing.assert_allclose(damage.numpy(), [1, 1, 1, 0.5, 0.54, 1], atol=1e-7)
+    assert work.numpy()[0] == pytest.approx(0.004 * 0.01, rel=1e-6)
 
 
 def test_cut_work_is_validated():

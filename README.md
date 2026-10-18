@@ -91,7 +91,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 .venv/bin/python -m blademaster_warp.render_franka runs/fig1_sequence --layout paper
 ```
 
-`--cuts` 指定各刀相对起始位置的 x 坐标（m，按顺序切），`--push-distance` 指定推开距离。加 `--spacing 0.003` 用 3 mm 网格（11485 粒子；步长自动取 40 μs），外形和切面更圆润。
+`--cuts` 指定各刀相对起始位置的 x 坐标（m，按顺序切），`--push-distance` 指定推开距离。加 `--spacing 0.003` 用 3 mm 网格（规则采样 11520 粒子；步长自动取 40 μs），外形和切面更圆润。
 
 常用选项：
 
@@ -107,6 +107,8 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 `report.json` 的 `time_s` 分列材料、机器人、刀路记录、观测和状态发布耗时；`surface_phase_s` 再分节点嵌入、链接扫掠、网格构建和顶点嵌入。`material_interval_phase_s` 的读回时间包含等待 GPU 完成本区间，`task_evaluation` 给出切割结果。
 
 表面帧的 `tool_path` 保存完整刀路，列定义在 `surface/method.json`。`scripts.force_convergence` 在干净的 Git 提交上运行；复用缓存时核对配置、试验协议和提交，换参数使用新的输出目录。已有历史汇总仍可用 `--plot` 读取。
+
+规则采样的刀位敏感性对照：`python -m scripts.force_convergence --spacings .006 .004 .003 --sampling-seeds 0 --x-offset-fractions 0 .125 .25 .375 .5 --output runs/force_offsets`。偏移值以粒子间距 h/2 为单位；输出包含各刀位的力、冲量和方向切割功。
 
 ## 其他入口
 

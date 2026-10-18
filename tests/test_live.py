@@ -5,7 +5,65 @@ import json
 from threading import Thread
 from urllib.request import urlopen, Request
 import numpy as np
+import pytest
 from blademaster_warp.live import LiveState, make_server
+
+
+@pytest.mark.parametrize(
+    "material_spacing, surface_spacing",
+    [(0.006, 0.003), (0.004, 0.00125), (0.006, None), (None, None)],
+)
+def test_scene_reports_actual_spacing_and_startup_revision(monkeypatch, material_spacing, surface_spacing):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from blademaster_warp import live as lm
+
+    startup_revision = dict(lm.BUILD_REVISION)
+    changed_revision = Mock(return_value={"commit": "changed-after-startup", "dirty": True})
+    monkeypatch.setattr(lm, "git_revision", changed_revision)
+    monkeypatch.setattr(lm, "scene_asset", lambda robot: {"geoms": []})
+    robot = SimpleNamespace(
+        material_origin=np.zeros(3),
+        data=SimpleNamespace(time=0.0, geom_xpos=np.empty((0, 3)), geom_xmat=np.empty((0, 9))),
+        state=Mock(),
+    )
+    solver = None
+    if material_spacing is not None:
+        solver = SimpleNamespace(
+            config=SimpleNamespace(grid_spacing=np.float64(material_spacing)),
+            radius=material_spacing / 4,
+            x=SimpleNamespace(numpy=lambda: np.zeros((1, 3))),
+            F=SimpleNamespace(numpy=lambda: np.eye(3)[None]),
+            codes=SimpleNamespace(numpy=lambda: np.zeros(1, dtype=int)),
+        )
+    surface = (
+        SimpleNamespace(surface=SimpleNamespace(h=np.float64(surface_spacing)), update=Mock(), current=None)
+        if surface_spacing is not None
+        else None
+    )
+    live = LiveState()
+    live.autostart = True
+    live.initialize(robot, solver, surface)
+    server = make_server(live, 0)
+    Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.server_port}/scene") as response:
+            scene = json.loads(gzip.decompress(response.read()))
+        assert scene["material_grid_spacing_m"] == material_spacing
+        assert scene["surface_spacing_m"] == surface_spacing
+        assert scene["build_revision"] == startup_revision
+        # Restarting a run refreshes its grid metadata, but keeps the loaded build.
+        live.initialize(robot, None, None)
+        with urlopen(f"http://127.0.0.1:{server.server_port}/scene") as response:
+            restarted = json.loads(gzip.decompress(response.read()))
+        assert restarted["generation"] > scene["generation"]
+        assert restarted["material_grid_spacing_m"] is None
+        assert restarted["surface_spacing_m"] is None
+        assert restarted["build_revision"] == startup_revision
+        changed_revision.assert_not_called()
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_live_state_protocol_and_pause_resume():

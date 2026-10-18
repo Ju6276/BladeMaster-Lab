@@ -26,13 +26,31 @@ const views=['whole','detail','particles'].map((id,i)=>{
  return {element:$(id),camera,controls};
 });
 let objects=[],surface=null,particles=null,assetGeneration=-1,seq=-1,lastReceive=0,packetCount=0,lastState='loading';
+let sceneMetadata=null;
 const timing = {fetchMs: [], parseMs: [], applyMs: [], bytes: [], presentMs: [],
  renderMs: [], renderIntervalMs: [], packetIntervalMs: []};
 let pendingPacket = null, previousDraw = null, previousPacketDraw = null;
 let renderedPacket = null, renderedPackets = 0;
 function keep(list,value){list.push(value);if(list.length>200)list.shift()}
 const matrix=new THREE.Matrix4(),dummy=new THREE.Object3D();
+function showSceneMetadata(asset) {
+ const material = asset.material_grid_spacing_m, surface = asset.surface_spacing_m;
+ const mm = value => Number.isFinite(value) ? Number((value * 1000).toPrecision(6)) + ' mm' : '—';
+ $('material-spacing').textContent = material === null ? '未启用材料' : '材料网格间距 ' + mm(material);
+ $('surface-spacing').textContent = material === null ? '未启用材料'
+  : surface === null ? '未启用重建' : '表面网格间距 ' + mm(surface);
+ const revision = asset.build_revision;
+ const dirty = revision?.dirty === true ? ' · 含未提交修改'
+  : revision?.dirty === false ? '' : ' · 工作区状态未知';
+ $('build').title = '运行版本（进程启动时）：' + (revision?.commit || '未知') + dirty;
+ sceneMetadata = {
+  build_revision: revision ?? null,
+  material_grid_spacing_m: material ?? null,
+  surface_spacing_m: surface ?? null
+ };
+}
 function installAsset(asset){
+ showSceneMetadata(asset);
  for(const o of objects){scene.remove(o);o.geometry.dispose();o.material.dispose()}
  objects=[];
  for(const g of asset.geoms){
@@ -188,7 +206,8 @@ function draw() {
  // Submission to WebGL is observable here; the physical display scanout is not.
  window.liveDiagnostics = {
   packets: packetCount, renderedPackets, renderedPacket, sequence: seq,
-  state: lastState, stalenessMs: submitted - lastReceive, generation: assetGeneration, timing
+  state: lastState, stalenessMs: submitted - lastReceive, generation: assetGeneration,
+  scene: sceneMetadata, timing
  };
  requestAnimationFrame(draw);
 }

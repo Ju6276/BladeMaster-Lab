@@ -12,9 +12,12 @@ import json
 import mimetypes
 import time
 import numpy as np
+from .provenance import git_revision
 from .teleop_input import LatestInput, read_chunked_packets
 
 WEB = Path(__file__).with_name("web")
+# Capture once when the live process loads, including across in-process restarts.
+BUILD_REVISION = git_revision()
 
 
 def web_version():
@@ -92,6 +95,11 @@ class LiveState:
         self.ids = [g["id"] for g in asset["geoms"]]
         self.generation += 1
         asset["generation"] = self.generation
+        asset["build_revision"] = dict(BUILD_REVISION)
+        asset["material_grid_spacing_m"] = float(solver.config.grid_spacing) if solver is not None else None
+        asset["surface_spacing_m"] = (
+            float(surface.surface.h) if solver is not None and surface is not None else None
+        )
         self.asset = asset
         if solver:
             x, codes = solver.x.numpy(), solver.codes.numpy()

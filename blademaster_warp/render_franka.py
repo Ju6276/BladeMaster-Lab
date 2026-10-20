@@ -8,7 +8,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from .replay_style import ReplayScene
+from .replay_style import ReplayScene, layers, mottled
 from .robot_replay import RobotVisuals
 from .provenance import git_revision
 
@@ -25,6 +25,8 @@ FOOD_COLOR = {
 # Matcha cake of Fig. 4: dark top layer over a light sponge, split at 60 % of
 # the reference height.
 CAKE_LAYERS = dict(fraction=0.6, below=(0.74, 0.86, 0.52), above=(0.12, 0.38, 0.14))
+# Luncheon meat is mottled in the project-page videos.
+MOTTLED = ("fig8",)
 
 
 def sha256(path):
@@ -102,11 +104,16 @@ def render(directory, output=None, preview=False, layout="overview"):
         ReplayScene(manifest["config"], board, 640, 720, style=scene_style),
         ReplayScene(manifest["config"], board, 640, 720 if layout == "paper" else 360, style=scene_style),
     ]
+    reference = z["particles"][0]
+    colormap = None
+    if cake:
+        boundary = reference[:, 2].min() + CAKE_LAYERS["fraction"] * np.ptp(reference[:, 2])
+        colormap = layers(boundary, CAKE_LAYERS["below"], CAKE_LAYERS["above"])
+    elif task in MOTTLED:
+        colormap = mottled(food)
     for scene in scenes:
-        if cake:
-            reference = z["particles"][0]
-            boundary = reference[:, 2].min() + CAKE_LAYERS["fraction"] * np.ptp(reference[:, 2])
-            scene.set_material_layers(reference, boundary, CAKE_LAYERS["below"], CAKE_LAYERS["above"])
+        if colormap is not None:
+            scene.set_material_colormap(colormap, reference)
         elif food:
             scene.set_material_color(food)
     food = food or cake

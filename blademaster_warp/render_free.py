@@ -20,7 +20,7 @@ import vtk
 from vtk.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from PIL import Image, ImageDraw, ImageFont
 from .render import actor, blade_mesh
-from .replay_style import place_lights, wood_texture
+from .replay_style import mottled, place_lights, wood_texture
 from .provenance import git_revision
 
 JELLY = (0.62, 0.08, 0.19)
@@ -92,6 +92,40 @@ class FreeScene:
         self.capture.SetInput(self.window)
         self.capture.SetInputBufferTypeToRGB()
         self.capture.ReadFrontBufferOff()
+
+    def enable_surface(self, color, opacity):
+        """Draw the recorded embedded surface instead of particles; opacity < 1 is a translucent gel."""
+        self.surface = vtk.vtkPolyData()
+        normals = vtk.vtkPolyDataNormals()
+        normals.SetInputData(self.surface)
+        normals.SetFeatureAngle(45)
+        normals.SplittingOn()
+        normals.ConsistencyOn()
+        normals.AutoOrientNormalsOn()
+        body = actor(normals, self.renderer, color)
+        body.GetProperty().SetOpacity(opacity)
+        body.GetProperty().SetAmbient(0.25)
+        body.GetProperty().SetDiffuse(0.6)
+        body.GetProperty().SetSpecular(0.6)
+        body.GetProperty().SetSpecularPower(60)
+        self.particles.SetVisibility(False)
+        if opacity < 1.0:
+            self.renderer.SetUseDepthPeeling(1)
+            self.renderer.SetMaximumNumberOfPeels(8)
+            self.window.SetAlphaBitPlanes(1)
+            self.window.SetMultiSamples(0)
+
+    def set_surface(self, snapshot):
+        points = vtk.vtkPoints()
+        points.SetData(numpy_to_vtk(snapshot["vertices"] * 1000, deep=True))
+        cells = vtk.vtkCellArray()
+        for tri in snapshot["triangles"]:
+            cells.InsertNextCell(3)
+            for v in tri:
+                cells.InsertCellPoint(int(v))
+        self.surface.SetPoints(points)
+        self.surface.SetPolys(cells)
+        self.surface.Modified()
 
     def add_blade(self, half, bevel, color=(0.35, 0.37, 0.40)):
         blade = actor(blade_mesh(half, bevel), self.renderer, color)
@@ -170,12 +204,21 @@ def free_knife_video(kind, directory, output, title, fps=25):
         if np.dot(direction[:2], approach[:2]) < 0:
             direction = direction * [-1, -1, 1]
     scene = FreeScene(1280, 672, particle_radius(reference), board)
+    surface_dir = directory / "surface"
+    surface = (surface_dir / "frames.json").exists()
+    if surface:
+        frames = json.loads((surface_dir / "frames.json").read_text())
+        if not np.allclose([f["time_s"] for f in frames], times[: len(frames)]) or len(frames) != len(times):
+            raise ValueError("Surface frames must match the saved states")
+        # Fig. 3's jelly is translucent in the project-page video.
+        scene.enable_surface(color, 0.72 if kind == "fig3" else 1.0)
+    blade_color = (0.86, 0.87, 0.88) if kind == "fig3" else (0.35, 0.37, 0.40)
     for _ in range(blade_p.shape[1]):
-        scene.add_blade(cfg["blade_half_size"], cfg["blade_bevel_height"])
+        scene.add_blade(cfg["blade_half_size"], cfg["blade_bevel_height"], blade_color)
     corners = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
     blade_extent = [p + corners * np.asarray(cfg["blade_half_size"]).max() for p in blade_p[0]]
     scene.frame_view(np.vstack([reference, *blade_extent]), direction, angle)
-    colors = np.tile(color, (len(reference), 1))
+    colors = np.clip(mottled(color)(reference), 0, 1) if kind == "fig6" else np.tile(color, (len(reference), 1))
     font = ImageFont.truetype("DejaVuSans.ttf", 26)
     small = ImageFont.truetype("DejaVuSans.ttf", 18)
     slow = fps * float(np.median(np.diff(times)))
@@ -183,12 +226,20 @@ def free_knife_video(kind, directory, output, title, fps=25):
     try:
         for i, t in enumerate(times):
             scene.update(positions[i], colors, list(zip(blade_p[i], blade_q[i])))
+            if surface:
+                with np.load(surface_dir / f"{i:05d}.npz") as snapshot:
+                    scene.set_surface(snapshot)
             image = Image.new("RGB", (1280, 720), (241, 244, 246))
             image.paste(Image.fromarray(scene.frame()), (0, 48))
             draw = ImageDraw.Draw(image)
             draw.text((20, 10), title, font=font, fill=INK)
             draw.text((1060, 12), f"{t:.3f} s", font=font, fill=INK)
-            draw.text((20, 690), f"Particles  |  {1 / slow:.0f}x slow motion" if slow < 1 else "Particles", font=small, fill=INK)
+            view = "Surface" if surface else "Particles"
+            draw.text((20, 690), f"{view}  |  {1 / slow:.0f}x slow motion" if slow < 1 else view, font=small, fill=INK)
+            if kind == "fig3":
+                draw.line((1180, 90, 1180, 160), fill=INK, width=3)
+                draw.polygon([(1172, 150), (1188, 150), (1180, 166)], fill=INK)
+                draw.text((1194, 110), "g", font=font, fill=INK)
             if i in (0, len(times) // 2, len(times) - 1):
                 image.save(Path(output).with_name(f"{Path(output).stem}_{i:04d}.png"))
             proc.stdin.write(np.asarray(image).tobytes())

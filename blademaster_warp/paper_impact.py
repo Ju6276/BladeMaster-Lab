@@ -25,9 +25,18 @@ SIDE_KNIFE_HALF_SIZE = (0.0005, 0.012, 0.03)
 # Tool axes in world axes for the side launch: edge along x, cut direction (-z) along +y,
 # blade plane horizontal.
 SIDE_ROTATION = Rotation.from_matrix([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [-1.0, 0.0, 0.0]])
+# Project-page video of Fig. 6: three throwing knives lie flat side by side and fly
+# point first along the block's long axis into its 50 mm end face. A 10 mm leading
+# edge stands for the point; 15 mm apart leaves 5 mm between neighbouring blades.
+END_KNIFE_HALF_SIZE = (0.0005, 0.005, 0.03)
+END_KNIFE_Y = (-0.015, 0.0, 0.015)
+# Tool axes in world axes for the end launch: thickness vertical, edge along y,
+# cut direction (-z) along +x.
+END_ROTATION = Rotation.from_matrix([[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]])
+HALF_SIZE = {"side": SIDE_KNIFE_HALF_SIZE, "end": END_KNIFE_HALF_SIZE, "top": FIG8_KNIFE_HALF_SIZE}
 
 
-def config(dt, cutting_energy, cut_work="relative", cut_hold=False, knife_mass=KNIFE_MASS, launch="side"):
+def config(dt, cutting_energy, cut_work="relative", cut_hold=False, knife_mass=KNIFE_MASS, launch="end"):
     return Config(
         size=FIG8_SIZE,
         grid_spacing=0.006,
@@ -43,12 +52,47 @@ def config(dt, cutting_energy, cut_work="relative", cut_hold=False, knife_mass=K
         # still touch them (see Solver's slipping warning).
         blade_contact_radius=0.0,
         blade_mass=knife_mass,
-        blade_half_size=SIDE_KNIFE_HALF_SIZE if launch == "side" else FIG8_KNIFE_HALF_SIZE,
+        blade_half_size=HALF_SIZE[launch],
         blade_bevel_height=DEMO_KNIFE_BEVEL_HEIGHT_M,
         free_blade=True,
         tool_count=len(SPEEDS),
         grid_storage="compact",
     )
+
+
+GRAVITY = 9.81
+# Equilibrium residual: from rest, one step may accelerate no particle by more than
+# this fraction of g, i.e. the unbalanced force is under 1 % of every particle's weight.
+SETTLE_RESIDUAL = 0.01
+
+
+def settle(s, positions, orientations, max_time=5.0):
+    """Start from static equilibrium under gravity instead of the unstressed shape.
+
+    Knives are held at their release pose. Kinetic damping (dynamic relaxation):
+    all velocities are zeroed when the kinetic energy passes a peak, so the
+    elastic energy decays without a damping coefficient. Returns settle time and
+    the final residual acceleration in units of g.
+    """
+    dt = s.config.dt
+    hold = lambda: (s.tool_pos.assign(positions), s.tool_rot.assign(orientations), s.tool_vel.zero_(), s.tool_omega.zero_())
+    previous, from_rest = 0.0, False
+    for step in range(1, round(max_time / dt) + 1):
+        s.advance(np.zeros((1, 3)), cutting=False)
+        hold()
+        speed2 = (s.v.numpy() ** 2).sum(1)
+        if from_rest:
+            residual = np.sqrt(speed2.max()) / dt / GRAVITY
+            if residual < SETTLE_RESIDUAL:
+                s.v.zero_()
+                return dict(settle_s=step * dt, residual_g=float(residual))
+        energy = speed2.sum()
+        from_rest = energy < previous
+        if from_rest:
+            s.v.zero_()
+            energy = 0.0
+        previous = energy
+    raise RuntimeError(f"No gravity equilibrium within {max_time} s")
 
 
 def penetration(position, orientation, half, direction, entry):
@@ -80,9 +124,10 @@ def run(
     cut_work="relative",
     cut_hold=False,
     knife_mass=KNIFE_MASS,
-    launch="side",
+    launch="end",
+    settle_gravity=True,
 ):
-    if launch not in ("top", "side"):
+    if launch not in HALF_SIZE:
         raise ValueError(launch)
     cfg = config(dt, cutting_energy, cut_work, cut_hold, knife_mass, launch)
     steps = round(duration / dt)
@@ -91,7 +136,11 @@ def run(
     out = Path(output)
     out.mkdir(parents=True, exist_ok=False)
     hz = cfg.blade_half_size[2]
-    if launch == "side":
+    if launch == "end":
+        direction, entry = np.array([1.0, 0.0, 0.0]), -FIG8_SIZE[0] / 2
+        start = [[entry - 0.002 - hz, y, FIG8_SIZE[2] / 2] for y in END_KNIFE_Y]
+        orientation = [END_ROTATION.as_quat().tolist()] * len(END_KNIFE_Y)
+    elif launch == "side":
         direction, entry = np.array([0.0, 1.0, 0.0]), -FIG8_SIZE[1] / 2
         start = [[x, entry - 0.002 - hz, FIG8_SIZE[2] / 2] for x in KNIFE_X]
         orientation = [SIDE_ROTATION.as_quat().tolist()] * len(KNIFE_X)
@@ -113,6 +162,15 @@ def run(
     del warm
     s = Solver(cfg)
     place(s)
+    settled = settle(s, start, orientation) if settle_gravity else None
+    s.tool_vel.assign(velocity)
+    t0 = s.step_count * dt
+
+    def observe():
+        state = s.state()
+        state["time"] -= t0
+        return state
+
     meta = {
         "status": "running",
         "experiment": "fig6_moving_knives",
@@ -130,13 +188,19 @@ def run(
         "independent_choices": [
             "block 100x50x42mm on a 6mm grid",
             "knife geometry and 0.1kg mass",
-            f"{launch} launch 2mm outside the block, 30mm apart",
+            f"{launch} launch 2mm outside the block",
             "Gc",
             "contact/transfer coefficients",
         ],
+        "initial_state": (
+            dict(kind="static equilibrium under gravity, knives held", **settled)
+            if settled
+            else "unstressed reference shape"
+        ),
+        "time_origin": "knife release",
         "revision": git_revision(),
     }
-    saved = {k: [v] for k, v in s.state().items()}
+    saved = {k: [v] for k, v in observe().items()}
     physics = 0.0
     try:
         stride = max(1, round(0.005 / dt))
@@ -146,14 +210,14 @@ def run(
             s.advance(np.zeros((count, 3)), cutting=True)
             wp.synchronize_device(s.device)
             physics += time.perf_counter() - tick
-            for k, v in s.state().items():
+            for k, v in observe().items():
                 saved[k].append(v)
         meta.update(status="complete")
     except Exception as exc:
         meta.update(status="failed", error=repr(exc))
         raise
     finally:
-        simulated = s.step_count * dt
+        simulated = s.step_count * dt - t0
         meta.update(
             completed_steps=s.step_count,
             physics_wall_s=physics,
@@ -204,9 +268,16 @@ if __name__ == "__main__":
     p.add_argument("--knife-mass", type=float, default=KNIFE_MASS, help="kg; not given in the paper")
     p.add_argument(
         "--launch",
-        choices=("top", "side"),
-        default="side",
-        help="side: flat into the front face as drawn in Fig. 6; top: vertically down",
+        choices=tuple(HALF_SIZE),
+        default="end",
+        help="end: flat, point first into the end face as in the project-page video; side: flat into the "
+        "front face; top: vertically down",
+    )
+    p.add_argument(
+        "--no-settle", action="store_true", help="start from the unstressed shape instead of gravity equilibrium"
     )
     a = p.parse_args()
-    run(a.output, a.dt, a.duration, a.cutting_energy, a.cut_work, a.cut_hold, a.knife_mass, a.launch)
+    run(
+        a.output, a.dt, a.duration, a.cutting_energy, a.cut_work, a.cut_hold, a.knife_mass, a.launch,
+        settle_gravity=not a.no_settle,
+    )

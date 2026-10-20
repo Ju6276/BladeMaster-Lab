@@ -50,6 +50,30 @@ def place_lights(renderer, camera_azimuth):
     renderer.AddLight(headlight)
 
 
+def layers(boundary_z, below_rgb, above_rgb):
+    """Two layers split at a reference height, e.g. a cake."""
+    below, above = np.asarray(below_rgb, float), np.asarray(above_rgb, float)
+    return lambda reference: np.where((reference[:, 2] > boundary_z)[:, None], above, below)
+
+
+def mottled(rgb, scale=0.006, amplitude=0.08, seed=7):
+    """Smooth random brightness field over reference positions (luncheon-meat mottling).
+
+    A sum of random plane waves with wavelength around `scale` (m); deterministic per seed.
+    """
+    rng = np.random.default_rng(seed)
+    count = 24
+    waves = rng.normal(size=(count, 3)) * (2 * np.pi / scale)
+    phases = rng.uniform(0, 2 * np.pi, count)
+    base = np.asarray(rgb, float)
+
+    def color(reference):
+        field = np.cos(np.asarray(reference) @ waves.T + phases).sum(1) * np.sqrt(2.0 / count)
+        return base * (1.0 + amplitude * field)[:, None]
+
+    return color
+
+
 class ReplayScene:
     def __init__(self, cfg, board, width=960, height=480, style="wood"):
         if style not in ("wood", "paper"):
@@ -149,15 +173,14 @@ class ReplayScene:
         self.material_color = tuple(float(channel) for channel in rgb)
         self.body.GetProperty().SetColor(*self.material_color)
 
-    def set_material_layers(self, reference_particles, boundary_z, below_rgb, above_rgb):
-        """Color by reference height (m), e.g. a two-layer cake. Follows material, not world height."""
-        self.layers = (float(boundary_z), np.asarray(below_rgb, float), np.asarray(above_rgb, float))
+    def set_material_colormap(self, color_of_reference, reference_particles):
+        """Color by reference position (m): layers, mottling. Follows the material, cut faces included."""
+        self.colormap = color_of_reference
         self.particle_reference = np.asarray(reference_particles)
-        self.material_color = tuple(self.layers[1])
+        self.material_color = tuple(color_of_reference(self.particle_reference[:1])[0])
 
     def _layer_rgb(self, reference):
-        boundary, below, above = self.layers
-        return np.where((reference[:, 2] > boundary)[:, None], above, below)
+        return np.clip(self.colormap(np.asarray(reference)), 0.0, 1.0)
 
     def set_camera(self, position, focal, view_angle):
         camera = self.renderer.GetActiveCamera()
@@ -181,7 +204,7 @@ class ReplayScene:
                 cells.InsertCellPoint(int(v))
         self.surface.SetPoints(points)
         self.surface.SetPolys(cells)
-        if getattr(self, "layers", None) is not None:
+        if getattr(self, "colormap", None) is not None:
             self.surface.GetPointData().SetScalars(
                 numpy_to_vtk((self._layer_rgb(snapshot["reference"]) * 255).astype(np.uint8), deep=True)
             )
@@ -200,7 +223,7 @@ class ReplayScene:
                 ]
             )
             rgb = palette[codes % len(palette)]
-        elif getattr(self, "layers", None) is not None:
+        elif getattr(self, "colormap", None) is not None:
             rgb = self._layer_rgb(self.particle_reference)
         else:
             rgb = np.tile(self.material_color, (len(codes), 1))

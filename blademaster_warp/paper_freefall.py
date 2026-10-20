@@ -11,7 +11,9 @@ from .solver import Config, Solver
 from .run import write
 from .topology import components
 from .provenance import git_revision
-from .paper_impact import edge_height
+from types import SimpleNamespace
+from .paper_impact import edge_height, settle
+from .surface_runtime import SurfaceRecorder
 
 
 FIG3_CUTTING_ENERGY = 100.0
@@ -33,6 +35,8 @@ def run(
     cut_work="relative",
     grid_spacing=0.01,
     contact_reference_dt=0.0,
+    settle_gravity=True,
+    surface=False,
 ):
     if tilt_axis not in ("length", "thickness"):
         raise ValueError(tilt_axis)
@@ -81,6 +85,9 @@ def run(
     height = 0.08 + 0.015 + reach
     s.tool_rot.assign([q])
     s.tool_pos.assign([[0.0, 0.0, height]])
+    settled = settle(s, [[0.0, 0.0, height]], [q]) if settle_gravity else None
+    t0 = s.step_count * dt
+    recorder = SurfaceRecorder(s, out / "surface", None, "cuda", "cuda") if surface else None
     meta = {
         "status": "running",
         "experiment": "fig3_freefall",
@@ -105,24 +112,48 @@ def run(
         ],
         "dt_is_table_value": dt == 0.002,
         "actuation": "none; gravity plus material/board reaction",
-        "surface": "particles only; reconstruction pending",
+        "surface": "embedded display surface, cut only after the knife's release" if surface else "particles only",
+        "initial_state": (
+            dict(kind="static equilibrium under gravity, knife held", **settled)
+            if settled
+            else "unstressed reference shape"
+        ),
+        "time_origin": "knife release",
         "revision": git_revision(),
         "command": sys.argv,
     }
-    saved = {k: [v] for k, v in s.state().items()}
+    def observe():
+        state = s.state()
+        state["time"] -= t0
+        if recorder:
+            pose = SimpleNamespace(position=state["blade_position"][0], orientation_xyzw=state["blade_orientation"][0])
+            # The display surface opens only where the solver has released the cut.
+            released = bool(s.cut_released.numpy()[0])
+            recorder.update(state["time"], state["position"], state["deformation"], state["sides"], pose, released)
+        return state
+
+    saved = {k: [v] for k, v in observe().items()}
     start = time.perf_counter()
     minimum = 1.0
     try:
         stride = max(1, round(0.01 / dt))
         for i in range(0, steps, stride):
             count = min(stride, steps - i)
-            # No driver uses these targets in free_blade mode.
-            s.advance(np.zeros((count, 3)), cutting=True)
-            state = s.state()
+            # No driver uses these targets in free_blade mode. With a surface, every
+            # substep pose is kept for the swept-edge test.
+            for _ in range(count if recorder else 1):
+                s.advance(np.zeros((1 if recorder else count, 3)), cutting=True)
+                if recorder:
+                    pose = np.concatenate((s.tool_pos.numpy()[0], s.tool_rot.numpy()[0]))
+                    released = bool(s.cut_released.numpy()[0])
+                    recorder.record_trajectory([s.step_count * dt - t0], pose[None], released, 0)
+            state = observe()
             minimum = min(minimum, float(np.linalg.det(state["deformation"]).min()))
             for k, v in state.items():
                 saved[k].append(v)
         wp.synchronize_device(s.device)
+        if recorder:
+            recorder.close()
         meta.update(status="complete", wall_s_excluding_jit=time.perf_counter() - start)
     except Exception as exc:
         meta.update(status="failed", error=repr(exc), wall_s_excluding_jit=time.perf_counter() - start)
@@ -189,9 +220,15 @@ if __name__ == "__main__":
         default="relative",
         help="Config.cut_work: Eq. 5 with the edge speed relative to the particle (paper) or its own advance",
     )
+    p.add_argument(
+        "--no-settle", action="store_true", help="start from the unstressed shape instead of gravity equilibrium"
+    )
+    p.add_argument("--surface", action="store_true", help="record the embedded display surface (CUDA)")
     a = p.parse_args()
     run(
         a.output,
+        settle_gravity=not a.no_settle,
+        surface=a.surface,
         sharpness=a.sharpness,
         dt=a.dt,
         duration=a.duration,

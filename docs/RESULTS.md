@@ -20,20 +20,21 @@ python -m blademaster_warp.franka_run --motion sequence --controller libfranka -
 ## Fig. 3 / Table I：重力落刀与锋利度
 
 ```bash
-python -m blademaster_warp.paper_freefall --output <目录> --duration 1 --sharpness <0.9|0.5|0.2>
+python -m blademaster_warp.paper_freefall --output <目录> --duration 1 --sharpness <0.9|0.5|0.2> [--surface] [--no-settle]
 ```
 
-设置：8960 个粒子，1 cm 网格，2 ms 步长，种子 1。数字在提交 `d663eb6` 上复核过（`runs/fig3_release_20261020`）。
+设置：8960 个粒子，1 cm 网格，2 ms 步长，种子 1。
 
-| 锋利度 | 结果 | 刃口离板 |
+起始状态（2026-10-21 起默认）：先在重力下求静平衡，刀扶在释放位置不动，再松刀。平衡用动能阻尼（每当动能过峰就把速度清零，没有阻尼系数），收敛判据是从静止走一步、任何粒子的加速度都小于 1% g。0.314 s 收敛，残差 0.72% g。之前从未受力的形状起步，果冻在重力下下沉约 7 mm 后以 ±5 mm、约 0.14 s 周期振荡，几乎不衰减，所以视频一开始就晃。
+
+| 锋利度 | 静平衡起步（`673ff77`） | 未受力起步（`d663eb6`，`--no-settle`） |
 |---|---|---|
-| 0.9 | 切成两块 4308/4652 | 0.105 mm |
-| 0.5 | 一整块 | 26.0 mm |
-| 0.2 | 一整块 | 26.0 mm |
+| 0.9 | 刀到板（刃口离板 0.08 mm），但仍是一整块 | 切成两块 4308/4652，刃口离板 0.105 mm |
+| 0.2 | 一整块，刃口停在离板 14.7 mm | 一整块，刃口离板 26.0 mm |
 
-- 锋利刀切透、钝刀不切透，与论文一致。
-- 与论文的差别：论文 Fig. 3(d) 的钝刀停在块的中间深度，我们的停得更低。
-  - 原因：1 cm 网格下粒子间距 5 mm，远大于 1 mm 刀厚，被挡住的粒子横移几毫米就绕到刃后。
+- 钝刀不切透，与论文一致；静平衡起步后停得更接近论文 Fig. 3(d) 的中间深度。
+- 锋利刀在静平衡起步下没有切成两块。连着两半的是顶面角上的 2 个粒子（参考位置 y ≈ −48 mm、z ≈ 80 mm）：刃口扫过时它们离刀面 3.1 mm 和 7.7 mm，没有被标上侧码，于是两侧经它们连着。之前的两块结果依赖起步时果冻还在下沉振荡。待查：切割带在块角处的横向宽度与刀在下落中的转动（26.7°）。
+- 网格因素仍在：1 cm 网格下粒子间距 5 mm，远大于 1 mm 刀厚，被挡住的粒子横移几毫米就绕到刃后。
 
 机制扫描（每次只改一项，`runs/mechanism_scan_20261019`）：
 
@@ -121,23 +122,30 @@ CRESSim 基线（上游提交 `09aa5009`，MLS 头、求解器、本构头与上
 - 论文里的 CRESSim 切口是 4.059 mm、体积变化 8.746%，我们在半深处测到的开口约为 0。刀片半厚 0.25 mm，离切面最近的粒子列在 1.25 mm 外，没有被推开。论文给 CRESSim 用的参数或测量定义可能和这里不同，还没对上。
 - 10-19 记录的 62.5 vs 31.25 μs RMS 是 7.36 mm，那次运行的目录已经不在了。这次用同一份源码重跑没有复现，原因还没查。
 
-## Fig. 6：三把刀侧射
+## Fig. 6：三把飞刀
 
 ```bash
-python -m blademaster_warp.paper_impact --output <目录> --duration 1 [--cut-hold]
+python -m blademaster_warp.paper_impact --output <目录> --duration 1 [--launch end|side|top] [--cut-hold]
 ```
 
-- 设置：
-  - 刀面水平，从前侧面射入，三把刀相距 30 mm。
-  - 刀重 20 g，论文没有给，是本地取值。
-- 1 s 时的切深（块深 50 mm，提交 `d663eb6`，`runs/fig6_release_20261020`）：
+默认 `--launch end`（2026-10-21 起）：按项目页视频，三把刀平放、并排相距 15 mm，刀尖朝前沿块的长轴射入 50 mm 宽的端面。刀尖用 10 mm 宽的前刃表示，刀长 60 mm，刀重 20 g（论文没有给，是本地取值）。块先在重力下求静平衡，方法同 Fig. 3（0.06 s 收敛，残差 0.96% g）。
+
+1 s 时的切深（块长 100 mm，提交 `673ff77`）：
+
+| 初速 | 0.5 m/s | 0.8 m/s | 1.1 m/s | 块 |
+|---|---|---|---|---|
+| 端面射入，论文式 (5) | 29.9 mm（0.10 s 停） | 49.3 mm（0.65 s 停） | 68.8 mm（0.57 s 停） | 一整块 |
+
+三把刀都停在块里，初速越大越深，与论文一致。
+
+之前的侧面射入（`--launch side`）：刀面水平，前刃 24 mm 宽从前侧面射入，三把刀相距 30 mm，未受力起步。1 s 时的切深（块深 50 mm，提交 `d663eb6`，`runs/fig6_release_20261020`）：
 
 | 实现 | 0.5 m/s | 0.8 m/s | 1.1 m/s | 块 |
 |---|---|---|---|---|
 | 论文式 (5) | 22.2 mm | 36.8 mm | 51.4 mm | 一整块 |
 | `cut_hold` | 14.0 mm | 28.8 mm | 41.5 mm | 一整块 |
 
-- 三把刀都被减速、初速越大越深，与论文一致。
+- 侧面射入时三把刀也都被减速、初速越大越深。
 - 论文式 (5) 下，0.5 m/s 的刀到 1 s 还有 16 mm/s，没有完全停下；最快的刀刚到块背面。
 - 每把自由刀只有在本刀、本次切割付清断裂阈值后才打开切口。在这条规则修正之前（各刀共用刀 0 的标记，换刀号也不清零），切深是 20.0/33.8/51.5 mm 和 13.9/26.6/41.7 mm。
 - G_c 从 30 到 1000 J/m² 切深都不变：这块材料的阻力来自塑性流动和刀面摩擦，不是切割能。
@@ -166,6 +174,42 @@ Franka 版本（`franka_run --motion fig7-shallow|fig7-deep|fig8`）结果相同
 
 ![Fig. 7](media/fig7_cross_scores.png)
 ![Fig. 8](media/fig8_sequential_slicing.png)
+
+## 论文任务视频
+
+渲染只改显示，不改记录的粒子、表面和刀位。
+
+- 视角：
+  - 机械臂任务用网页遥操作界面打开时的默认相机（`web/app.js`），即从机械臂正前方顺着它的伸出方向往回看。左边是整机，右边是近景表面和粒子。
+  - 无机械臂的 Fig. 3 / 5 / 6 用同一个近景方向和俯角，距离按场景外接球取。Fig. 6 再朝刀射入的一侧转一半，否则刀被块挡住。
+  - 灯光随相机方位一起转，另加一盏头灯，让朝向相机的侧面也照得到。
+- 颜色从项目页视频取：
+  - 香蕉：奶油色，配绿板。
+  - 豆腐：米白。
+  - 午餐肉：粉色，带按参考坐标生成的斑纹，切面上也有。
+  - 抹茶蛋糕：按参考高度 60% 分两层，上深绿、下浅绿。
+  - 果冻：深红半透明。
+  - Fig. 5：奶油色粒子。
+
+| 视频 | 运行 | 显示 |
+|---|---|---|
+| Fig. 1 香蕉三刀 | `franka_run --motion sequence --material paper-banana --duration 30` | 表面 + 粒子 |
+| Fig. 7 豆腐浅划 / 深划 | `franka_run --motion fig7-shallow` / `fig7-deep` | 表面 + 粒子 |
+| Fig. 8 午餐肉薄切 | `franka_run --motion fig8` | 表面 + 粒子 |
+| Fig. 4 抹茶蛋糕多场 / 单场 | `franka_run --motion slice-lift [--single-field]` | 表面 + 粒子 |
+| Fig. 3 锋利 / 钝刀 | `paper_freefall --sharpness 0.9 / 0.2 --surface` | 半透明表面 |
+| Fig. 6 三把飞刀 | `paper_impact --duration 1` | 粒子 |
+| Fig. 5 BladeMaster 对 CRESSim | `scripts.fig5_compare run`，两个后端 | 粒子 |
+
+Franka 运行都加 `--controller libfranka --stiffness 1000 --record --surface --surface-embedding cuda --surface-ccd cuda`，Fig. 4/7/8 再加 `--attachment fixed --layout paper`。渲染命令：
+
+- `python -m blademaster_warp.render_franka <运行>`
+- `python -m blademaster_warp.render_free fig3|fig6 <运行>`
+- `python -m blademaster_warp.render_free fig5 <BM 运行> <CRESSim 运行>`
+
+`franka_run --single-field` 是 Fig. 4 的单场对照：刀不在切时，粒子与网格的传递忽略侧码，规则与 `scenarios --single-field` 相同。
+
+Fig. 3 和 Fig. 6 有自由刀，表面记录器只在求解器放开切口（`cut_released`）后才沿刃口切开显示表面。Fig. 6 是三把刀，表面记录器目前只接一把，所以还只画粒子。
 
 ## MPM 对比：BladeMaster 与 TopoCut 式 MLS-MPM
 

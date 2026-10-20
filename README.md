@@ -124,7 +124,7 @@ Fig. 4 形式的 Franka 中片抬升：两次径向切割，转平刀具，插�
 | 模块 | 用途 |
 |---|---|
 | `blademaster_warp.paper_freefall` | Fig. 3 / Table I 重力刀；`--grid-spacing`、`--dt`、`--contact-reference-dt` 扫描分辨率和步长，结果包含刃口高度、方向功与损伤计数 |
-| `blademaster_warp.paper_impact` | 论文 Fig. 6 三把自由刀（`Config.tool_count`），默认按论文图从前侧面水平射入（`--launch side`，20 g）：刀被减速停住，初速越大越深；`--launch top` 为竖直射入 |
+| `blademaster_warp.paper_impact` | 论文 Fig. 6 三把自由刀（`Config.tool_count`），默认按项目页视频平放、刀尖朝前射入端面（`--launch end`，20 g），块先在重力下求静平衡：刀被减速停住，初速越大越深；`--launch side` 从前侧面射入，`--launch top` 竖直射入 |
 | `blademaster_warp.scenarios` | 论文 Fig. 4/7/8 的切割历史场景（规定刀路）；`fig4`（`--single-field` 为单场对照）、`fig7-shallow`/`fig7-deep`、`fig8` |
 | `blademaster_warp.convergence` | 步长、耦合间隔、分辨率扫描 |
 | `blademaster_warp.run`，`blademaster_warp.teleop` | 不带机械臂的导向刀与刀遥操作；刀—砧板接触与 Franka 路径相同，由 `tool.step` 处理 |

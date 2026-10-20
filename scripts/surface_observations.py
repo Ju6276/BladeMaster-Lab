@@ -146,14 +146,6 @@ def compare_observations(
                         geometry=geometry_report(current["vertices"], current["triangles"]),
                     )
                 )
-                if progress and i % 100 == 0:
-                    last = geometry_checks[-1]["geometry"]
-                    print(
-                        f"frame {i} self {last['self_interior_crossings']} "
-                        f"inter {last['inter_component_interior_crossings']}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
             if stride == 1:
                 baseline[i] = (current, recorder.surface.broken.copy(), recorder.surface.codes.copy())
             else:

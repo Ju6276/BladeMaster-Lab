@@ -221,7 +221,6 @@ class MaterialReplay:
         self.trace = []
         self.max_components = self.max_broken_links = 0
         self.cut_history = {}
-        self.surface_geometry = None
 
     def __call__(self, session, positions, rotations, cutting, cut_index):
         from blademaster_warp.solver import Config, Solver
@@ -312,7 +311,6 @@ class MaterialReplay:
             assert np.isfinite(mesh["vertices"]).all()
             assert mesh["triangles"].size and mesh["triangles"].min() >= 0
             assert mesh["triangles"].max() < len(mesh["vertices"])
-            self._audit_surface(mesh)
         embedded = s.embedded_particles() > 0
         self.entered += embedded and not self.was_embedded
         self.exited += self.was_embedded and not embedded
@@ -332,55 +330,6 @@ class MaterialReplay:
             )
         )
 
-    def _audit_surface(self, mesh):
-        """Record topology and strict interior crossings of this frame's surface."""
-        from scripts.surface_deformed import geometry_report
-
-        keys = (
-            "boundary_edges",
-            "nonmanifold_edges",
-            "nonmanifold_vertices",
-            "inconsistent_edge_orientations",
-            "degenerate_triangles",
-            "self_interior_crossings",
-            "inter_component_interior_crossings",
-        )
-        if self.surface_geometry is None:
-            self.surface_geometry = {
-                "frames": 0,
-                "reference": {key: 0 for key in keys},
-                "world": {key: 0 for key in keys},
-                "reference_crossing_frames": 0,
-                "world_crossing_frames": 0,
-                "worst_reference_frame": 0,
-                "worst_world_frame": 0,
-            }
-        audit = self.surface_geometry
-        for name, points in (("reference", mesh["reference"]), ("world", mesh["vertices"])):
-            report = geometry_report(points, mesh["triangles"])
-            slot = audit[name]
-            crossings = report["self_interior_crossings"] + report["inter_component_interior_crossings"]
-            previous = slot["self_interior_crossings"] + slot["inter_component_interior_crossings"]
-            if crossings:
-                audit[f"{name}_crossing_frames"] += 1
-            if crossings > previous:
-                audit[f"worst_{name}_frame"] = audit["frames"]
-            for key in keys:
-                slot[key] = max(slot[key], int(report[key]))
-        audit["frames"] += 1
-        if audit["frames"] % 200 == 0:
-            print(
-                "surface-frame",
-                audit["frames"],
-                "ref",
-                audit["reference"]["self_interior_crossings"],
-                audit["reference"]["inter_component_interior_crossings"],
-                "world",
-                audit["world"]["self_interior_crossings"],
-                audit["world"]["inter_component_interior_crossings"],
-                flush=True,
-            )
-
     def report(self):
         assert self.entered >= 2 and self.exited >= 1, "Replay must enter and leave actual material"
         assert self.cut_particles > 0 and self.peak_reaction > 0
@@ -396,7 +345,6 @@ class MaterialReplay:
             max_components=self.max_components,
             surface=self.surface_enabled,
             max_broken_surface_links=self.max_broken_links,
-            surface_geometry=self.surface_geometry,
             cut_history=[
                 dict(session=session, cut_index=index, labeled_particles=count)
                 for (session, index), count in self.cut_history.items()

@@ -15,9 +15,9 @@ import argparse
 import json
 from pathlib import Path
 import numpy as np
-from numba import njit
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 from blademaster_warp.geometry import BANANA_DEMO_SIZE_M, grid_cells, points
 from blademaster_warp.surface import LinkedSurface, MaterialEmbedding
@@ -56,167 +56,12 @@ def twist(rate, axis_point=(0.0, 0.0, 0.012)):
     return phi
 
 
-# A box whose longest side equals the median face, once expanded by the
-# contact tolerance, crosses at most one extra grid plane on each side.
-_ORDINARY_BOX_SPAN = 2
-
-
-@njit(cache=True)
-def _hash_box_pairs(edge_lo, edge_hi, tri_lo, tri_hi, edges, triangles, cell, origin):
-    """Non-adjacent edge/triangle ids whose expanded boxes overlap.
-
-    Each ordinary box is stored in the hash buckets of the cells it touches.
-    An overlapping pair shares one of those cells, so the walk cannot miss it;
-    a bucket collision only adds candidates. Boxes that cross more than the
-    ordinary span are compared directly, with the same overlap test.
-    """
-    ntri = len(triangles)
-    nedge = len(edges)
-    capacity = ntri * 27
-    if capacity < 1:
-        capacity = 1
-    table = 1
-    while table < capacity * 2:
-        table *= 2
-    mask = table - 1
-    head = np.full(table, -1, np.int64)
-    nxt = np.empty(capacity, np.int64)
-    which = np.empty(capacity, np.int64)
-    long_tris = np.empty(ntri, np.int64)
-    long_edges = np.empty(nedge, np.int64)
-    stored = 0
-    n_long_tri = 0
-    n_long_edge = 0
-    inv = 1.0 / cell
-    ox, oy, oz = origin[0], origin[1], origin[2]
-
-    def overlaps(e, t):
-        return not (
-            edge_hi[e, 0] < tri_lo[t, 0]
-            or edge_lo[e, 0] > tri_hi[t, 0]
-            or edge_hi[e, 1] < tri_lo[t, 1]
-            or edge_lo[e, 1] > tri_hi[t, 1]
-            or edge_hi[e, 2] < tri_lo[t, 2]
-            or edge_lo[e, 2] > tri_hi[t, 2]
-        )
-
-    def shares_vertex(e, t):
-        i = edges[e, 0]
-        j = edges[e, 1]
-        tri = triangles[t]
-        return i == tri[0] or i == tri[1] or i == tri[2] or j == tri[0] or j == tri[1] or j == tri[2]
-
-    for t in range(ntri):
-        ix0 = int(np.floor((tri_lo[t, 0] - ox) * inv))
-        iy0 = int(np.floor((tri_lo[t, 1] - oy) * inv))
-        iz0 = int(np.floor((tri_lo[t, 2] - oz) * inv))
-        ix1 = int(np.floor((tri_hi[t, 0] - ox) * inv))
-        iy1 = int(np.floor((tri_hi[t, 1] - oy) * inv))
-        iz1 = int(np.floor((tri_hi[t, 2] - oz) * inv))
-        if ix1 - ix0 > _ORDINARY_BOX_SPAN or iy1 - iy0 > _ORDINARY_BOX_SPAN or iz1 - iz0 > _ORDINARY_BOX_SPAN:
-            long_tris[n_long_tri] = t
-            n_long_tri += 1
-            continue
-        for ix in range(ix0, ix1 + 1):
-            for iy in range(iy0, iy1 + 1):
-                for iz in range(iz0, iz1 + 1):
-                    bucket = (ix * 73856093 ^ iy * 19349663 ^ iz * 83492791) & mask
-                    nxt[stored] = head[bucket]
-                    which[stored] = t
-                    head[bucket] = stored
-                    stored += 1
-    for e in range(nedge):
-        ix0 = int(np.floor((edge_lo[e, 0] - ox) * inv))
-        iy0 = int(np.floor((edge_lo[e, 1] - oy) * inv))
-        iz0 = int(np.floor((edge_lo[e, 2] - oz) * inv))
-        ix1 = int(np.floor((edge_hi[e, 0] - ox) * inv))
-        iy1 = int(np.floor((edge_hi[e, 1] - oy) * inv))
-        iz1 = int(np.floor((edge_hi[e, 2] - oz) * inv))
-        if ix1 - ix0 > _ORDINARY_BOX_SPAN or iy1 - iy0 > _ORDINARY_BOX_SPAN or iz1 - iz0 > _ORDINARY_BOX_SPAN:
-            long_edges[n_long_edge] = e
-            n_long_edge += 1
-    pe = np.empty(max(nedge, 1) * 4, np.int64)
-    pt = np.empty(max(nedge, 1) * 4, np.int64)
-    found = 0
-
-    def append(e, t):
-        nonlocal pe, pt
-        if found == len(pe):
-            grown_e = np.empty(len(pe) * 2, np.int64)
-            grown_t = np.empty(len(pt) * 2, np.int64)
-            grown_e[:found] = pe
-            grown_t[:found] = pt
-            pe, pt = grown_e, grown_t
-        pe[found] = e
-        pt[found] = t
-
-    for e in range(nedge):
-        ix0 = int(np.floor((edge_lo[e, 0] - ox) * inv))
-        iy0 = int(np.floor((edge_lo[e, 1] - oy) * inv))
-        iz0 = int(np.floor((edge_lo[e, 2] - oz) * inv))
-        ix1 = int(np.floor((edge_hi[e, 0] - ox) * inv))
-        iy1 = int(np.floor((edge_hi[e, 1] - oy) * inv))
-        iz1 = int(np.floor((edge_hi[e, 2] - oz) * inv))
-        if ix1 - ix0 > _ORDINARY_BOX_SPAN or iy1 - iy0 > _ORDINARY_BOX_SPAN or iz1 - iz0 > _ORDINARY_BOX_SPAN:
-            continue
-        for ix in range(ix0, ix1 + 1):
-            for iy in range(iy0, iy1 + 1):
-                for iz in range(iz0, iz1 + 1):
-                    link = head[(ix * 73856093 ^ iy * 19349663 ^ iz * 83492791) & mask]
-                    while link != -1:
-                        t = which[link]
-                        link = nxt[link]
-                        if shares_vertex(e, t) or not overlaps(e, t):
-                            continue
-                        append(e, t)
-                        found += 1
-    for k in range(n_long_tri):
-        t = long_tris[k]
-        for e in range(nedge):
-            if shares_vertex(e, t) or not overlaps(e, t):
-                continue
-            append(e, t)
-            found += 1
-    for k in range(n_long_edge):
-        e = long_edges[k]
-        for t in range(ntri):
-            if shares_vertex(e, t) or not overlaps(e, t):
-                continue
-            append(e, t)
-            found += 1
-    return pe[:found], pt[:found]
-
-
-def _overlapping_box_pairs(edges, triangles, a, b, tri_lo, tri_hi, tolerance):
-    """Every non-adjacent edge/triangle pair whose boxes meet within ``tolerance``."""
-    edge_lo = np.ascontiguousarray(np.minimum(a, b) - tolerance)
-    edge_hi = np.ascontiguousarray(np.maximum(a, b) + tolerance)
-    tri_lo = np.ascontiguousarray(np.asarray(tri_lo, dtype=float) - tolerance)
-    tri_hi = np.ascontiguousarray(np.asarray(tri_hi, dtype=float) + tolerance)
-    extent = np.concatenate([(edge_hi - edge_lo).max(1), (tri_hi - tri_lo).max(1)])
-    positive = extent[extent > 0]
-    cell = float(np.median(positive)) if len(positive) else 1.0
-    origin = np.ascontiguousarray(np.minimum(edge_lo.min(0), tri_lo.min(0)), dtype=np.float64)
-    return _hash_box_pairs(
-        edge_lo,
-        edge_hi,
-        tri_lo,
-        tri_hi,
-        np.ascontiguousarray(edges, dtype=np.int64),
-        np.ascontiguousarray(triangles, dtype=np.int64),
-        cell,
-        origin,
-    )
-
-
 def intersection_pairs(vertices, triangles, chunk=2048):
     """Return contacting (edge vertex ids, triangle ids), excluding shared vertices.
 
     Coplanar overlap and endpoint contact count. Distinct cut pieces may touch
     legitimately before separation; geometry_report counts those separately.
     This edge/face check does not test overlap of faces sharing a mesh vertex.
-    ``chunk`` is accepted so existing callers keep working; it does not change
-    which pairs are returned.
     """
     vertices, triangles = np.asarray(vertices, float), np.asarray(triangles, int)
     if not len(triangles):
@@ -228,27 +73,30 @@ def intersection_pairs(vertices, triangles, chunk=2048):
         axis=0,
     )
     corners = vertices[triangles]
-    reach = float(np.linalg.norm(corners - corners.mean(1)[:, None], axis=2).max())
+    centroid = corners.mean(1)
+    reach = np.linalg.norm(corners - centroid[:, None], axis=2).max()
     a, b = vertices[edges[:, 0]], vertices[edges[:, 1]]
     half = np.linalg.norm(b - a, axis=1) / 2
+    tree = cKDTree(centroid)
     lo, hi = corners.min(1), corners.max(1)
-    tolerance = max(reach, float(half.max()) if len(half) else 0.0) * 1e-10
-    pe, pt = _overlapping_box_pairs(edges, triangles, a, b, lo, hi, tolerance)
-    if not len(pe):
-        return np.empty((0, 2), int), np.empty(0, int)
-    code = pe.astype(np.int64) * np.int64(len(triangles)) + pt.astype(np.int64)
-    _unique, first = np.unique(code, return_index=True)
-    first.sort()
-    pe, pt = pe[first], pt[first]
-    shared = (triangles[pt] == edges[pe, :1]).any(1) | (triangles[pt] == edges[pe, 1:]).any(1)
-    overlap = np.all(np.maximum(a[pe], b[pe]) >= lo[pt] - tolerance, axis=1) & np.all(
-        np.minimum(a[pe], b[pe]) <= hi[pt] + tolerance, axis=1
-    )
-    pe, pt = pe[~shared & overlap], pt[~shared & overlap]
-    if not len(pe):
-        return np.empty((0, 2), int), np.empty(0, int)
-    hit = segment_triangle_pairs(a[pe], b[pe], corners[pt])
-    return edges[pe[hit]], pt[hit]
+    tolerance = max(reach, half.max()) * 1e-10
+    hit_edges, hit_triangles = [], []
+    for start in range(0, len(edges), chunk):
+        stop = min(start + chunk, len(edges))
+        near = tree.query_ball_point(
+            (a[start:stop] + b[start:stop]) / 2, reach + half[start:stop] + tolerance
+        )
+        pe = np.repeat(np.arange(start, stop), [len(n) for n in near])
+        pt = np.concatenate([np.asarray(n, int) for n in near])
+        shared = (triangles[pt] == edges[pe, :1]).any(1) | (triangles[pt] == edges[pe, 1:]).any(1)
+        overlap = np.all(np.maximum(a[pe], b[pe]) >= lo[pt] - tolerance, axis=1) & np.all(
+            np.minimum(a[pe], b[pe]) <= hi[pt] + tolerance, axis=1
+        )
+        pe, pt = pe[~shared & overlap], pt[~shared & overlap]
+        hit = segment_triangle_pairs(a[pe], b[pe], corners[pt])
+        hit_edges.append(edges[pe[hit]])
+        hit_triangles.append(pt[hit])
+    return np.concatenate(hit_edges), np.concatenate(hit_triangles)
 
 
 def self_intersections(vertices, triangles):
@@ -284,23 +132,7 @@ def segment_triangle_pairs(a, b, tri, strict=False):
     t = np.einsum("ij,ij->i", e2, q) * inv
     eps = 1.0e-10
     if strict:
-        # A few thousand ulps of det is still a coplanar edge. Duplicate
-        # vertices that sit on a triangle's corners produce that noise; the
-        # resulting barycentric coordinates are not a pierce.
-        separated = np.abs(det) > (4096 * np.finfo(float).eps) * area * np.linalg.norm(d, axis=1)
-        on_corner = (np.linalg.norm(a[:, None, :] - tri, axis=2).min(1) <= 1.0e-9) & (
-            np.linalg.norm(b[:, None, :] - tri, axis=2).min(1) <= 1.0e-9
-        )
-        return (
-            nondegenerate
-            & separated
-            & (u > eps)
-            & (v > eps)
-            & (u + v < 1 - eps)
-            & (t > eps)
-            & (t < 1 - eps)
-            & ~on_corner
-        )
+        return ok & (u > eps) & (v > eps) & (u + v < 1 - eps) & (t > eps) & (t < 1 - eps)
     hit = ok & (u >= -eps) & (v >= -eps) & (u + v <= 1 + eps) & (t >= -eps) & (t <= 1 + eps)
     coplanar = nondegenerate & ~ok & (np.abs(np.einsum("ij,ij->i", s, n)) <= roundoff * area)
     ids = np.flatnonzero(coplanar)

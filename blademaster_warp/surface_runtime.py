@@ -9,21 +9,7 @@ import time
 import numpy as np
 from scipy.spatial.transform import Rotation
 from .geometry import grid_cells
-from .surface import (
-    LinkedSurface,
-    MaterialEmbedding,
-    anchor_cut_digits,
-    moving_segment_hits,
-    _mesh_labels,
-    _strict_crossing_counts,
-    separate_coincident_banks,
-    separate_crossing_sheets,
-    separate_locked_folds,
-    separate_piece_crossings,
-    snap_deformed_twins,
-    retract_vertices_ahead_of_particles,
-    settle_crossed_diagonals,
-)
+from .surface import LinkedSurface, MaterialEmbedding, moving_segment_hits
 
 
 def _write_json(path, value):
@@ -116,25 +102,11 @@ class SurfaceRecorder:
         self.history = []
         self.previous_nodes = None
         self.previous_deformation = None
-        # Last material state, so a cut inside a long observation can rebuild
-        # one-sided nodal fields along the linear particle chord.
-        self._material_x = None
-        self._material_F = None
-        self.nodal_refreshes = 0
         self._tool_samples = []
         self.last_path = np.empty((0, 10))
         self.wall_s = 0.0
         self.timing_s = dict(
-            node_embedding=0.0,
-            link_sweep=0.0,
-            mesh_construction=0.0,
-            vertex_embedding=0.0,
-            vertex_transfer=0.0,
-            coincident_banks=0.0,
-            piece_crossings=0.0,
-            twin_snap=0.0,
-            sheet_passes=0.0,
-            recording=0.0,
+            node_embedding=0.0, link_sweep=0.0, mesh_construction=0.0, vertex_embedding=0.0, recording=0.0
         )
         method = {
             "method": "reference-grid linked volume, Hermite intersections, local-region dual contouring",
@@ -235,36 +207,23 @@ class SurfaceRecorder:
         phase = time.perf_counter()
         if self.previous_nodes is not None:
             start = samples[0].time_s
-            end_time = t
-            span = end_time - start
+            span = t - start
             blade_points = [p.edge for a, b in zip(samples, samples[1:]) if a.cutting for p in (a, b)]
-            # origin/end move forward when a substep changes side codes, so the
-            # rest of the gap is not still blended across the new crack.
-            field = {
-                "origin_time": start,
-                "origin_nodes": self.previous_nodes,
-                "origin_F": self.previous_deformation,
-                "end_nodes": nodes,
-                "end_F": nodeF,
-            }
             candidates = (
-                s.swept_candidates(field["origin_nodes"], field["end_nodes"], np.concatenate(blade_points))
+                s.swept_candidates(self.previous_nodes, nodes, np.concatenate(blade_points))
                 if blade_points
                 else np.empty(0, int)
             )
 
-            def interpolate(time_s, deformation=False):
-                local = end_time - field["origin_time"]
-                fraction = np.clip((time_s - field["origin_time"]) / local, 0.0, 1.0) if local > 0 else 1.0
-                previous = field["origin_F"] if deformation else field["origin_nodes"]
-                current = field["end_F"] if deformation else field["end_nodes"]
-                if fraction == 0:
+            def interpolate(previous, current, time_s, deformation=False):
+                a = np.clip((time_s - start) / span, 0.0, 1.0) if span > 0 else 1.0
+                if a == 0:
                     return previous
-                if fraction == 1:
+                if a == 1:
                     return current
                 if deformation:
-                    return InterpolatedDeformation(previous, current, fraction)
-                return (1 - fraction) * previous + fraction * current
+                    return InterpolatedDeformation(previous, current, a)
+                return (1 - a) * previous + a * current
 
             previous_time, interpolated_nodes, interpolated_F = None, None, None
             for a, b in zip(samples, samples[1:]):
@@ -274,15 +233,24 @@ class SurfaceRecorder:
                 # at one timestamp. That reset is not a material substep.
                 if b.time_s <= a.time_s:
                     continue
-                a_nodes = interpolated_nodes if previous_time == a.time_s else interpolate(a.time_s)
+                a_nodes = (
+                    interpolated_nodes
+                    if previous_time == a.time_s
+                    else interpolate(self.previous_nodes, nodes, a.time_s)
+                )
                 a_F = (
                     interpolated_F
                     if previous_time == a.time_s
-                    else interpolate(a.time_s, deformation=True)
+                    else interpolate(self.previous_deformation, nodeF, a.time_s, deformation=True)
                 )
-                b_nodes = a_nodes if a.time_s == b.time_s else interpolate(b.time_s)
-                b_F = a_F if a.time_s == b.time_s else interpolate(b.time_s, deformation=True)
-                codes_before_step = s.codes.copy()
+                b_nodes = (
+                    a_nodes if a.time_s == b.time_s else interpolate(self.previous_nodes, nodes, b.time_s)
+                )
+                b_F = (
+                    a_F
+                    if a.time_s == b.time_s
+                    else interpolate(self.previous_deformation, nodeF, b.time_s, deformation=True)
+                )
                 s.sweep(
                     a.edge,
                     b.edge,
@@ -295,33 +263,8 @@ class SurfaceRecorder:
                     ccd=self.ccd,
                     band=self.band,
                     candidate_edges=candidates,
-                    anchor_digits=anchor_cut_digits(
-                        self.embedding.support, s.codes, codes, a.cut_index
-                    ),
                 )
                 previous_time, interpolated_nodes, interpolated_F = b.time_s, b_nodes, b_F
-                # Later substeps in this same observation still see the old
-                # blended field unless the nodal supports are rebuilt on the
-                # particle chord with the codes this substep just wrote.
-                if self._material_x is None or np.array_equal(codes_before_step, s.codes):
-                    continue
-                frac = np.clip((b.time_s - start) / span, 0.0, 1.0) if span > 0 else 1.0
-                x_b = (1.0 - frac) * self._material_x + frac * np.asarray(x, float)
-                F_b = (1.0 - frac) * self._material_F + frac * np.asarray(F, float)
-                refreshed, refreshed_F = self.embedding.node_state(x_b, F_b, codes, s.codes)
-                if np.allclose(refreshed, b_nodes, rtol=0.0, atol=1e-7, equal_nan=True):
-                    continue
-                self.nodal_refreshes += 1
-                field["origin_time"] = b.time_s
-                field["origin_nodes"] = refreshed
-                field["origin_F"] = refreshed_F
-                field["end_nodes"], field["end_F"] = self.embedding.node_state(x, F, codes, s.codes)
-                previous_time = None
-                rest = [p.edge for p in samples if p.cutting and p.time_s >= b.time_s - 1e-12]
-                if rest:
-                    candidates = s.swept_candidates(
-                        field["origin_nodes"], field["end_nodes"], np.concatenate(rest)
-                    )
         self.timing_s["link_sweep"] += time.perf_counter() - phase
         phase = time.perf_counter()
         self.previous_nodes, self.previous_deformation = (
@@ -329,8 +272,6 @@ class SurfaceRecorder:
             if np.array_equal(before, s.codes)
             else self.embedding.node_state(x, F, codes, s.codes)
         )
-        self._material_x = np.array(x, dtype=float, copy=True)
-        self._material_F = np.array(F, dtype=float, copy=True)
         self.timing_s["node_embedding"] += time.perf_counter() - phase
         self._tool_samples = [samples[-1]]
         self.previous = samples[-1].edge.copy()
@@ -338,112 +279,15 @@ class SurfaceRecorder:
         phase = time.perf_counter()
         mesh = s.mesh()
         self.timing_s["mesh_construction"] += time.perf_counter() - phase
-        t_embed = time.perf_counter()
-        phase = t_embed
+        phase = time.perf_counter()
         self.embedding.material_grid.extension_nodes = 0
-        embedded = self.embedding.vertices(mesh, x, F, codes)
-        self.timing_s["vertex_transfer"] += time.perf_counter() - phase
-        phase = time.perf_counter()
-        embedded = separate_coincident_banks(
-            embedded, mesh.triangles, mesh.reference, mesh.codes, s.cut_normals
-        )
-        self.timing_s["coincident_banks"] += time.perf_counter() - phase
-        phase = time.perf_counter()
-        # Piece separation and twin snap move only vertices that take part in a
-        # strict crossing, and the component labels depend on the triangles,
-        # not on those positions. One query therefore answers every later
-        # repair: a clean mesh is left unchanged.
-        labels = _mesh_labels(len(embedded), mesh.triangles)
-        clean = _strict_crossing_counts(embedded, mesh.triangles, labels) == (0, 0)
-        if not clean:
-            # Embedding can put a vertex through a triangle its particle has
-            # not entered. Bring that vertex back to the opening before the
-            # other repairs, and only when the strict count falls.
-            retracted = retract_vertices_ahead_of_particles(
-                embedded, mesh.triangles, mesh.codes, x, codes
-            )
-            if retracted is not embedded:
-                embedded = retracted
-                clean = _strict_crossing_counts(embedded, mesh.triangles, labels) == (0, 0)
-        if clean:
-            vertices = embedded
-            self.timing_s["piece_crossings"] += time.perf_counter() - phase
-        else:
-            embedded = separate_piece_crossings(
-                embedded, mesh.triangles, codes=mesh.codes, normals=s.cut_normals
-            )
-            self.timing_s["piece_crossings"] += time.perf_counter() - phase
-            phase = time.perf_counter()
-            vertices = snap_deformed_twins(embedded, mesh.triangles, mesh.reference)
-            self.timing_s["twin_snap"] += time.perf_counter() - phase
-        phase = time.perf_counter()
-        # One pass can stop while a later centroid round would still reduce the
-        # count. Repeat while the count falls, then separate triangles that
-        # still pierce. Frame 526 of the near-capacity replay needed two of
-        # these passes to reach zero.
-        for _ in range(0 if clean else 3):
-            before = _strict_crossing_counts(vertices, mesh.triangles, labels)
-            if before == (0, 0):
-                clean = True
-                break
-            updated = separate_crossing_sheets(
-                separate_piece_crossings(
-                    vertices, mesh.triangles, codes=mesh.codes, normals=s.cut_normals
-                ),
-                mesh.triangles,
-            )
-            after = _strict_crossing_counts(updated, mesh.triangles, labels)
-            if after[0] + after[1] >= before[0] + before[1]:
-                break
-            vertices = updated
-        # A later pass can leave two copies under 0.5 mm apart. Snap those
-        # after the passes, or the 0.5 mm world pass never sees them. A mesh
-        # that is already strictly clean has nothing for that snap, or for the
-        # locked-fold count, to move.
-        if not clean:
-            vertices = snap_deformed_twins(vertices, mesh.triangles, mesh.reference)
-        # One locked-fold pass can stop on a mesh that a second pass, or one
-        # more sheet pass, still clears. Frame 582 was left at 6 and reached 0
-        # when the same repair ran again.
-        for _ in range(0 if clean else 3):
-            before = _strict_crossing_counts(vertices, mesh.triangles, labels)
-            if before == (0, 0):
-                break
-            updated = separate_locked_folds(
-                vertices, mesh.triangles, mesh.codes, s.cut_normals
-            )
-            if _strict_crossing_counts(updated, mesh.triangles, labels)[0] >= before[0]:
-                updated = snap_deformed_twins(
-                    separate_crossing_sheets(
-                        separate_piece_crossings(
-                            vertices, mesh.triangles, codes=mesh.codes, normals=s.cut_normals
-                        ),
-                        mesh.triangles,
-                    ),
-                    mesh.triangles,
-                    mesh.reference,
-                )
-            after = _strict_crossing_counts(updated, mesh.triangles, labels)
-            if after[0] + after[1] >= before[0] + before[1]:
-                break
-            vertices = updated
-        triangles = mesh.triangles
-        if not clean:
-            # The remaining crossings can be the diagonal of one quad. The other
-            # diagonal keeps every boundary edge and is kept only when the
-            # deformed count falls and the reference count does not rise.
-            # Separation can then move a vertex onto a diagonal the first swap
-            # did not see, so one more swap runs after that move.
-            vertices, triangles = settle_crossed_diagonals(
-                vertices, triangles, mesh.reference, mesh.codes, s.cut_normals
-            )
-        self.timing_s["sheet_passes"] += time.perf_counter() - phase
-        self.timing_s["vertex_embedding"] += time.perf_counter() - t_embed
+        vertices = self.embedding.vertices(mesh, x, F, codes)
+        self.timing_s["vertex_embedding"] += time.perf_counter() - phase
         phase = time.perf_counter()
         count = len(self.history)
         self.current = dict(
             vertices=vertices,
-            triangles=triangles,
+            triangles=mesh.triangles,
             reference=mesh.reference,
             codes=mesh.codes,
             tool_position=tool.position,

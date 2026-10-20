@@ -140,15 +140,13 @@ Fig. 4 形式的 Franka 中片抬升：两次径向切割，转平刀具，插�
 
 浏览器的 `window.liveDiagnostics` 记录 WebGL 提交、显示循环间隔、收到的状态帧间隔和已绘制的命令序号。模拟输入的延迟测量应使用单独的服务端口，避免与 SpaceMouse 客户端同时发送序号。
 
-保存状态的刀面穿透回归：`python -m scripts.check_blade_penetration --state <penetration-first-cross-state.npz> --output <新目录>`；加 `--graph` 核对 CUDA 图执行，`--prepared <上次目录>` 复用相同初态。该初态及配套录制位于 tams61 的 `runs/franka_penetration_20261018/`，物理步骤始终在 GPU 上运行。
-
 ## 测试
 
 ```bash
-PYTHONPATH=/path/to/Dexlab/src .venv/bin/python -m pytest tests -q
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
 ```
 
-部分测试以 [DexLab](https://github.com/huangkiki/Dexlab) `b955d85` 作为数值参考。
+测试只依赖本仓库：网格交换、刀距离、摩擦、粒子传输按论文公式写出 FP64 参考，再加动量守恒和刚体平移等解析检查。需要 CUDA。
 
 ## 代码结构
 

@@ -190,6 +190,12 @@ Franka 版本（`franka_run --motion fig7-shallow|fig7-deep|fig8`）结果相同
   - 抹茶蛋糕：按参考高度 60% 分两层，上深绿、下浅绿。
   - 果冻：深红半透明。
   - Fig. 5：奶油色粒子。
+  - 颜色表在 `material_colors.py`，离线渲染和网页共用。
+- 粒子按切开的块着色，和网页一样：
+  - 块由保存的侧码算出（`topology.components`），块号跨刀保持（`topology.StablePieces`）；
+  - 未切开时整块是材料色；每切下一块，新块换一种颜色，原块保留材料色；
+  - 粒子面板角上显示块数。
+  - 表面保持材料色。Fig. 5 的 CRESSim 没有侧码，两边都还是奶油色。
 
 | 视频 | 运行 | 显示 |
 |---|---|---|

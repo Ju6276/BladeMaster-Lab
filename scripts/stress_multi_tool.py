@@ -180,13 +180,17 @@ def capacity_stress(seed=17, device="cpu", tool_count=3, config=None):
         old = np.zeros(len(x), dtype=np.int64)
         for index in indices:
             for damage in probe.tool_damage:
-                damage.fill_(1.0)
+                damage.fill_(0.75)
             previous_index = probe.cut_index
             probe._set_cut(index)
             if index != previous_index:
                 assert all(not damage.numpy().any() for damage in probe.tool_damage)
+                assert not probe.cut_released.numpy().any()
             else:
-                assert all(np.all(damage.numpy() == 1.0) for damage in probe.tool_damage)
+                assert all(np.all(damage.numpy() == 0.75) for damage in probe.tool_damage)
+            # A free knife opens its band only after the cut is paid; pay it here.
+            for damage in probe.tool_damage:
+                damage.fill_(1.0)
             probe.contact(poses, velocities, rotations, np.zeros((tool_count, 3)), cut_index=index)
             probe.assign_sides(index, cutting=False)
             np.testing.assert_array_equal(probe.codes.numpy(), old)

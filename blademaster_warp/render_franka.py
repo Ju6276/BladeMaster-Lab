@@ -24,7 +24,7 @@ FOOD_COLOR = {
 }
 # Matcha cake of Fig. 4: dark top layer over a light sponge, split at 60 % of
 # the reference height.
-CAKE_LAYERS = dict(fraction=0.6, below=(0.62, 0.70, 0.43), above=(0.12, 0.38, 0.14))
+CAKE_LAYERS = dict(fraction=0.6, below=(0.74, 0.86, 0.52), above=(0.12, 0.38, 0.14))
 
 
 def sha256(path):
@@ -188,7 +188,11 @@ def render(directory, output=None, preview=False, layout="overview"):
             # Cut-history colors are one ternary digit per cut, not connected components.
             # Fig. 7 and Fig. 8 use one food color; the opening is the cut.
             legend_x = 18 if layout == "paper" else 658
-            legend = "Color: one material" if food else "Colors: cut-history codes"
+            legend = (
+                "Color: two cake layers"
+                if cake
+                else "Color: one material" if food else "Colors: cut-history codes"
+            )
             draw.rectangle((legend_x - 6, 739, legend_x + 300, 763), fill=(241, 244, 246))
             draw.text((legend_x, 742), legend, font=small, fill=ink)
             draw.line((640, 48, 640, 768), fill=(255, 255, 255), width=3)

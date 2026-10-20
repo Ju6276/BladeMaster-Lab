@@ -213,12 +213,12 @@ def test_gpu_slice_lift_separates_and_holds_fig4_wedge(tmp_path):
     from blademaster_warp.live import LiveState
 
     class SupportObserver(LiveState):
-        def initialize(self, robot, solver, surface):
+        def initialize(self, robot, solver, surface, material=None):
             ref = solver.reference
             self.slice = (ref[:, 0] > 0) & (abs(ref[:, 1]) < np.sqrt(3) * ref[:, 0])
             self.crossed = np.zeros(len(ref), bool)
             self.previous_support = None
-            super().initialize(robot, solver, surface)
+            super().initialize(robot, solver, surface, material)
 
         def publish(self, robot, solver, surface, x, codes, wall_s, phase, wrench, **kwargs):
             if x is not None and phase in ("insert", "support", "lift", "verify", "done"):

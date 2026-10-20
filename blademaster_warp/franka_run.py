@@ -9,7 +9,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from .franka import Franka, HALF, BEVEL, SOURCE, BOARD_HALF_EXTENT, quat_xyzw, yaw_matrix
 from .provenance import git_revision
-from .topology import components
+from .material_colors import MATERIALS
+from .topology import StablePieces, components
 from .cut_cycle import CutCycle, CutSequence, CycleSettings, SequenceSettings, evaluate_cut
 from .teleop_input import ContactStrokes, PoseTarget, mock_command
 from .franka_task import (
@@ -61,6 +62,28 @@ def target_at(t, initial):
     return initial + np.array([0.0, 0.0, z])
 
 
+# Paper materials available to any motion (teleop included), by their paper scene.
+MATERIAL_SCENES = {"fig4-cake": "fig4", "fig7-tofu": "fig7-shallow", "fig8-luncheon": "fig8"}
+
+
+def paper_scene(args):
+    """Paper scene whose material, geometry and knife the run uses, or None."""
+    motion = getattr(args, "motion", None)
+    if motion == "slice-lift":
+        return "fig4"
+    if motion in PAPER_MOTIONS:
+        return motion
+    return MATERIAL_SCENES.get(getattr(args, "material", None))
+
+
+def run_material(args):
+    """Material name for colors: a paper motion fixes its own material."""
+    from .material_colors import TASK_MATERIAL
+
+    task = "fig4-slice-lift" if args.motion == "slice-lift" else args.motion
+    return TASK_MATERIAL.get(task, args.material)
+
+
 def material_config(args):
     from .solver import Config
     from .presets import banana_config, banana_dt
@@ -83,11 +106,7 @@ def material_config(args):
             blade_bevel_height=BEVEL,
         )
     )
-    scene = None
-    if getattr(args, "motion", None) == "slice-lift":
-        scene = "fig4"
-    elif getattr(args, "motion", None) in PAPER_MOTIONS:
-        scene = args.motion
+    scene = paper_scene(args)
     if scene is not None:
         from .scenarios import scene_config
 
@@ -266,7 +285,8 @@ class FrankaCuttingRun:
             layout=getattr(args, "layout", "side"),
             blade_half_size=self.cfg.blade_half_size,
             blade_bevel_height=self.cfg.blade_bevel_height,
-            initial_edge_height=self.cfg.size[2] + 0.02 if slice_lift or paper_task else 0.04,
+            # Paper materials are taller than the 30 mm block; start 20 mm above any of them.
+            initial_edge_height=self.cfg.size[2] + 0.02 if paper_scene(args) is not None else 0.04,
             # The palm extends 104 mm along the blade normal in the paper layout.
             blade_mount_offset=0.115 if slice_lift else 0.0,
         )
@@ -334,8 +354,7 @@ class FrankaCuttingRun:
         self._last_codes = None
         self._last_component_sizes = None
         self._last_component_labels = None
-        self._piece_ids = None
-        self._next_piece = 1
+        self._pieces = StablePieces()
 
     def _make_cycle(self):
         if self.args.motion in PAPER_MOTIONS:
@@ -531,36 +550,9 @@ class FrankaCuttingRun:
         if self._last_codes is None or not np.array_equal(codes, self._last_codes):
             labels, sizes = components(self.solver.node_numpy, self.solver.weight_numpy, codes)
             self._last_codes = codes
-            self._last_component_labels = self._stable_pieces(labels)
+            self._last_component_labels = self._pieces.update(labels)
             self._last_component_sizes = sizes.tolist()
         return self._last_component_sizes
-
-    def _stable_pieces(self, labels):
-        """Piece id per particle that survives later cuts.
-
-        Component labels are renumbered whenever a cut adds a piece. Each previous
-        piece passes its id to the new component sharing most particles with it;
-        the other components get ids never used before.
-        """
-        previous = self._piece_ids
-        if labels.max() == 0 or previous is None or len(previous) != len(labels):
-            self._next_piece = int(labels.max()) + 1
-            self._piece_ids = labels.copy()
-            return self._piece_ids
-        base = int(previous.max()) + 1
-        pairs, counts = np.unique(labels.astype(np.int64) * base + previous, return_counts=True)
-        mapping = np.full(int(labels.max()) + 1, -1)
-        taken = set()
-        for i in np.argsort(-counts, kind="stable"):
-            component, old = divmod(int(pairs[i]), base)
-            if mapping[component] < 0 and old not in taken:
-                mapping[component] = old
-                taken.add(old)
-        for component in np.flatnonzero(mapping < 0):
-            mapping[component] = self._next_piece
-            self._next_piece += 1
-        self._piece_ids = mapping[labels]
-        return self._piece_ids
 
     def _snapshot(self, heights, wrench, begin):
         """Frame sample: material readback, task observation, surface, live display."""
@@ -696,7 +688,7 @@ class FrankaCuttingRun:
         args, robot = self.args, self.robot
         self.gravity_rest_s = self._rest_under_gravity()
         if self.observer:
-            self.observer.initialize(robot, self.solver, self.surface)
+            self.observer.initialize(robot, self.solver, self.surface, run_material(self.args))
             if self.surface:
                 self.surface.wall_s = 0.0
                 self.surface.timing_s = dict.fromkeys(self.surface.timing_s, 0.0)
@@ -1019,9 +1011,13 @@ def parser():
     )
     p.add_argument(
         "--material",
-        choices=["elastic-block", "paper-banana"],
+        choices=list(MATERIALS),
         default="elastic-block",
-        help="paper-banana: paper §IV-C material on the 120 mm banana; slice-lift always uses the Fig4 cylinder",
+        help=(
+            "paper-banana: paper §IV-C material on the 120 mm banana; fig4-cake, fig7-tofu, "
+            "fig8-luncheon: material, geometry and knife of that paper scene for any motion "
+            "(teleop included); the paper motions always use their own scene"
+        ),
     )
     p.add_argument(
         "--dt",

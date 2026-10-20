@@ -23,6 +23,41 @@ def test_banana_material_and_blade_match_standalone_driver():
     assert HALF == robot["blade_half_size"] and BEVEL == robot["blade_bevel_height"] == 0.005
 
 
+@pytest.mark.parametrize("material,scene", [("fig4-cake", "fig4"), ("fig7-tofu", "fig7-shallow"), ("fig8-luncheon", "fig8")])
+def test_teleop_paper_materials_use_their_scene(material, scene):
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from blademaster_warp.franka_run import material_config
+    from blademaster_warp.scenarios import scene_config
+
+    teleop = asdict(
+        material_config(
+            SimpleNamespace(material=material, motion="teleop", dt=None, spacing=None, cutting_energy=None, interval=0.001)
+        )
+    )
+    paper = asdict(
+        material_config(
+            SimpleNamespace(material="elastic-block", motion=scene if scene != "fig4" else "slice-lift",
+                            dt=None, spacing=None, cutting_energy=None, interval=0.001)
+        )
+    )
+    assert teleop == paper
+    reference = scene_config(scene)
+    for key in ("size", "shape", "grid_spacing", "young_modulus", "poisson_ratio", "density", "blade_half_size"):
+        assert teleop[key] == asdict(reference)[key]
+
+
+def test_piece_colors_keep_material_for_piece_zero_only():
+    from blademaster_warp.material_colors import material_colormap
+    from blademaster_warp.topology import piece_rgb
+
+    reference = np.array([[0, 0, 0.0], [0, 0, 0.05], [0, 0, 0.01], [0, 0, 0.04]])
+    base = material_colormap("fig4-cake", reference)(reference)
+    rgb = piece_rgb(np.array([0, 0, 1, 2]), base)
+    np.testing.assert_array_equal(rgb[:2], base[:2])
+    assert not np.allclose(rgb[2], rgb[3]) and not np.allclose(rgb[2], base[2])
+
+
 def test_explicit_material_overrides_do_not_change_other_parameters():
     from dataclasses import asdict
     from types import SimpleNamespace

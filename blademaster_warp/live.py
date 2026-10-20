@@ -89,7 +89,7 @@ class LiveState:
         # Teleoperation input (LatestInput) when the run is driven by an operator.
         self.teleop = None
 
-    def initialize(self, robot, solver, surface):
+    def initialize(self, robot, solver, surface, material=None):
         setup_begin = time.perf_counter()
         asset = scene_asset(robot)
         self.ids = [g["id"] for g in asset["geoms"]]
@@ -100,6 +100,14 @@ class LiveState:
         asset["surface_spacing_m"] = (
             float(surface.surface.h) if solver is not None and surface is not None else None
         )
+        if solver is not None and material is not None:
+            from .material_colors import material_colormap
+
+            # Particle order is fixed for the run: the viewer colors piece 0 with these.
+            reference = solver.x.numpy()
+            rgb = material_colormap(material, reference)(reference)
+            asset["particle_rgb"] = np.round(rgb, 3).ravel().tolist()
+            asset["surface_rgb"] = np.round(rgb.mean(0), 3).tolist()
         self.asset = asset
         if solver:
             x, codes = solver.x.numpy(), solver.codes.numpy()

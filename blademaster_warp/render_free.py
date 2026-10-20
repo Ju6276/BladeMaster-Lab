@@ -21,6 +21,7 @@ from vtk.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from PIL import Image, ImageDraw, ImageFont
 from .render import actor, blade_mesh
 from .replay_style import mottled, place_lights, wood_texture
+from .topology import piece_rgb, recorded_pieces
 from .provenance import git_revision
 
 JELLY = (0.50, 0.04, 0.13)
@@ -222,14 +223,15 @@ def free_knife_video(kind, directory, output, title, fps=25):
     corners = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
     blade_extent = [p + corners * np.asarray(cfg["blade_half_size"]).max() for p in blade_p[0]]
     scene.frame_view(np.vstack([reference, *blade_extent]), direction, angle)
-    colors = np.clip(mottled(color)(reference), 0, 1) if kind == "fig6" else np.tile(color, (len(reference), 1))
+    base = np.clip(mottled(color)(reference), 0, 1) if kind == "fig6" else np.tile(color, (len(reference), 1))
+    pieces = recorded_pieces(cfg, z["sides"])
     font = ImageFont.truetype("DejaVuSans.ttf", 26)
     small = ImageFont.truetype("DejaVuSans.ttf", 18)
     slow = fps * float(np.median(np.diff(times)))
     proc = encoder(output, fps, (1280, 720))
     try:
         for i, t in enumerate(times):
-            scene.update(positions[i], colors, list(zip(blade_p[i], blade_q[i])))
+            scene.update(positions[i], piece_rgb(pieces[i], base), list(zip(blade_p[i], blade_q[i])))
             if surface:
                 with np.load(surface_dir / f"{i:05d}.npz") as snapshot:
                     scene.set_surface(snapshot)
@@ -238,7 +240,8 @@ def free_knife_video(kind, directory, output, title, fps=25):
             draw = ImageDraw.Draw(image)
             draw.text((20, 10), title, font=font, fill=INK)
             draw.text((1060, 12), f"{t:.3f} s", font=font, fill=INK)
-            view = "Surface" if surface else "Particles"
+            count = len(np.unique(pieces[i]))
+            view = "Surface" if surface else f"Particles | {count} piece{'s' if count > 1 else ''}"
             draw.text((20, 690), f"{view}  |  {1 / slow:.0f}x slow motion" if slow < 1 else view, font=small, fill=INK)
             if kind == "fig3":
                 draw.line((1180, 90, 1180, 160), fill=INK, width=3)

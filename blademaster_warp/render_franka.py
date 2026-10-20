@@ -8,25 +8,11 @@ import subprocess
 import xml.etree.ElementTree as ET
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from .replay_style import ReplayScene, layers, mottled
+from .material_colors import TASK_MATERIAL, material_colormap
+from .replay_style import ReplayScene
 from .robot_replay import RobotVisuals
 from .provenance import git_revision
-
-
-# Material colors sampled from the project-page videos
-# (https://jango6324.github.io/blademaster/). One color per material: the cut
-# is the opening, not a change of material.
-BANANA = (0.93, 0.91, 0.85)
-FOOD_COLOR = {
-    "fig7-shallow": (0.90, 0.87, 0.82),
-    "fig7-deep": (0.90, 0.87, 0.82),
-    "fig8": (0.85, 0.69, 0.66),
-}
-# Matcha cake of Fig. 4: dark top layer over a light sponge, split at 60 % of
-# the reference height.
-CAKE_LAYERS = dict(fraction=0.6, below=(0.74, 0.86, 0.52), above=(0.12, 0.38, 0.14))
-# Luncheon meat is mottled in the project-page videos.
-MOTTLED = ("fig8",)
+from .topology import piece_rgb, recorded_pieces
 
 
 def sha256(path):
@@ -95,9 +81,9 @@ def render(directory, output=None, preview=False, layout="overview"):
         center_mm=((np.fromstring(geom.get("pos"), sep=" ") - z["origin"]) * 1000).tolist(),
     )
     task = manifest.get("task")
-    cake = task == "fig4-slice-lift"
-    banana = manifest.get("args", {}).get("material") == "paper-banana"
-    food = FOOD_COLOR.get(task) or (BANANA if banana else None)
+    material = TASK_MATERIAL.get(task) or manifest.get("args", {}).get("material", "elastic-block")
+    cake = material == "fig4-cake"
+    banana = material == "paper-banana"
     # Banana keeps the green board of Fig. 1; the food tasks use the bamboo board.
     scene_style = "paper" if banana else "wood"
     scenes = [
@@ -105,18 +91,12 @@ def render(directory, output=None, preview=False, layout="overview"):
         ReplayScene(manifest["config"], board, 640, 720 if layout == "paper" else 360, style=scene_style),
     ]
     reference = z["particles"][0]
-    colormap = None
-    if cake:
-        boundary = reference[:, 2].min() + CAKE_LAYERS["fraction"] * np.ptp(reference[:, 2])
-        colormap = layers(boundary, CAKE_LAYERS["below"], CAKE_LAYERS["above"])
-    elif task in MOTTLED:
-        colormap = mottled(food)
+    colormap = material_colormap(material, reference)
     for scene in scenes:
-        if colormap is not None:
-            scene.set_material_colormap(colormap, reference)
-        elif food:
-            scene.set_material_color(food)
-    food = food or cake
+        scene.set_material_colormap(colormap, reference)
+    # Particle panel: one color per separated piece, as in the browser viewer.
+    pieces = recorded_pieces(manifest["config"], z["codes"])
+    base_particles = colormap(reference)
     robots = [RobotVisuals(scene, directory / "scene.xml", z["origin"]) for scene in scenes]
     # Camera selection changes neither geometry nor the recorded knife motion.
     whole, detail = web_cameras(robots[0].model.body("link0").pos, z["origin"])
@@ -155,8 +135,9 @@ def render(directory, output=None, preview=False, layout="overview"):
             path = directory / "surface" / f"{fi:05d}.npz"
             surface_hash.update(path.read_bytes())
             with np.load(path) as snapshot:
+                particle_rgb = np.clip(piece_rgb(pieces[idx], base_particles), 0, 1)
                 for scene, robot in zip(scenes, robots):
-                    scene.update(snapshot, z["particles"][idx], z["codes"][idx])
+                    scene.update(snapshot, z["particles"][idx], z["codes"][idx], particle_rgb)
                     pe, re = robot.update(z["qpos"][idx], snapshot)
                     max_position_error, max_rotation_error = max(max_position_error, pe), max(
                         max_rotation_error, re
@@ -181,7 +162,7 @@ def render(directory, output=None, preview=False, layout="overview"):
             if layout == "paper":
                 draw.rectangle((12, 56, 242, 82), fill=(241, 244, 246))
                 draw.rectangle((652, 56, 730, 82), fill=(241, 244, 246))
-            particle_label = "Particles" if food else "Particles | cut-history codes"
+            particle_label = "Particles | one color per separated piece"
             draw.text(
                 (18, 60),
                 particle_label if layout == "paper" else "Robot + surface",
@@ -192,14 +173,9 @@ def render(directory, output=None, preview=False, layout="overview"):
             if layout != "paper":
                 draw.text((658, 420), particle_label, font=small, fill=ink)
                 draw.line((640, 408, 1280, 408), fill=(255, 255, 255), width=3)
-            # Cut-history colors are one ternary digit per cut, not connected components.
-            # Fig. 7 and Fig. 8 use one food color; the opening is the cut.
             legend_x = 18 if layout == "paper" else 658
-            legend = (
-                "Color: two cake layers"
-                if cake
-                else "Color: one material" if food else "Colors: cut-history codes"
-            )
+            count = len(np.unique(pieces[idx]))
+            legend = f"{count} piece{'s' if count > 1 else ''}" + (" | cake: two layers" if cake else "")
             draw.rectangle((legend_x - 6, 739, legend_x + 300, 763), fill=(241, 244, 246))
             draw.text((legend_x, 742), legend, font=small, fill=ink)
             draw.line((640, 48, 640, 768), fill=(255, 255, 255), width=3)
@@ -281,9 +257,9 @@ def render(directory, output=None, preview=False, layout="overview"):
                     "labels",
                 ],
                 particle_colors=(
-                    "material colors from the project-page videos (cake: two layers by reference height); the cut is the opening"
-                    if food
-                    else "saved cut-history codes, not component IDs; single cut: 0 yellow unmarked, 1 blue, 2 orange"
+                    "stable connected-piece ids from the saved side codes (topology.components); piece 0 keeps "
+                    "the project-page material color (cake: two layers by reference height), each separated "
+                    "piece gets a new hue as in the browser viewer"
                 ),
                 geometry="recorded mesh vertices and triangles; compiled Menagerie visuals transformed by saved qpos; no smoothing or synthetic motion",
                 playback="recorded simulation time, not wall-clock computation time",

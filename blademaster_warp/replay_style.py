@@ -5,6 +5,7 @@ import vtk
 from vtk.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from PIL import Image, ImageDraw, ImageFont
 from .render import actor, blade_mesh
+from .material_colors import layers, mottled  # noqa: F401  (re-exported for the renderers)
 
 
 def wood_texture():
@@ -48,30 +49,6 @@ def place_lights(renderer, camera_azimuth):
     headlight.SetLightTypeToHeadlight()
     headlight.SetIntensity(0.3)
     renderer.AddLight(headlight)
-
-
-def layers(boundary_z, below_rgb, above_rgb):
-    """Two layers split at a reference height, e.g. a cake."""
-    below, above = np.asarray(below_rgb, float), np.asarray(above_rgb, float)
-    return lambda reference: np.where((reference[:, 2] > boundary_z)[:, None], above, below)
-
-
-def mottled(rgb, scale=0.006, amplitude=0.08, seed=7):
-    """Smooth random brightness field over reference positions (luncheon-meat mottling).
-
-    A sum of random plane waves with wavelength around `scale` (m); deterministic per seed.
-    """
-    rng = np.random.default_rng(seed)
-    count = 24
-    waves = rng.normal(size=(count, 3)) * (2 * np.pi / scale)
-    phases = rng.uniform(0, 2 * np.pi, count)
-    base = np.asarray(rgb, float)
-
-    def color(reference):
-        field = np.cos(np.asarray(reference) @ waves.T + phases).sum(1) * np.sqrt(2.0 / count)
-        return base * (1.0 + amplitude * field)[:, None]
-
-    return color
 
 
 class ReplayScene:
@@ -192,7 +169,7 @@ class ReplayScene:
         place_lights(self.renderer, np.arctan2(*(np.subtract(position, focal)[1::-1])))
         self.renderer.ResetCameraClippingRange()
 
-    def update(self, snapshot, positions, codes):
+    def update(self, snapshot, positions, codes, particle_rgb=None):
         from scipy.spatial.transform import Rotation
 
         points = vtk.vtkPoints()
@@ -212,7 +189,9 @@ class ReplayScene:
         pts = vtk.vtkPoints()
         pts.SetData(numpy_to_vtk(positions * 1000, deep=True))
         self.cloud.SetPoints(pts)
-        if self.material_color is None:
+        if particle_rgb is not None:
+            rgb = np.asarray(particle_rgb)
+        elif self.material_color is None:
             palette = np.array(
                 [
                     [0.90, 0.76, 0.47],

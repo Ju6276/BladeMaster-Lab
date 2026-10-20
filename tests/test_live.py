@@ -214,14 +214,14 @@ def test_franka_teleop_follows_operator_twist_and_cut_events():
     start = run.robot.position.copy()
     start_rotation = run.robot.rotation.copy()
     seen = []
-    original = run._exchange_wrench
+    original = run._finish_exchange
 
     def exchange():
         wrench = original()
         seen.append((run.robot.data.time, run.cutting, run.cut_index))
         return wrench
 
-    run._exchange_wrench = exchange
+    run._finish_exchange = exchange
     report = run.execute()
     assert report["status"] == "completed" and report["teleop"]["cut_strokes"] == 2
     # Mock input: begin_cut at 0 s, end_cut at 1.7 s, a twist over 2.3-3.2 s, begin_cut at 3.2 s.

@@ -377,7 +377,7 @@ def franka_stress():
     run = FrankaCuttingRun(args)
     initial = run.robot.rotation.copy()
     target_tilts, measured_tilts = [], []
-    exchange = run._exchange_wrench
+    exchange = run._finish_exchange
 
     def observe_rotation():
         result = exchange()
@@ -386,7 +386,7 @@ def franka_stress():
             values.append(float(np.arccos(np.clip(initial[:, 2] @ rotation[:, 2], -1, 1))))
         return result
 
-    run._exchange_wrench = observe_rotation
+    run._finish_exchange = observe_rotation
     report = run.execute()
     assert report["status"] == "completed"
     assert report["teleop"]["cut_strokes"] == 2

@@ -80,6 +80,7 @@ class ContactProbe(Solver):
         self.tool_rot = wp.array([[0, 0, 0, 1]] * k, dtype=wp.quat, device=self.device)
         self.tool_mobility = zeros((6, 6), float)
         self.reaction, self.torque = zeros(k), zeros(k)
+        self.contact_parts = zeros(4)
         self.tool_views = [
             dict(
                 pos=self.tool_pos[i : i + 1],

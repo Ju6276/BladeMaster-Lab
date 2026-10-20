@@ -13,6 +13,15 @@ from .robot_replay import RobotVisuals
 from .provenance import git_revision
 
 
+# Fig. 7 is the pale block. Fig. 8 is the pink block on the project page.
+# One color: the cut is the opening, not a change of material.
+FOOD_COLOR = {
+    "fig7-shallow": (0.96, 0.93, 0.84),
+    "fig7-deep": (0.96, 0.93, 0.84),
+    "fig8": (0.86, 0.45, 0.48),
+}
+
+
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -64,10 +73,17 @@ def render(directory, output=None, preview=False, layout="overview"):
         size_mm=(np.fromstring(geom.get("size"), sep=" ") * 2000).tolist(),
         center_mm=((np.fromstring(geom.get("pos"), sep=" ") - z["origin"]) * 1000).tolist(),
     )
+    task = manifest.get("task")
+    food = FOOD_COLOR.get(task)
+    # Food motions use the wood board. The green board is the Fig. 1 presentation.
+    scene_style = "wood" if food else "paper"
     scenes = [
-        ReplayScene(manifest["config"], board, 640, 720, style="paper"),
-        ReplayScene(manifest["config"], board, 640, 720 if layout == "paper" else 360, style="paper"),
+        ReplayScene(manifest["config"], board, 640, 720, style=scene_style),
+        ReplayScene(manifest["config"], board, 640, 720 if layout == "paper" else 360, style=scene_style),
     ]
+    if food:
+        for scene in scenes:
+            scene.set_material_color(food)
     robots = [RobotVisuals(scene, directory / "scene.xml", z["origin"]) for scene in scenes]
     # Camera selection changes neither geometry nor the recorded knife motion.
     cameras = [
@@ -133,20 +149,23 @@ def render(directory, output=None, preview=False, layout="overview"):
             if layout == "paper":
                 draw.rectangle((12, 56, 242, 82), fill=(241, 244, 246))
                 draw.rectangle((652, 56, 730, 82), fill=(241, 244, 246))
+            particle_label = "Particles" if food else "Particles | cut-history codes"
             draw.text(
                 (18, 60),
-                "Particles | cut-history codes" if layout == "paper" else "Robot + surface",
+                particle_label if layout == "paper" else "Robot + surface",
                 font=small,
                 fill=ink,
             )
             draw.text((658, 60), "Surface", font=small, fill=ink)
             if layout != "paper":
-                draw.text((658, 420), "Particles | cut-history codes", font=small, fill=ink)
+                draw.text((658, 420), particle_label, font=small, fill=ink)
                 draw.line((640, 408, 1280, 408), fill=(255, 255, 255), width=3)
-            # Colors are cut-history codes (one ternary digit per cut), not connected components.
+            # Cut-history colors are one ternary digit per cut, not connected components.
+            # Fig. 7 and Fig. 8 use one food color; the opening is the cut.
             legend_x = 18 if layout == "paper" else 658
+            legend = "Color: one material" if food else "Colors: cut-history codes"
             draw.rectangle((legend_x - 6, 739, legend_x + 300, 763), fill=(241, 244, 246))
-            draw.text((legend_x, 742), "Colors: cut-history codes", font=small, fill=ink)
+            draw.text((legend_x, 742), legend, font=small, fill=ink)
             draw.line((640, 48, 640, 768), fill=(255, 255, 255), width=3)
             force = z["log"][np.argmin(abs(z["log"][:, 0] - now)), 7:10]
             draw.text(
@@ -224,7 +243,11 @@ def render(directory, output=None, preview=False, layout="overview"):
                     "camera framing",
                     "labels",
                 ],
-                particle_colors="saved cut-history codes, not component IDs; single cut: 0 yellow unmarked, 1 blue, 2 orange",
+                particle_colors=(
+                    "one food color for fig7 and fig8; the cut is the opening"
+                    if food
+                    else "saved cut-history codes, not component IDs; single cut: 0 yellow unmarked, 1 blue, 2 orange"
+                ),
                 geometry="recorded mesh vertices and triangles; compiled Menagerie visuals transformed by saved qpos; no smoothing or synthetic motion",
                 playback="recorded simulation time, not wall-clock computation time",
                 revision=git_revision(),

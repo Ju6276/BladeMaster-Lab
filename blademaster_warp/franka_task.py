@@ -318,3 +318,273 @@ class SliceLiftMetrics:
                 hold_s=s.final_hold_s,
             ),
         )
+
+
+@dataclass(frozen=True)
+class PaperTaskSettings:
+    """Franka tracking limits for the prescribed Fig. 7 and Fig. 8 paths."""
+
+    travel_speed_m_s: float = 0.04
+    descent_speed_m_s: float = 0.02
+    angular_speed_rad_s: float = 0.5
+    # A few newtons through the 1000 N/m spring sags several millimetres.
+    position_tolerance_m: float = 0.006
+    orientation_tolerance_rad: float = np.deg2rad(3.0)
+    arrival_hold_s: float = 0.15
+    final_hold_s: float = 1.0
+    tracking_timeout_s: float = 12.0
+    minimum_cut_particles: int = 1
+    minimum_piece_fraction: float = 0.8
+    # Inner slices lean on the ones already tipped, so their median shift is a few millimetres.
+    minimum_slice_shift_m: float = 0.002
+
+    def __post_init__(self):
+        values = np.array(list(vars(self).values()))
+        if not np.isfinite(values).all() or np.min(values) <= 0:
+            raise ValueError("Paper-task settings must be finite and positive")
+
+
+class PaperTask:
+    """Follow a prescribed Fig. 7 or Fig. 8 keyframe path with the measured Franka pose.
+
+    Cutting stays active for the whole motion that leaves a keyframe whose cut
+    index is set, matching ``scenarios.command_at``.
+    """
+
+    def __init__(self, name, initial, initial_rotation, material_origin, settings=None):
+        from .scenarios import keyframes
+
+        if name not in ("fig7-shallow", "fig7-deep", "fig8"):
+            raise ValueError(name)
+        self.name = name
+        self.settings = s = settings or PaperTaskSettings()
+        self.expected_pieces = 5 if name == "fig8" else 1
+        self.phases = ("settle", "move", "cut", "hold", "verify", "done", "failed")
+        self.origin = np.asarray(material_origin, float)
+        self.start_position = np.array(initial, float, copy=True)
+        self.start_rotation = np.array(initial_rotation, float, copy=True)
+        if (
+            self.origin.shape != (3,)
+            or self.start_position.shape != (3,)
+            or self.start_rotation.shape != (3, 3)
+            or not all(np.isfinite(v).all() for v in (self.origin, self.start_position, self.start_rotation))
+        ):
+            raise ValueError("Expected finite initial pose and material origin")
+        self.segments = [
+            PoseSegment("settle", self.start_position.copy(), self.start_rotation.copy(), s.travel_speed_m_s, 0, 0.3)
+        ]
+        keys = keyframes(name)
+        last_cut = 0
+        for index in range(len(keys) - 1):
+            source, dest = keys[index], keys[index + 1]
+            local = np.asarray(dest[1], float)
+            rotation = Rotation.from_euler("ZYX", dest[2], degrees=True).as_matrix()
+            if source[3] >= 0:
+                last_cut = int(source[3])
+                phase = "cut"
+            elif np.allclose(local, np.asarray(source[1], float), atol=1e-9):
+                phase = "hold"
+            else:
+                phase = "move"
+            drop = self.origin[2] + float(source[1][2]) - (self.origin[2] + local[2])
+            speed = s.descent_speed_m_s if drop > 1e-4 else s.travel_speed_m_s
+            self.segments.append(
+                PoseSegment(phase, self.origin + local, rotation, speed, last_cut, s.arrival_hold_s)
+            )
+        self.segments[-1] = PoseSegment(
+            "verify",
+            self.segments[-1].position,
+            self.segments[-1].rotation,
+            self.segments[-1].speed,
+            self.segments[-1].cut_index,
+            s.final_hold_s,
+        )
+        self.index = 0
+        self.phase = "settle"
+        self.cut_index = 0
+        self.segment_start = 0.0
+        self.arrived_since = None
+        self.failure_reason = None
+        self.events = [dict(time_s=0.0, phase="settle", cut_index=0)]
+        self.max_position_error_m = 0.0
+        self.max_orientation_error_rad = 0.0
+        self.last_time = -np.inf
+        self.target_rotation = self.start_rotation.copy()
+
+    @property
+    def done(self):
+        return self.phase == "done"
+
+    @property
+    def failed(self):
+        return self.phase == "failed"
+
+    @property
+    def cutting(self):
+        return self.phase == "cut"
+
+    def update(self, t, actual, rotation, edge_points):
+        s = self.settings
+        actual, rotation, edges = map(np.asarray, (actual, rotation, edge_points))
+        if (
+            not np.isfinite(t)
+            or t < self.last_time
+            or actual.shape != (3,)
+            or rotation.shape != (3, 3)
+            or edges.shape != (2, 3)
+            or not all(np.isfinite(v).all() for v in (actual, rotation, edges))
+        ):
+            raise ValueError("Expected finite measured pose/edge points and monotonic time")
+        self.last_time = t
+        if self.done or self.failed:
+            return self.segments[self.index].position.copy(), self.target_rotation.copy()
+        segment = self.segments[self.index]
+        delta = Rotation.from_matrix(segment.rotation @ self.start_rotation.T).as_rotvec()
+        duration = max(
+            np.linalg.norm(segment.position - self.start_position) / segment.speed,
+            np.linalg.norm(delta) / s.angular_speed_rad_s,
+        )
+        elapsed = t - self.segment_start
+        fraction = min(elapsed / duration, 1.0) if duration else 1.0
+        target = self.start_position + fraction * (segment.position - self.start_position)
+        self.target_rotation = Rotation.from_rotvec(fraction * delta).as_matrix() @ self.start_rotation
+        position_error = np.linalg.norm(actual - target)
+        angle_error = Rotation.from_matrix(self.target_rotation @ rotation.T).magnitude()
+        self.max_position_error_m = max(self.max_position_error_m, float(position_error))
+        self.max_orientation_error_rad = max(self.max_orientation_error_rad, float(angle_error))
+        arrived = (
+            elapsed >= duration
+            and position_error <= s.position_tolerance_m
+            and angle_error <= s.orientation_tolerance_rad
+        )
+        if not arrived:
+            self.arrived_since = None
+        elif self.arrived_since is None:
+            self.arrived_since = t
+        if self.arrived_since is not None and t - self.arrived_since >= segment.hold_s:
+            self.index += 1
+            if self.index == len(self.segments):
+                self.index -= 1
+                self.phase = "done"
+            else:
+                self.phase = self.segments[self.index].phase
+                self.cut_index = self.segments[self.index].cut_index
+                self.start_position = actual.copy()
+                self.start_rotation = rotation.copy()
+                self.segment_start = t
+                self.arrived_since = None
+            self.events.append(dict(time_s=float(t), phase=self.phase, cut_index=int(self.cut_index)))
+        elif elapsed > duration + segment.hold_s + s.tracking_timeout_s:
+            self.failure_reason = f"pose_not_reached:{self.phase}"
+            self.phase = "failed"
+            self.events.append(dict(time_s=float(t), phase=self.phase, reason=self.failure_reason))
+        return target, self.target_rotation.copy()
+
+
+class PaperTaskMetrics:
+    """Success checks for a Franka Fig. 7 cross score or Fig. 8 slice sequence."""
+
+    def __init__(self, name, reference, settings=None):
+        if name not in ("fig7-shallow", "fig7-deep", "fig8"):
+            raise ValueError(name)
+        self.name = name
+        self.settings = settings or PaperTaskSettings()
+        self.reference = np.array(reference, float, copy=True)
+        self.ncuts = 4 if name == "fig8" else 2
+        self.expected_pieces = 5 if name == "fig8" else 1
+        self.baseline = None
+        self.observations = []
+        if name == "fig8":
+            from .scenarios import FIG8_CUTS, FIG8_SIZE, FIG8_SLICE
+
+            edge = FIG8_SIZE[0] / 2
+            bounds = [edge - index * FIG8_SLICE for index in range(FIG8_CUTS + 1)]
+            x = self.reference[:, 0]
+            self.slices = [(x < bounds[index]) & (x >= bounds[index + 1]) for index in range(FIG8_CUTS)]
+            self.remainder = x < bounds[-1]
+            if any(not band.any() for band in self.slices) or not self.remainder.any():
+                raise ValueError("Fig. 8 slice bands and the remainder must all contain particles")
+
+    def observe(self, t, phase, positions, labels, velocities, codes):
+        x, labels, velocities, codes = map(np.asarray, (positions, labels, velocities, codes))
+        if x.shape != self.reference.shape or labels.shape != (len(x),) or velocities.shape != x.shape:
+            raise ValueError("Task observations must preserve reference particle identity")
+        if codes.shape != (len(x),) or not np.isfinite(x).all() or not np.isfinite(velocities).all():
+            raise ValueError("Nonfinite paper-task observation")
+        if phase == "settle":
+            self.baseline = x.copy()
+        _, sizes = np.unique(labels, return_counts=True)
+        major = int(np.count_nonzero(sizes >= 0.05 * len(x)))
+        cuts = [int(np.count_nonzero((codes // 3**index) % 3)) for index in range(self.ncuts)]
+        observation = dict(
+            time_s=float(t),
+            phase=phase,
+            major_pieces=major,
+            cut_particles=cuts,
+            lowest_particle_m=float(x[:, 2].min()),
+        )
+        if self.name == "fig8" and self.baseline is not None:
+            delta = x - self.baseline
+            observation["slice_median_shift_m"] = [
+                float(np.median(delta[band, 0])) for band in self.slices
+            ]
+            observation["slice_purity"] = []
+            for band in self.slices:
+                chosen, count = np.unique(labels[band], return_counts=True)
+                target = chosen[np.argmax(count)]
+                member = labels == target
+                overlap = np.count_nonzero(member & band)
+                observation["slice_purity"].append(
+                    float(min(overlap / band.sum(), overlap / member.sum()))
+                )
+        self.observations.append(observation)
+        return observation
+
+    def evaluate(self, completed):
+        s = self.settings
+        samples = [o for o in self.observations if o["phase"] in ("verify", "done")]
+        span = samples[-1]["time_s"] - samples[0]["time_s"] if samples else 0.0
+        held = (
+            [o for o in samples if o["time_s"] >= samples[0]["time_s"] + s.final_hold_s / 2]
+            if samples
+            else []
+        )
+        observed = self.baseline is not None and len(held) >= 3 and span >= 0.9 * s.final_hold_s
+        above_board = bool(held) and all(o["lowest_particle_m"] > -0.003 for o in held)
+        cuts_present = bool(held) and all(
+            all(count >= s.minimum_cut_particles for count in o["cut_particles"]) for o in held
+        )
+        if self.name == "fig8":
+            separated = bool(held) and all(o["major_pieces"] >= self.expected_pieces for o in held)
+            shifted = bool(held) and all(
+                all(shift >= s.minimum_slice_shift_m for shift in o["slice_median_shift_m"]) for o in held
+            )
+            pure = bool(held) and all(
+                all(purity >= s.minimum_piece_fraction for purity in o["slice_purity"]) for o in held
+            )
+            success = bool(completed and observed and above_board and cuts_present and separated and shifted and pure)
+        else:
+            separated = bool(held) and all(o["major_pieces"] == 1 for o in held)
+            shifted = pure = None
+            success = bool(completed and observed and above_board and cuts_present and separated)
+        return dict(
+            success=success,
+            cycle_completed=bool(completed),
+            material_observed=bool(self.observations),
+            hold_observed=bool(observed),
+            above_board=above_board,
+            cuts_present=cuts_present,
+            pieces_match=separated,
+            slices_shifted=shifted,
+            slices_pure=pure,
+            verification_samples=len(held),
+            verification_span_s=span,
+            final=self.observations[-1] if self.observations else None,
+            thresholds=dict(
+                expected_pieces=self.expected_pieces,
+                minimum_cut_particles=s.minimum_cut_particles,
+                minimum_slice_shift_m=s.minimum_slice_shift_m,
+                piece_purity=s.minimum_piece_fraction,
+                hold_s=s.final_hold_s,
+            ),
+        )

@@ -91,6 +91,7 @@ class ReplayScene:
         normals.ConsistencyOn()
         normals.AutoOrientNormalsOn()
         self.body = actor(normals, self.renderer, (0.985, 0.95, 0.78))
+        self.material_color = None
         self.body.GetProperty().SetAmbient(0.38)
         self.body.GetProperty().SetDiffuse(0.62)
         self.body.GetProperty().SetSpecular(0.12)
@@ -126,6 +127,11 @@ class ReplayScene:
         self.capture.SetInputBufferTypeToRGB()
         self.capture.ReadFrontBufferOff()
 
+    def set_material_color(self, rgb):
+        """Paint the surface and every particle one color. The cut stays the opening."""
+        self.material_color = tuple(float(channel) for channel in rgb)
+        self.body.GetProperty().SetColor(*self.material_color)
+
     def update(self, snapshot, positions, codes):
         from scipy.spatial.transform import Rotation
 
@@ -142,17 +148,21 @@ class ReplayScene:
         pts = vtk.vtkPoints()
         pts.SetData(numpy_to_vtk(positions * 1000, deep=True))
         self.cloud.SetPoints(pts)
-        palette = np.array(
-            [
-                [0.90, 0.76, 0.47],
-                [0.24, 0.58, 0.70],
-                [0.95, 0.58, 0.31],
-                [0.51, 0.70, 0.47],
-                [0.68, 0.52, 0.76],
-            ]
-        )
+        if self.material_color is None:
+            palette = np.array(
+                [
+                    [0.90, 0.76, 0.47],
+                    [0.24, 0.58, 0.70],
+                    [0.95, 0.58, 0.31],
+                    [0.51, 0.70, 0.47],
+                    [0.68, 0.52, 0.76],
+                ]
+            )
+            rgb = palette[codes % len(palette)]
+        else:
+            rgb = np.tile(self.material_color, (len(codes), 1))
         self.cloud.GetPointData().SetScalars(
-            numpy_to_vtk((palette[codes % len(palette)] * 255).astype(np.uint8), deep=True)
+            numpy_to_vtk((rgb * 255).astype(np.uint8), deep=True)
         )
         self.cloud.Modified()
         r = Rotation.from_quat(snapshot["tool_orientation"]).as_matrix()

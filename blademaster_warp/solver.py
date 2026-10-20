@@ -76,6 +76,10 @@ class Config:
     # External tool within a coupling interval: 'hold' (paper III-G) or
     # 'predict' (mobility-based twist update, see tool.finish_external_step).
     tool_substep: str = "hold"
+    # Grid-face constraint of a held blade (blade_constraint.py; not in the paper).
+    # It assumes the two broad faces lie in incompatible fields; a single-field
+    # grid shares their nodes and the constraint does not converge there.
+    blade_grid_constraint: bool = True
     accumulate_tool_impulses: bool = False
     rotational_stiffness: float = 0.05
     rotational_damping: float = 0.003
@@ -324,7 +328,9 @@ class Solver:
         self.graph_build_s = 0.0
         self.refresh_stress()
         self.blade_constraint = (
-            BladeConstraint(self) if cfg.external_tool and cfg.tool_substep == "hold" else None
+            BladeConstraint(self)
+            if cfg.external_tool and cfg.tool_substep == "hold" and cfg.blade_grid_constraint
+            else None
         )
 
     def refresh_stress(self):

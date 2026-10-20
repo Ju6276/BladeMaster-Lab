@@ -317,6 +317,8 @@ def run(args):
     cfg = scene_config(args.scenario, args.dt, getattr(args, "normal_scale", None))
     if getattr(args, "board_normal_scale", None) is not None:
         cfg = replace(cfg, board_normal_scale=args.board_normal_scale)
+    if getattr(args, "single_field", False) or getattr(args, "no_blade_grid_constraint", False):
+        cfg = replace(cfg, blade_grid_constraint=False)
     normal, tangent = cfg.contact_scales()
     print(f"{args.scenario}: dt {cfg.dt:g} s, per-step s_n {normal:.4g}, gamma_k {tangent:.4g}", flush=True)
     keys = keyframes(args.scenario)
@@ -444,7 +446,13 @@ if __name__ == "__main__":
     p.add_argument(
         "--single-field",
         action="store_true",
-        help="Paper Fig. 4 baseline: grid transfers ignore cut-side codes while the knife is not cutting",
+        help="Paper Fig. 4 baseline: grid transfers ignore cut-side codes while the knife is not cutting; "
+        "also disables the blade grid-face constraint",
+    )
+    p.add_argument(
+        "--no-blade-grid-constraint",
+        action="store_true",
+        help="Disable the held-blade grid-face constraint (not in the paper) for a like-for-like Fig. 4 check",
     )
     p.add_argument(
         "--normal-scale",

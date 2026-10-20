@@ -269,6 +269,11 @@ def test_rigid_translation_is_exact(split):
     np.testing.assert_allclose(out["deformation"], np.tile(np.eye(3), (s.n, 1, 1)), atol=1e-6)
 
 
+def test_blade_grid_constraint_switch():
+    assert Solver(Config(external_tool=True)).blade_constraint is not None
+    assert Solver(Config(external_tool=True, blade_grid_constraint=False)).blade_constraint is None
+
+
 def test_release_is_per_cut_and_per_knife():
     s = Solver(Config(free_blade=True, tool_count=2))
     s.tool_damage[1].fill_(1.0)

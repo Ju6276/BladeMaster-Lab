@@ -36,7 +36,7 @@
 ## 测试
 
 ```bash
-PYTHONPATH=/home/dong/Projects/Dexlab/src .venv/bin/python -m pytest tests -q
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
 ```
 
 提交前必须全部通过。

@@ -1,4 +1,4 @@
-"""TLMPM paper Eqs. 11--16, independently of the DexLab comparison oracle."""
+"""TLMPM paper Eqs. 11--16 against an FP64 reference written from the equations."""
 
 import numpy as np
 import pytest

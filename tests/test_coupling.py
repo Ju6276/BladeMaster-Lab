@@ -1,4 +1,4 @@
-"""External-tool tests use physical invariants, independent of DexLab."""
+"""External-tool tests use physical invariants."""
 
 from dataclasses import replace
 import numpy as np

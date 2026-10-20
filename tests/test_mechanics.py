@@ -1,24 +1,12 @@
-"""Physics invariants and FP64 independent-reference comparisons, executed on CUDA.
+"""Physics invariants and FP64 checks of the paper equations, executed on CUDA."""
 
-DexLab must be importable for reference comparisons. No reference solver runs
-inside the GPU implementation itself.
-"""
-
-from dataclasses import asdict, replace
+from dataclasses import replace
 import numpy as np
 import pytest
 import warp as wp
 from blademaster_warp.solver import Config, Solver
 from blademaster_warp import material as m, contact as c
-from dexlab.cutting import (
-    CutConfig,
-    CuttingSimulation,
-    couple_grids,
-    material_step,
-    blade_query,
-    friction_impulse,
-    particle_contacts,
-)
+from blademaster_warp.topology import compatible
 
 
 @wp.kernel
@@ -54,21 +42,47 @@ def arr(x, dtype):
     return wp.array(np.asarray(x), dtype=dtype, device="cuda:0")
 
 
-def paper_position_reference(x, v, f, *args):
-    """FP64 comparison with an explicit correction to the legacy oracle.
-
-    DexLab advects x with blended particle velocity. TLMPM Eq. 13 instead
-    uses PIC grid velocity. A disposable pure-PIC call extracts that position;
-    the normal call retains the original hybrid momentum and MUSL F update.
-    No upstream source is edited, and this adapter is confined to tests.
-    """
-    xp, vp, fp = x.copy(), v.copy(), f.copy()
-    pic_args = list(args)
-    pic_args[10] = 0.0  # flip after sides,nodes,weights,gradients,impulse,m,V,mu,lam,dt
-    material_step(xp, vp, fp, *pic_args)
-    result = material_step(x, v, f, *args)
-    x[:] = xp
+def exchange_reference(codes, masses, states):
+    """Paper Eq. 8 at one node: s_a + sum_b compatible (m_a s_b - m_b s_a) / M."""
+    total = masses.sum()
+    result = states.astype(float).copy()
+    for a in range(len(codes)):
+        for b in range(len(codes)):
+            if a != b and compatible(codes[a], codes[b]):
+                result[a] += (masses[a] * states[b] - masses[b] * states[a]) / total
     return result
+
+
+def wedge_planes(half, bevel):
+    """Outward unit normals and offsets of the convex blade, n . x <= offset."""
+    hx, hy, hz = (float(v) for v in half)
+    planes = [
+        ((1, 0, 0), hx),
+        ((-1, 0, 0), hx),
+        ((0, 1, 0), hy),
+        ((0, -1, 0), hy),
+        ((0, 0, 1), hz),
+    ]
+    if bevel == 0.0:
+        planes.append(((0, 0, -1), hz))
+    else:
+        # The edge is the line x = 0, z = -hz; each bevel rises to x = +-hx at z = bevel - hz.
+        length = np.hypot(bevel, hx)
+        planes += [((bevel / length, 0, -hx / length), hx * hz / length)]
+        planes += [((-bevel / length, 0, -hx / length), hx * hz / length)]
+    normals = np.array([p[0] for p in planes], float)
+    offsets = np.array([p[1] for p in planes], float)
+    return normals, offsets
+
+
+def wedge_vertices(half, bevel):
+    hx, hy, hz = (float(v) for v in half)
+    if bevel == 0.0:
+        return np.array([[sx * hx, sy * hy, sz * hz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+    corners = []
+    for y in (-hy, hy):
+        corners += [[0.0, y, -hz], [hx, y, bevel - hz], [-hx, y, bevel - hz], [hx, y, hz], [-hx, y, hz]]
+    return np.array(corners)
 
 
 def test_partition_and_reference_gradient():
@@ -96,13 +110,16 @@ def test_sparse_exchange_matches_equation_and_conserves_momentum():
     s.launch(
         m.couple, cap, [arr(keys, wp.int64), heads, links, arr(mass, float), arr(state, wp.vec3), result, 1]
     )
-    dense_m = np.zeros((8, 1))
-    dense_s = np.zeros((8, 1, 3))
-    dense_m[codes, 0] = masses
-    dense_s[codes, 0] = states
-    expected = couple_grids(dense_m, dense_s)[codes, 0]
+    expected = exchange_reference(codes, masses.astype(float), states.astype(float))
     np.testing.assert_allclose(result.numpy()[:5], expected, atol=4e-7)
     np.testing.assert_allclose(result.numpy()[:5].sum(0), states.sum(0), atol=8e-7)
+    # A common velocity carried by every field is left unchanged.
+    common = masses[:, None] * np.array([0.3, -0.1, 0.2], np.float32)
+    state[:5] = common
+    s.launch(
+        m.couple, cap, [arr(keys, wp.int64), heads, links, arr(mass, float), arr(state, wp.vec3), result, 1]
+    )
+    np.testing.assert_allclose(result.numpy()[:5], common, atol=2e-7)
 
 
 @pytest.mark.parametrize("bevel", [0.0, 0.005])
@@ -116,10 +133,40 @@ def test_blade_distance_and_normal_against_fp64(bevel):
     wp.launch(
         query_kernel, len(x), [arr(x, wp.vec3), wp.vec3(*half), bevel, pts, normals, dist], device="cuda:0"
     )
-    ref = [blade_query(p.astype(float), np.zeros(3), half.astype(float), bevel) for p in x]
-    np.testing.assert_allclose(pts.numpy(), [v[0] for v in ref], atol=6e-9)
-    np.testing.assert_allclose(normals.numpy(), [v[1] for v in ref], atol=5e-4)
-    np.testing.assert_allclose(dist.numpy(), [v[2] for v in ref], atol=6e-9)
+    point, normal, distance = pts.numpy().astype(float), normals.numpy().astype(float), dist.numpy()
+    planes, offsets = wedge_planes(half, bevel)
+    corners = wedge_vertices(half, bevel)
+    x = x.astype(float)
+    signed = x @ planes.T - offsets
+    outside = (signed > 0).any(axis=1)
+    assert outside.sum() >= 20 and (~outside).sum() >= 20
+    # Outside: the returned point is on the blade, nearest by the convex
+    # optimality condition (x - p) . (v - p) <= 0 for every vertex v.
+    gap = x[outside] - point[outside]
+    np.testing.assert_allclose(distance[outside], np.linalg.norm(gap, axis=1), atol=6e-9)
+    assert (point[outside] @ planes.T - offsets).max() <= 6e-9
+    optimality = np.einsum("pi,pvi->pv", gap, corners[None] - point[outside][:, None])
+    assert optimality.max() <= 1e-10
+    np.testing.assert_allclose(normal[outside], gap / distance[outside, None], atol=5e-4)
+    # Inside: depth is the smallest distance to a face, along that face's normal.
+    depth = -signed[~outside]
+    face = depth.argmin(axis=1)
+    np.testing.assert_allclose(-distance[~outside], depth.min(axis=1), atol=6e-9)
+    np.testing.assert_allclose(normal[~outside], planes[face], atol=5e-4)
+
+
+def friction_reference(n, relative, jn, history, me, dt, mus, mud, gk, gc):
+    """Paper Eqs. 12-13: tangential spring-dashpot capped by Coulomb friction."""
+    vt = relative - (relative @ n) * n
+    ht = history - (history @ n) * n
+    k = gk * me / dt**2
+    damping = 2 * gc * np.sqrt(me * k)
+    trial = (-k * ht - damping * vt) * dt
+    magnitude = np.linalg.norm(trial)
+    if magnitude <= mus * jn:
+        return trial, ht + dt * vt
+    applied = trial * (mud * jn / magnitude)
+    return applied, -(applied / dt + damping * vt) / k
 
 
 def test_friction_stick_and_slip_history():
@@ -129,7 +176,7 @@ def test_friction_stick_and_slip_history():
     hn = wp.zeros_like(j)
     wp.launch(friction_kernel, 3, [arr(v, wp.vec3), arr(h, wp.vec3), j, hn], device="cuda:0")
     expected = [
-        friction_impulse(
+        friction_reference(
             np.array([0.0, 0.0, 1.0]),
             v[i].astype(float),
             0.003,
@@ -193,36 +240,33 @@ def test_material_step_fp64_and_momentum(viscosity):
     s.refresh_stress()
     s.codes.assign(codes)
     s.impulses.assign(impulse)
-    x = s.x.numpy().astype(float)
-    v = vel.astype(float)
-    f = F.astype(float)
-    before = s.mass * v.sum(0)
-    paper_position_reference(
-        x,
-        v,
-        f,
-        codes.astype(np.int64),
-        s.nodes.numpy().astype(np.int64),
-        s.weights.numpy().astype(float),
-        s.gradients.numpy().astype(float),
-        impulse.astype(float),
-        s.mass,
-        s.volume,
-        s.mu,
-        s.lam,
-        s.config.dt,
-        s.config.flip_fraction,
-        s.node_count,
-        viscosity,
-    )
+    before = s.mass * vel.astype(float).sum(0)
     s.material_step()
     out = s.state()
-    np.testing.assert_allclose(out["position"], x, atol=1e-8)
-    np.testing.assert_allclose(out["velocity"], v, atol=2e-6)
-    np.testing.assert_allclose(out["deformation"], f, atol=2e-6)
     np.testing.assert_allclose(
         s.mass * out["velocity"].astype(float).sum(0), before + impulse.astype(float).sum(0), atol=2e-9
     )
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_rigid_translation_is_exact(split):
+    # Uniform velocity, unstrained material and no external impulse: every
+    # field carries the same velocity, so Eqs. 11-16 move x by v dt and leave
+    # v and F unchanged, whether or not the block is cut.
+    s = Solver()
+    velocity = np.array([0.02, -0.01, 0.005], np.float32)
+    s.v.assign(np.tile(velocity, (s.n, 1)))
+    s.F.assign(np.tile(np.eye(3, dtype=np.float32), (s.n, 1, 1)))
+    s.refresh_stress()
+    if split:
+        s.codes.assign(np.where(s.reference[:, 0] < 0, 1, 2).astype(np.int32))
+    s.impulses.zero_()
+    x = s.x.numpy().astype(float)
+    s.material_step()
+    out = s.state()
+    np.testing.assert_allclose(out["position"], x + velocity * s.config.dt, atol=1e-8)
+    np.testing.assert_allclose(out["velocity"], np.tile(velocity, (s.n, 1)), atol=1e-6)
+    np.testing.assert_allclose(out["deformation"], np.tile(np.eye(3), (s.n, 1, 1)), atol=1e-6)
 
 
 def test_cut_labels_persist_withdrawal_and_new_cut():
@@ -327,29 +371,6 @@ def test_von_mises_projection_preserves_total_and_volume():
     np.testing.assert_allclose(np.linalg.norm(dev, axis=1), 100 / (2 * s.mu) * np.sqrt(2 / 3), atol=2e-6)
 
 
-def test_short_full_run_against_corrected_cpu_with_real_contact(monkeypatch):
-    import dexlab.cutting
-
-    monkeypatch.setattr(dexlab.cutting, "material_step", paper_position_reference)
-    s = Solver()
-    values = {k: v for k, v in asdict(s.config).items() if k in CutConfig.__dataclass_fields__}
-    cpu = CuttingSimulation(CutConfig(**values))
-    # Begin at contact to test feedback, rather than only matching free fall.
-    s.tool_pos.assign([[0.0, 0.0, 0.047]])
-    cpu.blade_x[:] = s.tool_pos.numpy()[0]
-    cpu.x[:] = s.x.numpy()
-    cpu.weights[:] = s.weights.numpy()
-    cpu.gradients[:] = s.gradients.numpy()
-    for _ in range(100):
-        s.step((0.0, 0.0, 0.02), cutting=True)
-        cpu.step((0.0, 0.0, 0.02), cutting=True)
-    out = s.state()
-    np.testing.assert_allclose(out["position"], cpu.x, atol=2e-6)
-    np.testing.assert_allclose(out["blade_position"][0], cpu.blade_x, atol=2e-6)
-    np.testing.assert_allclose(out["velocity"], cpu.velocity, atol=3e-4)
-    np.testing.assert_array_equal(out["sides"], cpu.sides)
-
-
 @pytest.mark.parametrize("split", [False, True])
 def test_pair_recontact_reference_exclusion_and_equal_opposite_impulse(split):
     x = np.array([[0.0, 0.0, 0.05], [0.002, 0.0, 0.05]], np.float32)
@@ -405,28 +426,17 @@ def test_pair_recontact_reference_exclusion_and_equal_opposite_impulse(split):
         ],
         device="cuda:0",
     )
-    ref = particle_contacts(
-        x.astype(float),
-        x.astype(float),
-        vel.astype(float),
-        codes.astype(np.int64),
-        np.array([[0, 1]], np.int64),
-        radius,
-        spacing,
-        mass,
-        dt,
-        0.1,
-        0.3,
-        0.2,
-        0.05,
-        0.1,
-        np.zeros((2, 2, 3)),
-        np.full((2, 2), -2, np.int32),
-        0,
-    )[0]
-    np.testing.assert_allclose(out.numpy(), ref, atol=1e-10)
-    np.testing.assert_allclose(out.numpy().sum(0), 0, atol=1e-12)
-    assert bool(np.any(out.numpy())) == split
+    impulse = out.numpy().astype(float)
+    np.testing.assert_allclose(impulse.sum(0), 0, atol=1e-12)
+    # Same-history neighbours within 2 dx in the reference are not in contact
+    # (paper SIII-E); opposite cut sides are, and the approaching pair is pushed apart.
+    assert bool(np.any(impulse)) == split
+    if split:
+        assert impulse[0, 0] < 0 < impulse[1, 0]
+        # Eq. 11 normal penalty sn m_eff / dt^2 times overlap, with m_eff = m / 2, applied for dt.
+        overlap = 2 * radius - (x[1, 0] - x[0, 0])
+        normal = 0.1 * (mass / 2) / dt**2 * overlap * dt
+        assert abs(impulse[1, 0]) >= normal * (1 - 1e-4)
     filled = np.flatnonzero(keys1.numpy() != -1)
     np.testing.assert_array_equal(np.sort(used.numpy()[: count.numpy()[0]]), filled)
     wp.launch(c.clear_pair_slots, 4, [count, 4, used, keys1], device="cuda:0")

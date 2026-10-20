@@ -23,7 +23,7 @@ python -m blademaster_warp.franka_run --motion sequence --controller libfranka -
 python -m blademaster_warp.paper_freefall --output <目录> --duration 1 --sharpness <0.9|0.5|0.2>
 ```
 
-设置：8960 个粒子，1 cm 网格，2 ms 步长，种子 1。
+设置：8960 个粒子，1 cm 网格，2 ms 步长，种子 1。数字在提交 `d663eb6` 上复核过（`runs/fig3_release_20261020`）。
 
 | 锋利度 | 结果 | 刃口离板 |
 |---|---|---|
@@ -107,14 +107,16 @@ python -m blademaster_warp.paper_impact --output <目录> --duration 1 [--cut-ho
 - 设置：
   - 刀面水平，从前侧面射入，三把刀相距 30 mm。
   - 刀重 20 g，论文没有给，是本地取值。
-- 停止后切深（块深 50 mm）：
+- 1 s 时的切深（块深 50 mm，提交 `d663eb6`，`runs/fig6_release_20261020`）：
 
-| 实现 | 0.5 m/s | 0.8 m/s | 1.1 m/s |
-|---|---|---|---|
-| 论文式 (5) | 20.0 mm | 33.8 mm | 51.5 mm |
-| `cut_hold` | 13.9 mm | 26.6 mm | 41.7 mm |
+| 实现 | 0.5 m/s | 0.8 m/s | 1.1 m/s | 块 |
+|---|---|---|---|---|
+| 论文式 (5) | 22.2 mm | 36.8 mm | 51.4 mm | 一整块 |
+| `cut_hold` | 14.0 mm | 28.8 mm | 41.5 mm | 一整块 |
 
 - 三把刀都被减速、初速越大越深，与论文一致。
+- 论文式 (5) 下，0.5 m/s 的刀到 1 s 还有 16 mm/s，没有完全停下；最快的刀刚到块背面。
+- 每把自由刀只有在本刀、本次切割付清断裂阈值后才打开切口。在这条规则修正之前（各刀共用刀 0 的标记，换刀号也不清零），切深是 20.0/33.8/51.5 mm 和 13.9/26.6/41.7 mm。
 - G_c 从 30 到 1000 J/m² 切深都不变：这块材料的阻力来自塑性流动和刀面摩擦，不是切割能。
 
 ![Fig. 6](media/fig6_side.png)

@@ -43,6 +43,11 @@ def place_lights(renderer, camera_azimuth):
         light.SetFocalPoint(0, 0, 0)
         light.SetIntensity(intensity)
         renderer.AddLight(light)
+    # The rig is mostly overhead; a headlight keeps the side faces toward the camera lit.
+    headlight = vtk.vtkLight()
+    headlight.SetLightTypeToHeadlight()
+    headlight.SetIntensity(0.45)
+    renderer.AddLight(headlight)
 
 
 class ReplayScene:

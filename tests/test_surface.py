@@ -334,6 +334,344 @@ def test_isolated_severed_links_leave_a_closed_manifold_surface():
     np.testing.assert_array_equal(mesh.triangles, faces)
 
 
+def _plane_crossing(penetration):
+    """One edge through a separate triangle, with the near end `penetration` metres past the plane."""
+    from blademaster_warp.surface import OFFSETS, _mesh_labels
+
+    h = 0.003
+    lower = np.array([-0.0015, -0.0015, -0.0015])
+    holder = type("Holder", (), {})()
+    holder.h = h
+    holder.reference = lower + OFFSETS * h
+    vertices = np.array(
+        [
+            [-penetration, 0.0, 0.0],
+            [0.002, 0.0, 0.0],
+            [0.001, 0.002, 0.0],
+            [0.0, -0.01, -0.01],
+            [0.0, 0.01, -0.01],
+            [0.0, 0.0, 0.01],
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [3, 4, 5]])
+    codes = np.array([1, 1, 1, 2, 2, 2])
+    cells = np.tile(np.arange(8), (len(vertices), 1))
+    weights = np.zeros((len(vertices), 8))
+    labels = _mesh_labels(len(vertices), triangles)
+    return holder, vertices, weights, triangles, codes, cells, labels
+
+
+def test_shallow_clearance_comes_out_of_the_stated_move():
+    """0.15 mm is the whole move. A 0.05 mm clearance must not shrink it to 0.10 mm."""
+    from blademaster_warp.surface import LinkedSurface, _strict_crossing_counts
+
+    gap, limit = 5.0e-5, 1.5e-4
+    holder, vertices, weights, triangles, codes, cells, labels = _plane_crossing(1.1e-4)
+    before_self, before_inter = _strict_crossing_counts(vertices, triangles, labels)
+    assert before_self == 0 and before_inter >= 1
+    accepted = LinkedSurface._accept_shallow_crossing(
+        holder, vertices, weights, triangles, codes, cells, labels, gap, limit, True
+    )
+    assert accepted is not None
+    moved, _moved_weights = accepted
+    assert abs(moved[0, 0] - vertices[0, 0]) <= limit + 1.0e-12
+    assert moved[0, 0] > 0.0
+    after_self, after_inter = _strict_crossing_counts(moved, triangles, labels)
+    assert after_self == 0 and after_inter < before_inter
+
+    holder, vertices, weights, triangles, codes, cells, labels = _plane_crossing(5.0e-5)
+    accepted = LinkedSurface._accept_shallow_crossing(
+        holder, vertices, weights, triangles, codes, cells, labels, gap, limit, True
+    )
+    assert accepted is not None
+    np.testing.assert_allclose(accepted[0][0, 0], gap, atol=1.0e-12)
+
+    holder, vertices, weights, triangles, codes, cells, labels = _plane_crossing(1.6e-4)
+    assert (
+        LinkedSurface._accept_shallow_crossing(
+            holder, vertices, weights, triangles, codes, cells, labels, gap, limit, True
+        )
+        is None
+    )
+
+
+def test_crossed_quad_diagonal_is_replaced_by_the_other_one():
+    """The other diagonal of a quad is taken when it is what removes the crossing."""
+    from blademaster_warp.surface import _max_edge_incidence, _strict_crossing_counts, flip_crossed_diagonals
+    from blademaster_warp.surface import _mesh_labels
+
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.8, 0.2, -1.0],
+            [0.8, 0.2, 1.0],
+            [0.85, 0.2, 0.0],
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [0, 2, 3], [4, 5, 6]])
+    labels = _mesh_labels(len(vertices), triangles)
+    before = _strict_crossing_counts(vertices, triangles, labels)
+    assert before[1] >= 1 and before[0] == 0
+    flipped = flip_crossed_diagonals(vertices, triangles)
+    after = _strict_crossing_counts(vertices, flipped, _mesh_labels(len(vertices), flipped))
+    assert after == (0, 0)
+    assert _max_edge_incidence(flipped) <= 2
+    # The same four corners, the other diagonal. Boundary edges stay.
+    assert {tuple(sorted(face)) for face in flipped[:2]} == {(0, 1, 3), (1, 2, 3)}
+    np.testing.assert_array_equal(flipped[2], triangles[2])
+    unchanged = np.array([[0, 1, 2], [2, 0, 3]])
+    np.testing.assert_array_equal(flip_crossed_diagonals(vertices[:4], unchanged), unchanged)
+
+
+def test_one_diagonal_swap_keeps_the_crossings_it_does_not_touch():
+    """A second disjoint pierce stays in the count when only the first quad flips."""
+    from scripts.surface_deformed import intersection_pairs, segment_triangle_pairs
+    from blademaster_warp.surface import (
+        _counts_after_quad_flip,
+        _mesh_edges,
+        _mesh_labels,
+        _other_diagonal,
+        _strict_crossing_counts,
+        flip_crossed_diagonals,
+    )
+
+    one = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.8, 0.2, -1.0],
+            [0.8, 0.2, 1.0],
+            [0.85, 0.2, 0.0],
+        ]
+    )
+    vertices = np.vstack([one, one + (5.0, 0.0, 0.0)])
+    triangles = np.array([[0, 1, 2], [0, 2, 3], [4, 5, 6], [7, 8, 9], [7, 9, 10], [11, 12, 13]])
+    labels = _mesh_labels(len(vertices), triangles)
+    before = _strict_crossing_counts(vertices, triangles, labels)
+    assert before[1] >= 2 and before[0] == 0
+    new = _other_diagonal(triangles[0], triangles[1])
+    edges, faces = intersection_pairs(vertices, triangles)
+    interior = segment_triangle_pairs(
+        vertices[edges[:, 0]], vertices[edges[:, 1]], vertices[triangles[faces]], strict=True
+    )
+    strict_edges, strict_faces = edges[interior], faces[interior]
+    same = labels[strict_edges[:, 0]] == labels[triangles[strict_faces, 0]]
+    local = _counts_after_quad_flip(
+        vertices,
+        triangles,
+        labels,
+        strict_edges,
+        strict_faces,
+        same,
+        _mesh_edges(triangles),
+        0,
+        1,
+        new[0],
+        new[1],
+        before,
+    )
+    trial = triangles.copy()
+    trial[0], trial[1] = new
+    assert local == _strict_crossing_counts(vertices, trial, labels)
+    flipped = flip_crossed_diagonals(vertices, triangles)
+    assert _strict_crossing_counts(vertices, flipped, _mesh_labels(len(vertices), flipped)) == (0, 0)
+
+
+def test_piercing_quad_diagonal_is_replaced_when_the_stabbed_face_has_no_partner():
+    # Edge 0-2 is the diagonal of one quad and it passes through a separate
+    # triangle. That triangle has no neighbour, so its own edges cannot be
+    # flipped. The diagonal's quad can.
+    from blademaster_warp.surface import _max_edge_incidence, _strict_crossing_counts, flip_crossed_diagonals
+    from blademaster_warp.surface import _mesh_labels
+
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.4],
+            [0.0, 0.2, 0.0],
+            [0.0, 0.0, -0.4],
+            [0.0, 0.2, 0.05],
+            [-0.05, -0.05, 0.0],
+            [0.05, -0.05, 0.0],
+            [0.0, 0.02, 0.0],
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [0, 2, 3], [4, 5, 6]])
+    before = _strict_crossing_counts(vertices, triangles, _mesh_labels(len(vertices), triangles))
+    assert before == (0, 1)
+    flipped = flip_crossed_diagonals(vertices, triangles)
+    after = _strict_crossing_counts(vertices, flipped, _mesh_labels(len(vertices), flipped))
+    assert after == (0, 0)
+    assert _max_edge_incidence(flipped) <= 2
+    assert {tuple(sorted(face)) for face in flipped[:2]} == {(0, 1, 3), (1, 2, 3)}
+    np.testing.assert_array_equal(flipped[2], triangles[2])
+
+
+def test_settle_swaps_a_world_diagonal_and_leaves_the_flat_reference():
+    """The other diagonal is taken when the reference quad does not cross."""
+    from blademaster_warp.surface import (
+        _mesh_labels,
+        _strict_crossing_counts,
+        settle_crossed_diagonals,
+    )
+
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.8, 0.2, -1.0],
+            [0.8, 0.2, 1.0],
+            [0.85, 0.2, 0.0],
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [0, 2, 3], [4, 5, 6]])
+    reference = vertices.copy()
+    reference[4:] += (3.0, 0.0, 0.0)
+    codes = np.ones(len(vertices), np.int64)
+
+    def counts(points, faces):
+        return _strict_crossing_counts(points, faces, _mesh_labels(len(points), faces))
+
+    assert counts(vertices, triangles)[1] >= 1
+    assert counts(reference, triangles) == (0, 0)
+    repaired, faces = settle_crossed_diagonals(vertices, triangles, reference, codes)
+    assert counts(repaired, faces) == (0, 0)
+    assert counts(reference, faces) == (0, 0)
+    assert np.allclose(repaired, vertices)
+    assert {tuple(sorted(face)) for face in faces[:2]} == {(0, 1, 3), (1, 2, 3)}
+
+
+def test_settle_pulls_the_shared_vertex_without_crossing_the_reference():
+    """The 0.288 mm fold still returns to the opening, and the flat reference stays clear."""
+    from blademaster_warp.surface import (
+        BANK_OPENING_M,
+        _mesh_labels,
+        _strict_crossing_counts,
+        settle_crossed_diagonals,
+    )
+
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.01, 0.0, 0.0],
+            [0.0, 0.01, 0.0],
+            [0.003, 0.003, 0.000288],
+            [0.002, 0.006, -0.001036],
+            [0.006, 0.002, -0.000556],
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [3, 4, 5], [3, 5, 2], [3, 2, 1], [1, 0, 3], [0, 4, 3]])
+    reference = vertices.copy()
+    reference[:, 2] = 0.0
+    codes = np.ones(len(vertices), np.int64)
+
+    def counts(points, faces):
+        return _strict_crossing_counts(points, faces, _mesh_labels(len(points), faces))
+
+    assert counts(vertices, triangles) == (2, 0)
+    assert counts(reference, triangles) == (0, 0)
+    repaired, faces = settle_crossed_diagonals(vertices, triangles, reference, codes)
+    assert counts(repaired, faces) == (0, 0)
+    assert counts(reference, faces) == (0, 0)
+    assert abs(repaired[3, 2] + BANK_OPENING_M) < 1.0e-12
+
+
+def test_clamped_point_on_an_unsampled_face_returns_to_the_sample_centroid():
+    """A box corner that no Hermite sample touches is not that region's cut."""
+    from blademaster_warp.surface import _mesh_labels, _strict_crossing_counts, unsampled_face_centroid
+
+    lower, upper = np.zeros(3), np.ones(3)
+    samples = np.array([[1.0, 0.0, 0.2], [1.0, 0.3, 0.0], [0.4, 0.0, 0.0]])
+    clamped = np.array([0.35, 0.999, 0.999])
+    centroid = unsampled_face_centroid(clamped, samples, lower, upper, 1.0e-3)
+    np.testing.assert_allclose(centroid, samples.mean(0))
+    assert unsampled_face_centroid(np.array([0.999, 0.2, 0.2]), samples, lower, upper, 1.0e-3) is None
+    vertices = np.array(
+        [
+            clamped,
+            [0.2, 0.4, 0.999],
+            [0.2, 0.999, 0.4],
+            [0.05, 0.999, 0.999],
+            [0.9, 0.2, 0.2],
+            [0.05, 0.949, 0.999],
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [3, 4, 5]])
+    before = _strict_crossing_counts(vertices, triangles, _mesh_labels(len(vertices), triangles))
+    assert sum(before) == 2
+    vertices = vertices.copy()
+    vertices[0] = centroid
+    after = _strict_crossing_counts(vertices, triangles, _mesh_labels(len(vertices), triangles))
+    assert after == (0, 0)
+
+
+def test_adjacent_cell_vertices_meet_on_the_shared_face():
+    """The midpoint of a crossing pair can leave one cell; the meeting point cannot."""
+    surface = LinkedSurface((0.009, 0.006, 0.006), 0.003, "block")
+    centres = surface.reference[surface.cells].mean(1)
+    gaps = np.linalg.norm(centres - centres[0], axis=1)
+    neighbour = int(np.argmin(np.where(np.abs(gaps - surface.h) < 1.0e-9, gaps, np.inf)))
+    shared = 0.5 * (centres[0] + centres[neighbour])
+    axis = int(np.argmax(np.abs(centres[neighbour] - centres[0])))
+    left, right = shared.copy(), shared.copy()
+    left[axis] -= 2.0e-4
+    right[axis] += 3.0e-4
+    cells = np.stack([surface.cells[0], surface.cells[neighbour]])
+    meeting = surface._cells_meet(cells, 0, 1, np.stack([left, right]))
+    assert meeting is not None
+    assert abs(float(meeting[axis] - shared[axis])) < 1.0e-12
+    far = int(np.argmax(gaps))
+    assert surface._cells_meet(np.stack([surface.cells[0], surface.cells[far]]), 0, 1, np.stack([left, right])) is None
+
+
+def test_one_blade_far_from_its_samples_stays_on_the_average_plane():
+    """Fanned tangents of one cut meet at the centre of curvature, not in the cell."""
+    from blademaster_warp.surface import average_plane_point
+
+    samples = np.array(
+        [[-0.0135, -0.010419, 0.0195], [-0.0135, -0.0075, 0.016983], [-0.012312, -0.0075, 0.0195]]
+    )
+    normals = np.array(
+        [[0.9991, 0.0384, -0.0161], [0.9984, 0.0335, -0.0451], [0.9991, 0.0231, -0.0363]]
+    )
+    lower, upper = np.array([-0.0135, -0.0105, 0.0165]), np.array([-0.0105, -0.0075, 0.0195])
+    point = average_plane_point(samples, normals, lower, upper)
+    assert point is not None
+    assert np.linalg.norm(point - samples.mean(0)) < 0.001
+    assert np.all(point >= lower) and np.all(point <= upper)
+    # A second blade meets the first outside this cell and stays on the ordinary QEF.
+    corner_normals = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]])
+    corner_samples = np.array(
+        [[0.010, 0.011, 0.011], [0.010, 0.012, 0.011], [0.011, 0.010, 0.011], [0.012, 0.010, 0.012]]
+    )
+    assert (
+        average_plane_point(corner_samples, corner_normals, np.full(3, 0.010), np.full(3, 0.013))
+        is None
+    )
+
+
+def test_far_intersection_stays_on_the_average_plane_above_a_tenth():
+    """A blade can turn by more than a tenth and still meet only outside the cell."""
+    from blademaster_warp.surface import average_plane_point
+
+    samples = np.array([[0.2, 0.2, 0.4], [0.8, 0.3, 0.45], [0.5, 0.75, 0.55]])
+    raw = np.array([[0.02, 0.0, 1.0], [-0.04, 0.05, 1.0], [0.22, -0.08, 1.0]])
+    normals = raw / np.linalg.norm(raw, axis=1)[:, None]
+    singular = np.linalg.svd(normals, compute_uv=False)
+    assert singular[1] > 0.1 * singular[0]
+    lower, upper = np.zeros(3), np.ones(3)
+    point = average_plane_point(samples, normals, lower, upper)
+    assert point is not None
+    assert np.all(point >= lower) and np.all(point <= upper)
+    assert np.linalg.norm(point - samples.mean(0)) < 0.05
+
+
 def test_box_lstsq_matches_scipy_including_rank_deficient_normals():
     from scipy.optimize import lsq_linear
     from blademaster_warp.surface import box_lstsq
@@ -390,3 +728,120 @@ def test_unassigned_surface_node_follows_one_side_not_the_gap():
     shift = np.abs(nodes[:, 0] - s.reference[:, 0])
     ok = np.isfinite(shift)
     np.testing.assert_allclose(shift[ok], 0.03, atol=1e-12)
+
+
+def _interior_x_edge(surface):
+    edge = int(np.flatnonzero(surface.inside[surface.edges].all(1) & (surface.axes == 0))[0])
+    ends = tuple(int(v) for v in surface.edges[edge])
+    return edge, ends
+
+
+def test_missing_endpoint_uses_the_other_affine_field():
+    # The finite end carries the reference edge. Stretching that end by 2 along
+    # the edge puts the plane at a quarter of the reference segment, not halfway.
+    surface = LinkedSurface((0.03, 0.03, 0.03), 0.006, "block")
+    edge, (i, j) = _interior_x_edge(surface)
+    surface.codes[i], surface.codes[j] = 1, 2
+    deformation = np.tile(np.eye(3), (len(surface.reference), 1, 1))
+    deformation[i] = np.diag([2.0, 1.0, 1.0])
+    deformation[j] = np.nan
+    positions = surface.reference.copy()
+    positions[j] = np.nan
+    plane = surface.reference[i] + np.array([0.5 * surface.h, 0.0, 0.0])
+    surface._sever_opposite(positions, np.array([plane, plane + [0.0, 0.01, 0.0]]), [1.0, 0.0, 0.0], 0, deformation)
+    sample, normal = surface.hermite[edge]
+    expected = 0.75 * surface.reference[i] + 0.25 * surface.reference[j]
+    np.testing.assert_allclose(sample, expected, atol=1e-12)
+    np.testing.assert_allclose(np.linalg.norm(normal), 1.0, atol=1e-12)
+    assert surface.broken[edge]
+
+
+def test_identity_field_with_one_sample_matches_the_chord():
+    def place(hide_end):
+        surface = LinkedSurface((0.03, 0.03, 0.03), 0.006, "block")
+        edge, (i, j) = _interior_x_edge(surface)
+        surface.codes[i], surface.codes[j] = 1, 2
+        positions = surface.reference.copy()
+        deformation = np.tile(np.eye(3), (len(surface.reference), 1, 1))
+        if hide_end:
+            positions[j] = np.nan
+            deformation[j] = np.nan
+        mid = surface.reference[[i, j]].mean(0)
+        surface._sever_opposite(positions, np.array([mid, mid + [0.0, 0.01, 0.0]]), [1.0, 0.0, 0.0], 0, deformation)
+        return surface.hermite[edge][0]
+
+    np.testing.assert_allclose(place(False), place(True), atol=1e-12)
+
+
+def test_missing_both_endpoints_does_not_store_a_nonfinite_sample():
+    surface = LinkedSurface((0.03, 0.03, 0.03), 0.006, "block")
+    edge, (i, j) = _interior_x_edge(surface)
+    surface.codes[i], surface.codes[j] = 1, 2
+    positions = surface.reference.copy()
+    positions[[i, j]] = np.nan
+    deformation = np.tile(np.eye(3), (len(surface.reference), 1, 1))
+    deformation[[i, j]] = np.nan
+    mid = surface.reference[[i, j]].mean(0)
+    surface._sever_opposite(positions, np.array([mid, mid + [0.0, 0.01, 0.0]]), [1.0, 0.0, 0.0], 0, deformation)
+    assert surface.broken[edge]
+    assert edge not in surface.hermite
+
+
+def test_band_waits_for_the_anchor_particle_instead_of_the_embedded_side():
+    # Geometry would write side 2. An unlabeled anchor particle blocks that,
+    # and a particle already on side 1 is copied onto the node.
+    surface = LinkedSurface((0.03, 0.03, 0.03), 0.006, "block")
+    inside = np.flatnonzero(surface.inside)
+    node = int(inside[len(inside) // 2])
+    positions = surface.reference.copy()
+    edge = np.array(
+        [
+            [positions[node, 0] - 0.001, positions[node, 1] - 0.02, positions[node, 2]],
+            [positions[node, 0] - 0.001, positions[node, 1] + 0.02, positions[node, 2]],
+        ]
+    )
+    normal, band = [1.0, 0.0, 0.0], (0.01, 0.01)
+    surface._assign_band(positions, edge, edge, normal, 0, band)
+    assert int(surface.codes[node]) == 2
+    surface.codes[node] = 0
+    waiting = np.zeros(len(surface.reference), np.int64)
+    surface._assign_band(positions, edge, edge, normal, 0, band, waiting)
+    assert int(surface.codes[node]) == 0
+    labeled = waiting.copy()
+    labeled[node] = 1
+    surface._take_anchor_sides(labeled, 0)
+    assert int(surface.codes[node]) == 1
+    surface.codes[node] = 0
+    missing = np.full(len(surface.reference), np.int64(-1))
+    surface._assign_band(positions, edge, edge, normal, 0, band, missing)
+    assert int(surface.codes[node]) == 2
+
+
+def test_anchor_digit_is_the_heaviest_compatible_particle():
+    from blademaster_warp.surface import Supports, anchor_cut_digits
+
+    # Node 0 sees particle 0 at weight 0.2 (digit 2) and particle 1 at weight 0.9
+    # (digit 1). Node 1's code already conflicts with digit 1, so particle 0 wins.
+    # Node 2 has no particle. A lone unlabeled particle stays 0, not "no anchor".
+    support = Supports(
+        np.array([0, 2, 4, 4]),
+        np.array([0, 1, 0, 1]),
+        np.array([0.2, 0.9, 0.2, 0.9]),
+    )
+    digits = anchor_cut_digits(support, np.array([0, 2, 0]), np.array([2, 1]), 0)
+    np.testing.assert_array_equal(digits, [1, 2, -1])
+    waiting = Supports(np.array([0, 1]), np.array([0]), np.array([1.0]))
+    np.testing.assert_array_equal(anchor_cut_digits(waiting, np.array([0]), np.array([0]), 0), [0])
+
+
+def test_singular_pullback_keeps_a_unit_world_normal():
+    surface = LinkedSurface((0.03, 0.03, 0.03), 0.006, "block")
+    edge, (i, j) = _interior_x_edge(surface)
+    surface.codes[i], surface.codes[j] = 1, 2
+    positions = surface.reference.copy()
+    deformation = np.tile(np.diag([0.0, 1.0, 1.0]), (len(surface.reference), 1, 1))
+    mid = surface.reference[[i, j]].mean(0)
+    surface._sever_opposite(positions, np.array([mid, mid + [0.0, 0.01, 0.0]]), [1.0, 0.0, 0.0], 0, deformation)
+    sample, normal = surface.hermite[edge]
+    np.testing.assert_allclose(sample, mid, atol=1e-12)
+    np.testing.assert_allclose(normal, [1.0, 0.0, 0.0], atol=1e-12)

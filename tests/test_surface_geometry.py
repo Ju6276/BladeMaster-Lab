@@ -7,7 +7,17 @@ import pytest
 from scipy.integrate import quad
 
 from blademaster_warp.geometry import BANANA_DEMO_SIZE_M, points
-from blademaster_warp.surface import LinkedSurface
+from blademaster_warp.surface import (
+    BANK_OPENING_M,
+    LinkedSurface,
+    _mesh_labels,
+    _separate_bank_stabs,
+    _strict_crossing_counts,
+    reduce_crossed_pieces,
+    retract_vertices_ahead_of_particles,
+    separate_coincident_banks,
+    separate_piece_crossings,
+)
 from scripts.surface_accuracy import CUTS, accuracy, banana_volume
 from scripts.surface_deformed import geometry_report, intersection_pairs, run, segment_triangle_pairs
 from scripts.surface_observations import Observation, compare_observations
@@ -91,6 +101,28 @@ def test_intersection_witness_agrees_with_independent_linear_solve():
     assert empty["components"] == empty["self_intersections"] == 0
 
 
+def test_intersection_pairs_agree_with_every_nonadjacent_pair():
+    rng = np.random.default_rng(2)
+    vertices = np.vstack([rng.normal(size=(15, 3)), [[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], [0.0, 0.2, 1.0]]])
+    triangles = np.vstack([np.arange(15).reshape(-1, 3), [[15, 16, 17]]])
+    all_edges = np.unique(
+        np.sort(np.concatenate([triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]]), axis=1),
+        axis=0,
+    )
+    expected = set()
+    for edge in all_edges:
+        for face, tri in enumerate(triangles):
+            if edge[0] in tri or edge[1] in tri:
+                continue
+            a, b = vertices[edge]
+            if segment_triangle_pairs(a[None], b[None], vertices[tri][None])[0]:
+                expected.add((int(edge[0]), int(edge[1]), face))
+    for chunk in (1, 2048):
+        edges, faces = intersection_pairs(vertices, triangles, chunk=chunk)
+        found = set(zip(edges[:, 0], edges[:, 1], faces)) if len(faces) else set()
+        assert found == expected
+
+
 def test_vertex_link_catches_pinched_closed_shells_and_signed_volume_catches_inversion():
     v = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
     t = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
@@ -168,6 +200,22 @@ def test_empty_vertex_fans_keep_an_indexable_mapping():
     assert np.empty((0, 3))[source].shape == (0, 3)
 
 
+def test_duplicate_vertices_on_a_triangle_edge_are_not_a_strict_crossing():
+    # Frame 416 of the near-capacity teleop. Edge (429, 443) occupies the same
+    # two points as face (440, 442, 428); the strict test was dividing a
+    # 1e-19 determinant and reporting an interior hit.
+    a = np.array([-0.007526283949645582, 0.005621249999999998, 0.01687125])
+    b = np.array([-0.0075307278802591105, 0.005628749999999998, 0.01687125])
+    triangle = np.array(
+        [
+            [-0.007505946855860832, 0.009371249999999998, 0.01312125],
+            [-0.0075307278802591105, 0.005628749999999998, 0.01687125],
+            [-0.007526283949645582, 0.005621249999999998, 0.01687125],
+        ]
+    )
+    assert not segment_triangle_pairs(a[None], b[None], triangle[None], strict=True).item()
+
+
 def test_recorded_partial_crack_crossing_is_not_a_seam_contact():
     # Disjoint edge (1156,1157) and face (1189,1161,1158), frame 63 of the same
     # recording, in world and reference metres. Both intersections are interior.
@@ -214,13 +262,23 @@ def test_partial_crack_front_stays_on_the_cut_plane(monkeypatch):
     with monkeypatch.context() as context:
         context.setattr(module, "constrained_box_lstsq", lambda *args: None)
         before = surface.mesh()
-    assert geometry_report(before.reference, before.triangles)["self_interior_crossings"] == 4
     surface.cell_geometry.clear()
     surface.dirty.update(surface.cells_around(edge))
     after = surface.mesh()
     geometry = geometry_report(after.reference, after.triangles)
     assert_closed_oriented(geometry, 1)
     assert geometry["self_interior_crossings"] == 0
+    # The other diagonal can already be free of crossings. The constraint is
+    # still what puts the rim on the plane: at least one front vertex moves,
+    # and every vertex that moves lands on this Hermite plane.
+    from scipy.spatial import cKDTree
+
+    _, nearest = cKDTree(after.reference).query(before.reference)
+    delta = np.linalg.norm(after.reference[nearest] - before.reference, axis=1)
+    moved = delta > 1.0e-9
+    assert moved.any()
+    unit = normal / np.linalg.norm(normal)
+    np.testing.assert_allclose((after.reference[nearest[moved]] - point) @ unit, 0, atol=1.0e-8)
     np.testing.assert_allclose(
         (surface.reference[after.cells] * after.weights[:, :, None]).sum(1),
         after.reference,
@@ -450,3 +508,327 @@ def test_observation_intervals_preserve_moving_cut_geometry(backend):
         assert result["max_matching_vertex_displacement_m"] < 1e-12
         assert_closed_oriented(result["geometry"], 2)
         assert abs(result.get("relative_volume_difference", 0)) < 1e-12
+
+
+def test_open_banks_keep_their_positions_and_inverted_banks_separate_along_the_normal():
+    # Two disjoint triangles. The first pair is already open; the second pair
+    # shares a reference point but was embedded through itself.
+    reference = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0],
+            [0.0, 0.01, 0.0],
+            [0.0, 0.0, 0.01],
+            [0.0, 0.0, 0.01],
+        ]
+    )
+    codes = np.array([1, 2, 1, 2, 1, 2])
+    vertices = np.array(
+        [
+            [-0.002, 0.10, -0.20],
+            [0.004, 0.10, -0.20],
+            [0.001, 0.00, 0.00],
+            [-0.0015, 0.004, -0.003],
+            [0.001, 0.00, 0.01],
+            [-0.0015, 0.004, 0.007],
+        ]
+    )
+    triangles = np.array([[0, 2, 4], [1, 5, 3]])
+    repaired = separate_coincident_banks(vertices, triangles, reference, codes, {0: [1.0, 0.0, 0.0]})
+    np.testing.assert_allclose(repaired[:2], vertices[:2])
+    assert repaired[3, 0] - repaired[2, 0] == pytest.approx(BANK_OPENING_M)
+    np.testing.assert_allclose(repaired[2, 1:], vertices[2, 1:])
+    np.testing.assert_allclose(repaired[3, 1:], vertices[3, 1:])
+    assert geometry_report(repaired, triangles)["inter_component_interior_crossings"] == 0
+
+
+def test_a_crack_front_that_still_shares_a_neighbor_does_not_fold_through_itself():
+    reference = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0],
+            [0.0, 0.0, 0.01],
+            [0.0, 0.004, 0.004],
+        ]
+    )
+    codes = np.array([1, 2, 0, 0, 0])
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.001, -0.0002, -0.0003],
+            [0.0, 0.01, 0.0],
+            [0.0, 0.0, 0.01],
+            [-0.001, 0.004, 0.004],
+        ]
+    )
+    triangles = np.array([[0, 2, 3], [1, 2, 4], [1, 4, 3]])
+    before = geometry_report(vertices, triangles)
+    assert before["self_interior_crossings"] > 0
+    repaired = separate_coincident_banks(vertices, triangles, reference, codes, {0: [1.0, 0.0, 0.0]})
+    np.testing.assert_allclose(repaired[0], repaired[1])
+    assert geometry_report(repaired, triangles)["self_interior_crossings"] == 0
+
+
+def test_a_shared_front_that_does_not_fold_stays_open():
+    reference = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]])
+    codes = np.array([1, 2, 0, 0])
+    vertices = np.array([[-0.001, 0.0, 0.0], [0.002, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]])
+    triangles = np.array([[0, 2, 3], [1, 3, 2]])
+    repaired = separate_coincident_banks(vertices, triangles, reference, codes, {0: [1.0, 0.0, 0.0]})
+    np.testing.assert_allclose(repaired, vertices)
+
+
+def test_an_edge_through_another_piece_moves_along_the_triangle_normal():
+    # Two separate triangles. The second's long edge passes through the first.
+    # The first triangle stays put; only the nearer end of the crossing edge moves.
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.02, 0.0, 0.0],
+            [0.01, 0.02, 0.0],
+            [0.005, 0.005, -0.004],
+            [0.005, 0.005, 0.006],
+            [0.016, 0.004, 0.001],
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [3, 4, 5]])
+    before = geometry_report(vertices, triangles)
+    assert before["inter_component_interior_crossings"] > 0
+    repaired = separate_piece_crossings(vertices, triangles)
+    after = geometry_report(repaired, triangles)
+    assert after["inter_component_interior_crossings"] == 0
+    assert after["self_interior_crossings"] == 0
+    np.testing.assert_allclose(repaired[:3], vertices[:3])
+    assert repaired[3, 2] > vertices[3, 2]
+
+
+def test_overlapping_pieces_slide_apart_without_adding_self_crossings():
+    # Sliding the smaller piece along the centroid line clears the crossing and
+    # leaves the larger piece where it is.
+    from blademaster_warp.surface import _component_shift, _mesh_labels
+
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.04, 0.0, 0.0],
+            [0.0, 0.04, 0.0],
+            [0.04, 0.04, 0.0],
+            [0.032, 0.015, -0.001],
+            [0.042, 0.020, 0.001],
+            [0.032, 0.028, -0.001],
+        ],
+        float,
+    )
+    triangles = np.array([[0, 1, 2], [1, 3, 2], [4, 5, 6]])
+    before = geometry_report(vertices, triangles)
+    assert before["components"] == 2
+    assert before["inter_component_interior_crossings"] > 0
+    repaired = _component_shift(vertices, triangles, _mesh_labels(len(vertices), triangles))
+    after = geometry_report(repaired, triangles)
+    assert after["inter_component_interior_crossings"] == 0
+    assert after["self_interior_crossings"] == 0
+    np.testing.assert_allclose(repaired[:4], vertices[:4])
+    assert np.linalg.norm(repaired[4:] - vertices[4:], axis=1).max() > 0
+
+
+def test_piece_separation_leaves_a_mesh_that_does_not_cross_itself():
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.03, 0.0, 0.0],
+            [0.0, 0.03, 0.0],
+            [0.005, 0.005, -0.004],
+            [0.005, 0.005, 0.004],
+            [0.02, 0.006, 0.0],
+            [0.04, 0.04, 0.0],
+        ]
+    )
+    # A bridge triangle makes the crossing one component, so it is a self-crossing.
+    triangles = np.array([[0, 1, 2], [3, 4, 5], [1, 5, 6]])
+    before = geometry_report(vertices, triangles)
+    assert before["components"] == 1
+    assert before["self_interior_crossings"] == 1
+    repaired = separate_piece_crossings(vertices, triangles)
+    after = geometry_report(repaired, triangles)
+    assert after["self_interior_crossings"] == 0
+    assert after["inter_component_interior_crossings"] == 0
+
+
+def test_same_code_edges_through_the_other_bank_open_along_the_cut():
+    # The two banks are still joined, so this is one component. Side-2 edges
+    # pass 0.25 mm through the side-1 sheet. Opening along the cut normal has
+    # to clear them; a triangle-normal push of the whole batch does not.
+    def sheet(z, code, x0=0.0, y0=0.0, n=3, h=0.008):
+        verts = [[x0 + i * h, y0 + j * h, z] for j in range(n) for i in range(n)]
+        tris = []
+        for j in range(n - 1):
+            for i in range(n - 1):
+                a = j * n + i
+                tris += ([a, a + 1, a + n], [a + 1, a + n + 1, a + n])
+        return np.array(verts, float), np.full(len(verts), code, np.int64), np.array(tris, int)
+
+    side1, code1, triangles1 = sheet(0.0, 1)
+    side2, code2, triangles2 = sheet(0.002, 2, x0=0.001, y0=0.001)
+    side2[::2, 2] = -0.00025
+    bridge = np.array([[0.004, 0.004, -0.04], [0.02, 0.0, -0.04], [0.0, 0.02, -0.04]])
+    vertices = np.vstack([side1, side2, bridge])
+    codes = np.concatenate([code1, code2, np.zeros(len(bridge), np.int64)])
+    offset = len(side1)
+    bridge_at = offset + len(side2)
+    triangles = np.vstack(
+        [
+            triangles1,
+            triangles2 + offset,
+            [[0, offset, bridge_at], [offset, bridge_at + 1, bridge_at + 2]],
+        ]
+    )
+    before = geometry_report(vertices, triangles)
+    assert before["components"] == 1
+    assert before["self_interior_crossings"] > 0
+    labels = _mesh_labels(len(vertices), triangles)
+    normals = {0: np.array([0.0, 0.0, 1.0])}
+    opened = vertices
+    for _ in range(3):
+        updated = _separate_bank_stabs(opened, triangles, labels, codes, normals, BANK_OPENING_M)
+        if updated is opened:
+            break
+        opened = updated
+    direct = geometry_report(opened, triangles)
+    assert direct["self_interior_crossings"] < before["self_interior_crossings"]
+    assert direct["inter_component_interior_crossings"] == 0
+    assert np.linalg.norm(opened - vertices, axis=1).max() < 0.001
+    edges, faces = intersection_pairs(opened, triangles)
+    if len(edges):
+        interior = segment_triangle_pairs(
+            opened[edges[:, 0]], opened[edges[:, 1]], opened[triangles[faces]], strict=True
+        )
+        for edge, face, hit in zip(edges, faces, interior):
+            if not hit or labels[edge[0]] != labels[triangles[face, 0]]:
+                continue
+            if codes[edge[0]] != codes[edge[1]]:
+                continue
+            other = codes[triangles[face]]
+            assert not np.any((other > 0) & (other != codes[edge[0]]))
+    plain = separate_piece_crossings(vertices, triangles)
+    repaired = separate_piece_crossings(vertices, triangles, codes=codes, normals=normals)
+    plain_report = geometry_report(plain, triangles)
+    after = geometry_report(repaired, triangles)
+    assert after["self_interior_crossings"] <= plain_report["self_interior_crossings"]
+    assert after["inter_component_interior_crossings"] == 0
+
+
+def test_a_tangent_blade_normal_opens_along_the_bank_centroids():
+    # The stored blade normal lies in the side-1 sheet, so it has no opening.
+    # Both edges of the side-2 triangle pass through that sheet. The banks
+    # themselves are on opposite sides of it.
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.02, 0.0, 0.0],
+            [0.0, 0.02, 0.0],
+            [0.005, 0.005, -0.001],
+            [0.008, 0.005, 0.003],
+            [0.005, 0.008, 0.003],
+            [-0.01, -0.02, -0.05],
+            [0.03, -0.02, -0.05],
+            [0.01, -0.04, -0.05],
+        ]
+    )
+    codes = np.array([1, 1, 1, 2, 2, 2, 0, 0, 0])
+    triangles = np.array([[0, 1, 2], [3, 4, 5], [0, 3, 6], [6, 7, 8]])
+    before = geometry_report(vertices, triangles)
+    assert before["components"] == 1
+    assert before["self_interior_crossings"] == 2
+    labels = _mesh_labels(len(vertices), triangles)
+    tangent = _separate_bank_stabs(
+        vertices, triangles, labels, codes, {0: np.array([1.0, 0.0, 0.0])}, BANK_OPENING_M
+    )
+    after = geometry_report(tangent, triangles)
+    assert after["self_interior_crossings"] == 1
+    assert after["inter_component_interior_crossings"] == 0
+    delta = tangent - vertices
+    assert delta[3, 2] > abs(delta[3, 0])
+    axis = _separate_bank_stabs(
+        vertices, triangles, labels, codes, {0: np.array([0.0, 0.0, 1.0])}, BANK_OPENING_M
+    )
+    axis_delta = axis - vertices
+    assert np.linalg.norm(axis_delta[:, :2]) < 1e-12
+    assert axis_delta[3, 2] > 0
+
+
+def test_two_edges_through_one_triangle_pull_the_near_vertex():
+    # Both edges share the vertex that is already 0.288 mm past the triangle.
+    # The other ends are 1.036 mm and 0.556 mm on the near side. One piece
+    # pass pulls only that shared vertex back to the opening gap.
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.01, 0.0, 0.0],
+            [0.0, 0.01, 0.0],
+            [0.003, 0.003, 0.000288],
+            [0.002, 0.006, -0.001036],
+            [0.006, 0.002, -0.000556],
+        ]
+    )
+    triangles = np.array(
+        [
+            [0, 1, 2],
+            [3, 4, 5],
+            [3, 5, 2],
+            [3, 2, 1],
+            [1, 0, 3],
+            [0, 4, 3],
+        ]
+    )
+    codes = np.ones(len(vertices), np.int64)
+    before = geometry_report(vertices, triangles)
+    assert before["components"] == 1
+    assert before["self_interior_crossings"] == 2
+    assert before["inter_component_interior_crossings"] == 0
+    repaired = reduce_crossed_pieces(vertices, triangles, codes)
+    after = geometry_report(repaired, triangles)
+    assert after["self_interior_crossings"] == 0
+    assert after["inter_component_interior_crossings"] == 0
+    assert repaired[3, 2] == pytest.approx(-BANK_OPENING_M)
+    assert np.allclose(repaired[3, :2], vertices[3, :2])
+    assert np.allclose(np.delete(repaired, 3, axis=0), np.delete(vertices, 3, axis=0))
+    again = reduce_crossed_pieces(repaired, triangles, codes)
+    assert np.allclose(again, repaired)
+
+
+def test_a_vertex_ahead_of_its_particle_returns_to_the_opening():
+    # The shared vertex is 2 mm through the triangle. Its particle is still
+    # 3 mm on the safe side, so the vertex stops at the opening gap. A
+    # particle that has also crossed does not pull the vertex.
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.02, 0.0, 0.0],
+            [0.0, 0.02, 0.0],
+            [0.004, 0.004, -0.002],
+            [0.004, 0.008, 0.004],
+            [0.012, 0.004, 0.004],
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [3, 4, 5], [2, 3, 4]])
+    codes = np.ones(len(vertices), np.int64)
+    particles = np.array([[0.004, 0.004, 0.003]])
+    particle_codes = np.ones(1, np.int64)
+    labels = _mesh_labels(len(vertices), triangles)
+    before = _strict_crossing_counts(vertices, triangles, labels)
+    assert before == (2, 0)
+    repaired = retract_vertices_ahead_of_particles(
+        vertices, triangles, codes, particles, particle_codes
+    )
+    after = _strict_crossing_counts(repaired, triangles, labels)
+    assert after == (0, 0)
+    assert repaired[3, 2] == pytest.approx(BANK_OPENING_M)
+    assert np.allclose(repaired[3, :2], vertices[3, :2])
+    assert np.allclose(np.delete(repaired, 3, axis=0), np.delete(vertices, 3, axis=0))
+    crossed = np.array([[0.004, 0.004, -0.001]])
+    stayed = retract_vertices_ahead_of_particles(
+        vertices, triangles, codes, crossed, particle_codes
+    )
+    assert np.allclose(stayed, vertices)

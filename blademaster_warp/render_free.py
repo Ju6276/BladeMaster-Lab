@@ -23,7 +23,7 @@ from .render import actor, blade_mesh
 from .replay_style import mottled, place_lights, wood_texture
 from .provenance import git_revision
 
-JELLY = (0.62, 0.08, 0.19)
+JELLY = (0.50, 0.04, 0.13)
 LUNCHEON = (0.85, 0.69, 0.66)
 CREAM = (0.88, 0.85, 0.78)
 INK = (28, 39, 47)
@@ -199,10 +199,14 @@ def free_knife_video(kind, directory, output, title, fps=25):
         lo = reference.min(0) * 1000
         size = [extent[0] * 2.2, extent[1] * 4.0, 8.0]
         board = dict(size_mm=size, center_mm=[lo[0] + extent[0] / 2, lo[1] + extent[1] / 2, lo[2] - 4.0])
-        # No arm in this scene: keep the elevation, but face the side the knives enter from.
+        # No arm in this scene: keep the elevation; turn halfway from the front
+        # direction toward the side the knives enter from (oblique, as in the video).
         approach = blade_p[0].mean(0) - reference.mean(0)
-        if np.dot(direction[:2], approach[:2]) < 0:
-            direction = direction * [-1, -1, 1]
+        horizontal = np.linalg.norm(direction[:2])
+        bisector = direction[:2] / horizontal + approach[:2] / np.linalg.norm(approach[:2])
+        if np.linalg.norm(bisector) < 1e-6:
+            bisector = approach[:2]
+        direction = np.array([*(bisector / np.linalg.norm(bisector) * horizontal), direction[2]])
     scene = FreeScene(1280, 672, particle_radius(reference), board)
     surface_dir = directory / "surface"
     surface = (surface_dir / "frames.json").exists()
@@ -211,7 +215,7 @@ def free_knife_video(kind, directory, output, title, fps=25):
         if not np.allclose([f["time_s"] for f in frames], times[: len(frames)]) or len(frames) != len(times):
             raise ValueError("Surface frames must match the saved states")
         # Fig. 3's jelly is translucent in the project-page video.
-        scene.enable_surface(color, 0.72 if kind == "fig3" else 1.0)
+        scene.enable_surface(color, 0.8 if kind == "fig3" else 1.0)
     blade_color = (0.86, 0.87, 0.88) if kind == "fig3" else (0.35, 0.37, 0.40)
     for _ in range(blade_p.shape[1]):
         scene.add_blade(cfg["blade_half_size"], cfg["blade_bevel_height"], blade_color)

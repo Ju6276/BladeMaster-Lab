@@ -109,7 +109,7 @@ class ReplayScene:
         normals.AutoOrientNormalsOn()
         self.body = actor(normals, self.renderer, (0.985, 0.95, 0.78))
         self.material_color = None
-        self.body.GetProperty().SetAmbient(0.38)
+        self.body.GetProperty().SetAmbient(0.22)
         self.body.GetProperty().SetDiffuse(0.62)
         self.body.GetProperty().SetSpecular(0.12)
         self.body.GetProperty().SetSpecularPower(35)

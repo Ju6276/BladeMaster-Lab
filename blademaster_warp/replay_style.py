@@ -26,6 +26,25 @@ def wood_texture():
     return texture
 
 
+# Key, fill and back light, designed for a camera at azimuth atan2(-220, 110)
+# about the material origin.
+LIGHTS = [((-80, -90, 220), 0.8), ((180, -30, 120), 0.5), ((-60, 130, 90), 0.35)]
+LIGHT_CAMERA_AZIMUTH = np.arctan2(-220, 110)
+
+
+def place_lights(renderer, camera_azimuth):
+    """Turn the light rig about the vertical with the camera, so the faces it sees stay lit."""
+    c, s = np.cos(camera_azimuth - LIGHT_CAMERA_AZIMUTH), np.sin(camera_azimuth - LIGHT_CAMERA_AZIMUTH)
+    renderer.RemoveAllLights()
+    for (x, y, z), intensity in LIGHTS:
+        light = vtk.vtkLight()
+        light.SetLightTypeToSceneLight()
+        light.SetPosition(c * x - s * y, s * x + c * y, z)
+        light.SetFocalPoint(0, 0, 0)
+        light.SetIntensity(intensity)
+        renderer.AddLight(light)
+
+
 class ReplayScene:
     def __init__(self, cfg, board, width=960, height=480, style="wood"):
         if style not in ("wood", "paper"):
@@ -47,14 +66,7 @@ class ReplayScene:
         ao.SetKernelSize(64)
         ao.BlurOn()
         self.renderer.SetPass(ao)
-        self.renderer.RemoveAllLights()
-        for position, intensity in [((-80, -90, 220), 0.8), ((180, -30, 120), 0.5), ((-60, 130, 90), 0.35)]:
-            light = vtk.vtkLight()
-            light.SetLightTypeToSceneLight()
-            light.SetPosition(*position)
-            light.SetFocalPoint(0, 0, 0)
-            light.SetIntensity(intensity)
-            self.renderer.AddLight(light)
+        place_lights(self.renderer, LIGHT_CAMERA_AZIMUTH)
         source = vtk.vtkCubeSource()
         source.SetXLength(board["size_mm"][0])
         source.SetYLength(board["size_mm"][1])
@@ -149,6 +161,7 @@ class ReplayScene:
         camera.SetPosition(*position)
         camera.SetFocalPoint(*focal)
         camera.SetViewUp(0, 0, 1)
+        place_lights(self.renderer, np.arctan2(*(np.subtract(position, focal)[1::-1])))
         self.renderer.ResetCameraClippingRange()
 
     def update(self, snapshot, positions, codes):

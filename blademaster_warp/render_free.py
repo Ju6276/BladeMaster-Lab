@@ -20,7 +20,7 @@ import vtk
 from vtk.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from PIL import Image, ImageDraw, ImageFont
 from .render import actor, blade_mesh
-from .replay_style import wood_texture
+from .replay_style import place_lights, wood_texture
 from .provenance import git_revision
 
 JELLY = (0.62, 0.08, 0.19)
@@ -58,14 +58,6 @@ class FreeScene:
         self.window.SetSize(width, height)
         self.window.SetMultiSamples(4)
         self.window.AddRenderer(self.renderer)
-        self.renderer.RemoveAllLights()
-        for position, intensity in [((-80, -90, 220), 0.8), ((180, -30, 120), 0.5), ((-60, 130, 90), 0.35)]:
-            light = vtk.vtkLight()
-            light.SetLightTypeToSceneLight()
-            light.SetPosition(*position)
-            light.SetFocalPoint(0, 0, 0)
-            light.SetIntensity(intensity)
-            self.renderer.AddLight(light)
         if board is not None:
             source = vtk.vtkCubeSource()
             source.SetXLength(board["size_mm"][0])
@@ -120,6 +112,7 @@ class FreeScene:
         camera.SetFocalPoint(*(centre * 1000))
         camera.SetPosition(*((centre + direction * distance) * 1000))
         camera.SetViewUp(0, 0, 1)
+        place_lights(self.renderer, np.arctan2(direction[1], direction[0]))
         self.renderer.ResetCameraClippingRange()
 
     def update(self, positions, colors, blade_poses):

@@ -282,7 +282,8 @@ def trajectory_tolerances(config):
         plastic_deformation=1e-7,
         blade_position=1e-5 * spacing,
         blade_velocity=velocity,
-        blade_orientation=1e-7,
+        # Quaternion error dq moves the blade tip by about 2 dq r: same bound as blade_position.
+        blade_orientation=1e-5 * spacing / radius,
         blade_omega=velocity / radius,
         tool_damage=1e-4,  # 0.01% of the work required for failure, including near-zero damage.
         time=0.0,

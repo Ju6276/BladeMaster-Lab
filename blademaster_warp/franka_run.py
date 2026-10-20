@@ -114,6 +114,8 @@ def material_config(args):
         overrides["sampling_seed"] = args.sampling_seed
     if getattr(args, "contact_scaling", "physical") == "per-step":
         overrides["contact_reference_dt"] = 0.0
+    if getattr(args, "single_field", False):
+        overrides["blade_grid_constraint"] = False
     storage = getattr(args, "grid_storage", cfg.grid_storage)
     return replace(
         cfg,
@@ -463,6 +465,8 @@ class FrankaCuttingRun:
         """Queue one material interval. The wrench is read in ``_finish_exchange``."""
         self._cutting_state()
         self._reaction = None
+        if self.solver is not None and getattr(self.args, "single_field", False):
+            self.solver.set_single_field(not self.cutting)
         if not self.port:
             self._material_mark = time.perf_counter()
             return
@@ -1097,6 +1101,11 @@ def parser():
         type=float,
         default=45.0,
         help="teleop only: largest angle in degrees between the knife axis and its initial direction",
+    )
+    p.add_argument(
+        "--single-field",
+        action="store_true",
+        help="paper Fig. 4 baseline: particle-grid transfers ignore cut-side codes while the knife is not cutting",
     )
     p.add_argument(
         "--cut-events",

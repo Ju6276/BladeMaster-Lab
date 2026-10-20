@@ -132,6 +132,25 @@ class ReplayScene:
         self.material_color = tuple(float(channel) for channel in rgb)
         self.body.GetProperty().SetColor(*self.material_color)
 
+    def set_material_layers(self, reference_particles, boundary_z, below_rgb, above_rgb):
+        """Color by reference height (m), e.g. a two-layer cake. Follows material, not world height."""
+        self.layers = (float(boundary_z), np.asarray(below_rgb, float), np.asarray(above_rgb, float))
+        self.particle_reference = np.asarray(reference_particles)
+        self.material_color = tuple(self.layers[1])
+
+    def _layer_rgb(self, reference):
+        boundary, below, above = self.layers
+        return np.where((reference[:, 2] > boundary)[:, None], above, below)
+
+    def set_camera(self, position, focal, view_angle):
+        camera = self.renderer.GetActiveCamera()
+        camera.ParallelProjectionOff()
+        camera.SetViewAngle(view_angle)
+        camera.SetPosition(*position)
+        camera.SetFocalPoint(*focal)
+        camera.SetViewUp(0, 0, 1)
+        self.renderer.ResetCameraClippingRange()
+
     def update(self, snapshot, positions, codes):
         from scipy.spatial.transform import Rotation
 
@@ -144,6 +163,10 @@ class ReplayScene:
                 cells.InsertCellPoint(int(v))
         self.surface.SetPoints(points)
         self.surface.SetPolys(cells)
+        if getattr(self, "layers", None) is not None:
+            self.surface.GetPointData().SetScalars(
+                numpy_to_vtk((self._layer_rgb(snapshot["reference"]) * 255).astype(np.uint8), deep=True)
+            )
         self.surface.Modified()
         pts = vtk.vtkPoints()
         pts.SetData(numpy_to_vtk(positions * 1000, deep=True))
@@ -159,6 +182,8 @@ class ReplayScene:
                 ]
             )
             rgb = palette[codes % len(palette)]
+        elif getattr(self, "layers", None) is not None:
+            rgb = self._layer_rgb(self.particle_reference)
         else:
             rgb = np.tile(self.material_color, (len(codes), 1))
         self.cloud.GetPointData().SetScalars(

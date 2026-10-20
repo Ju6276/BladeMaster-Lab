@@ -13,25 +13,44 @@ from .robot_replay import RobotVisuals
 from .provenance import git_revision
 
 
-# Fig. 7 is the pale block. Fig. 8 is the pink block on the project page.
-# One color: the cut is the opening, not a change of material.
+# Material colors sampled from the project-page videos
+# (https://jango6324.github.io/blademaster/). One color per material: the cut
+# is the opening, not a change of material.
+BANANA = (0.93, 0.91, 0.85)
 FOOD_COLOR = {
-    "fig7-shallow": (0.96, 0.93, 0.84),
-    "fig7-deep": (0.96, 0.93, 0.84),
-    "fig8": (0.86, 0.45, 0.48),
+    "fig7-shallow": (0.90, 0.87, 0.82),
+    "fig7-deep": (0.90, 0.87, 0.82),
+    "fig8": (0.85, 0.69, 0.66),
 }
+# Matcha cake of Fig. 4: dark top layer over a light sponge, split at 60 % of
+# the reference height.
+CAKE_LAYERS = dict(fraction=0.6, below=(0.62, 0.70, 0.43), above=(0.12, 0.38, 0.14))
 
 
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def set_camera(scene, position, focal, scale):
-    camera = scene.renderer.GetActiveCamera()
-    camera.SetPosition(*position)
-    camera.SetFocalPoint(*focal)
-    camera.SetParallelScale(scale)
-    scene.renderer.ResetCameraClippingRange()
+def web_cameras(base, origin):
+    """Default cameras of the browser viewer (web/app.js), in mm about the material origin.
+
+    Whole: in front of the arm, looking back along its reach. Detail: the same
+    direction, close to the material.
+    """
+    base, origin = np.asarray(base, float), np.asarray(origin, float)
+    reach = origin - base
+    reach[2] = 0.0
+    front = reach / np.linalg.norm(reach)
+    whole = base + 0.5 * reach
+    whole[2] = 0.52
+    detail = origin + [0.0, 0.0, 0.025]
+    cameras = []
+    for target, distance, height, angle in ((whole, 1.2, 0.85, 38.0), (detail, 0.24, 0.19, 35.0)):
+        position = target + front * distance + [0.0, 0.0, height]
+        cameras.append(
+            dict(position=((position - origin) * 1000).tolist(), focal=((target - origin) * 1000).tolist(), view_angle=angle)
+        )
+    return cameras
 
 
 def render(directory, output=None, preview=False, layout="overview"):
@@ -74,36 +93,42 @@ def render(directory, output=None, preview=False, layout="overview"):
         center_mm=((np.fromstring(geom.get("pos"), sep=" ") - z["origin"]) * 1000).tolist(),
     )
     task = manifest.get("task")
-    food = FOOD_COLOR.get(task)
-    # Food motions use the wood board. The green board is the Fig. 1 presentation.
-    scene_style = "wood" if food else "paper"
+    cake = task == "fig4-slice-lift"
+    banana = manifest.get("args", {}).get("material") == "paper-banana"
+    food = FOOD_COLOR.get(task) or (BANANA if banana else None)
+    # Banana keeps the green board of Fig. 1; the food tasks use the bamboo board.
+    scene_style = "paper" if banana else "wood"
     scenes = [
         ReplayScene(manifest["config"], board, 640, 720, style=scene_style),
         ReplayScene(manifest["config"], board, 640, 720 if layout == "paper" else 360, style=scene_style),
     ]
-    if food:
-        for scene in scenes:
+    for scene in scenes:
+        if cake:
+            reference = z["particles"][0]
+            boundary = reference[:, 2].min() + CAKE_LAYERS["fraction"] * np.ptp(reference[:, 2])
+            scene.set_material_layers(reference, boundary, CAKE_LAYERS["below"], CAKE_LAYERS["above"])
+        elif food:
             scene.set_material_color(food)
+    food = food or cake
     robots = [RobotVisuals(scene, directory / "scene.xml", z["origin"]) for scene in scenes]
     # Camera selection changes neither geometry nor the recorded knife motion.
-    cameras = [
-        dict(position=[950, -1400, 850], focal=[-170, 0, -45], scale=480),
-        dict(position=[120, -270, 210], focal=[0, 0, 29], scale=69),
-    ]
-    if layout == "paper":
-        # Keep particle and surface projections identical.
-        cameras = [dict(position=[300, -600, 470], focal=[0, 0, 80], scale=140) for _ in scenes]
-        if manifest.get("task") == "fig4-slice-lift":
-            cameras = [dict(position=[-300, 600, 400], focal=[0, 0, 45], scale=125) for _ in scenes]
+    whole, detail = web_cameras(robots[0].model.body("link0").pos, z["origin"])
+    cameras = [detail, detail] if layout == "paper" else [whole, detail]
     for scene, camera in zip(scenes, cameras):
-        set_camera(scene, **camera)
+        scene.set_camera(**camera)
     cycle_path = directory / "cycle.json"
     cycle = json.loads(cycle_path.read_text()) if cycle_path.exists() else dict(phases=[], events=[])
     phase_labels = [{"descend": "Cut"}.get(name, name.capitalize()) for name in cycle["phases"]]
     cuts = sum(event["phase"] == "descend" for event in cycle["events"])
     title = "Franka | Single cut" if cuts <= 1 else f"Franka | {cuts} cuts + push"
-    if manifest.get("task") == "fig4-slice-lift":
+    if cake:
         title = "Franka | Two radial cuts + slice lift"
+        if manifest.get("args", {}).get("single_field"):
+            title += " | single-field MPM"
+    elif task in ("fig7-shallow", "fig7-deep"):
+        title = f"Franka | Tofu, {task.split('-')[1]} tip scoring"
+    elif task == "fig8":
+        title = "Franka | Luncheon meat, sequential slicing"
     if "teleop" in report:
         title = f"Franka | Teleoperation, {report['teleop']['cut_strokes']} cut strokes"
     font = ImageFont.truetype("DejaVuSans.ttf", 22)
@@ -235,16 +260,17 @@ def render(directory, output=None, preview=False, layout="overview"):
                 cameras=cameras,
                 board=board,
                 layout=layout,
-                style_reference="BladeMaster Fig. 1 / https://arxiv.org/html/2609.27342v2#S1.F1",
+                style_reference="BladeMaster project-page videos / https://jango6324.github.io/blademaster/",
                 presentation_changes=[
                     "pale background",
-                    "green board color",
+                    "board color",
                     "lighting",
-                    "camera framing",
+                    "browser viewer default cameras",
+                    "material colors",
                     "labels",
                 ],
                 particle_colors=(
-                    "one food color for fig7 and fig8; the cut is the opening"
+                    "material colors from the project-page videos (cake: two layers by reference height); the cut is the opening"
                     if food
                     else "saved cut-history codes, not component IDs; single cut: 0 yellow unmarked, 1 blue, 2 orange"
                 ),

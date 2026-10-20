@@ -22,6 +22,8 @@ from blademaster_warp.fig5_cressim import (
     CRESSIM_REVISION,
     impulses_to_si,
     material_in_solver_units,
+    mls_affine_snapshot,
+    seeded_volume_snapshot,
     validate_build,
 )
 from blademaster_warp.fig5_run import compare, run, write_json
@@ -268,6 +270,23 @@ def test_failed_backend_records_failure_and_does_not_overwrite(cfg, tmp_path):
     assert json.loads((path / "manifest.json").read_text())["status"] == "failed"
     with pytest.raises(FileExistsError):
         run(cfg, path, "cressim_cpu")
+
+
+def test_seeded_volume_replaces_the_grid_density_estimate():
+    site = b"mParticles->initialVolume[idx]);"
+    patched = seeded_volume_snapshot(b"before\n" + site + b"\nafter\n")
+    assert patched.count(b"mCellVolume * 0.125f;") == 1
+    with pytest.raises(ValueError, match="initial-volume"):
+        seeded_volume_snapshot(site + site)
+
+
+def test_mls_affine_patch_restores_quadratic_kernel_scale():
+    site = b"particleAffineMomentum = 4 * invCellSize * affineMomentumCumulation;"
+    patched = mls_affine_snapshot(b"prefix\n" + site + b"\nsuffix\n")
+    assert patched.count(b"4 * invCellSize * invCellSize * affineMomentumCumulation;") == 1
+    assert site not in patched
+    with pytest.raises(ValueError, match="affine patch"):
+        mls_affine_snapshot(site + site)
 
 
 def test_comparison_rejects_own_backend_as_original(cfg, trajectory, tmp_path):

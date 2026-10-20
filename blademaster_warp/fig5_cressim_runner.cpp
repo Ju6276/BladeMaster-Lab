@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
         if (argc == 2 && std::string(argv[1]) == "--identity") {
             std::cout << FIG5_SOURCE_REVISION << '\n' << FIG5_DRIVER_REVISION << '\n'
                       << FIG5_FIX_COROTATED_DISPATCH << '\n' << FIG5_HEADER_SNAPSHOT << '\n'
-                      << FIG5_DRIVER_SNAPSHOT << '\n';
+                      << FIG5_DRIVER_SNAPSHOT << '\n' << FIG5_MLS_SNAPSHOT << '\n';
             return 0;
         }
         if (argc != 4) throw std::runtime_error("Expected input.txt states.bin kick.bin");

@@ -23,6 +23,7 @@ from .provenance import git_revision
 CRESSIM_URL = "https://github.com/yafei-ou/CRESSim-MPM.git"
 CRESSIM_REVISION = "09aa5009b8580351f516b6df7660e87821fc5eb6"
 CONSTITUTIVE_HEADER = "src/solver/constitutive_models.h"
+MLS_HEADER = "src/solver/mls_mpm_algorithm.h"
 
 
 def constitutive_snapshot(original, fix_corotated_dispatch):
@@ -36,6 +37,41 @@ def constitutive_snapshot(original, fix_corotated_dispatch):
     if original.count(target) != 1:
         raise ValueError("Pinned corotated dispatch patch site does not match")
     return original.replace(target, target.replace(b"\n        case", b"\n            break;\n        case"))
+
+
+def mls_affine_snapshot(original):
+    """Experimental replacement, not applied by the baseline build.
+
+    The pinned transfer stores C = (4/dx) sum w v (x_i-x_p)^T. Multiplying by
+    another 1/dx makes the free surface unstable at the Fig. 5 timesteps, so
+    the baseline keeps the upstream line.
+    """
+    target = b"particleAffineMomentum = 4 * invCellSize * affineMomentumCumulation;"
+    replacement = b"particleAffineMomentum = 4 * invCellSize * invCellSize * affineMomentumCumulation;"
+    if original.count(target) != 1:
+        raise ValueError("Pinned MLS affine patch site does not match")
+    return original.replace(target, replacement)
+
+
+def mls_transfer_snapshot(original):
+    return original
+
+
+def seeded_volume_snapshot(original):
+    """Experimental replacement, not applied by the baseline build.
+
+    On this regular lattice the grid-density estimate is about (dx/2)^3 in the
+    interior, but larger on the boundary. Forcing (dx/2)^3 did not make the
+    Fig. 5 timesteps agree, so the baseline keeps the upstream estimate.
+    """
+    target = b"mParticles->initialVolume[idx]);"
+    replacement = (
+        b"mParticles->initialVolume[idx]);\n"
+        b"            mParticles->initialVolume[idx] = mCellVolume * 0.125f;"
+    )
+    if original.count(target) != 1:
+        raise ValueError("Pinned initial-volume patch site does not match")
+    return original.replace(target, replacement)
 
 
 def material_in_solver_units(cfg):
@@ -78,10 +114,17 @@ def build(source, output, compiler="c++", *, fix_corotated_dispatch=False):
     (output / "constitutive_models.original.h").write_bytes(original)
     header = output / "constitutive_models.h"
     header.write_bytes(compiled)
+    mls_original = (source / MLS_HEADER).read_bytes()
+    mls_compiled = mls_transfer_snapshot(mls_original)
+    (output / "mls_mpm_algorithm.original.h").write_bytes(mls_original)
+    mls_header = output / "mls_mpm_algorithm.h"
+    mls_header.write_bytes(mls_compiled)
     snapshots = {
         "original_header_sha256": hashlib.sha256(original).hexdigest(),
         "compiled_header_sha256": hashlib.sha256(compiled).hexdigest(),
         "driver_sha256": hashlib.sha256(driver_snapshot.read_bytes()).hexdigest(),
+        "mls_original_sha256": hashlib.sha256(mls_original).hexdigest(),
+        "mls_compiled_sha256": hashlib.sha256(mls_compiled).hexdigest(),
     }
     includes = [
         "include/core",
@@ -113,13 +156,24 @@ def build(source, output, compiler="c++", *, fix_corotated_dispatch=False):
         f"-DFIG5_FIX_COROTATED_DISPATCH={int(fix_corotated_dispatch)}",
         f'-DFIG5_HEADER_SNAPSHOT="{snapshots["compiled_header_sha256"]}"',
         f'-DFIG5_DRIVER_SNAPSHOT="{snapshots["driver_sha256"]}"',
+        f'-DFIG5_MLS_SNAPSHOT="{snapshots["mls_compiled_sha256"]}"',
         "-include",
         str(header),
     ]
+    # The build directory is first so the patched MLS header wins over upstream.
+    command.append(f"-I{output}")
     command += [f"-I{source / include}" for include in includes]
+    # Quote-includes resolve beside the translation unit before -I. Compiling
+    # the upstream cpp in place would ignore the patched MLS header.
+    solver_source = source / "src/solver/cpu_mls_mpm_solver.cpp"
+    solver_original = solver_source.read_bytes()
+    solver_compiled = solver_original
+    solver_snapshot = output / solver_source.name
+    (output / "cpu_mls_mpm_solver.original.cpp").write_bytes(solver_original)
+    solver_snapshot.write_bytes(solver_compiled)
     command += [
         str(driver_snapshot),
-        str(source / "src/solver/cpu_mls_mpm_solver.cpp"),
+        str(solver_snapshot),
         "-o",
         str(executable),
     ]
@@ -132,7 +186,10 @@ def build(source, output, compiler="c++", *, fix_corotated_dispatch=False):
         "command": command,
         "driver_revision": driver_revision,
         "fix_corotated_dispatch": fix_corotated_dispatch,
+        "fix_mls_affine_scale": False,
+        "fix_seeded_volume": False,
         "constitutive_source": CONSTITUTIVE_HEADER,
+        "mls_source": MLS_HEADER,
         "original_header_snapshot": "constitutive_models.original.h",
         "compiled_header_snapshot": header.name,
         "snapshot_integrity": snapshots,
@@ -168,10 +225,28 @@ def validate_build(build_dir):
         build_dir / "constitutive_models.h"
     ).read_bytes() != compiled:
         raise ValueError("CRESSim constitutive snapshots differ from pinned source/dispatch mode")
+    if meta.get("fix_mls_affine_scale") is not False or meta.get("fix_seeded_volume") is not False:
+        raise ValueError("CRESSim baseline build must keep the upstream APIC scale and initial volume")
+    solver_name = "cpu_mls_mpm_solver.cpp"
+    if str(build_dir / solver_name) not in meta.get("command", []):
+        raise ValueError("CRESSim build did not compile the solver beside the MLS header")
+    solver_original = (Path(meta["source"]) / "src/solver" / solver_name).read_bytes()
+    if (build_dir / "cpu_mls_mpm_solver.original.cpp").read_bytes() != solver_original or (
+        build_dir / solver_name
+    ).read_bytes() != solver_original:
+        raise ValueError("CRESSim solver snapshot differs from the pinned upstream source")
+    mls_original = (Path(meta["source"]) / MLS_HEADER).read_bytes()
+    mls_compiled = mls_transfer_snapshot(mls_original)
+    if (build_dir / "mls_mpm_algorithm.original.h").read_bytes() != mls_original or (
+        build_dir / "mls_mpm_algorithm.h"
+    ).read_bytes() != mls_compiled:
+        raise ValueError("CRESSim MLS snapshots differ from the pinned affine patch")
     snapshots = {
         "original_header_sha256": hashlib.sha256(original).hexdigest(),
         "compiled_header_sha256": hashlib.sha256(compiled).hexdigest(),
         "driver_sha256": hashlib.sha256(driver.read_bytes()).hexdigest(),
+        "mls_original_sha256": hashlib.sha256(mls_original).hexdigest(),
+        "mls_compiled_sha256": hashlib.sha256(mls_compiled).hexdigest(),
     }
     if meta.get("snapshot_integrity") != snapshots:
         raise ValueError("CRESSim snapshot integrity differs from build metadata")
@@ -184,6 +259,7 @@ def validate_build(build_dir):
         str(int(fix)),
         snapshots["compiled_header_sha256"],
         snapshots["driver_sha256"],
+        snapshots["mls_compiled_sha256"],
     ]:
         raise ValueError("CRESSim executable source/driver/patch identity differs from build metadata")
     return meta
@@ -287,6 +363,8 @@ def run(cfg, output, build_dir):
             "initial_density_floor_kg_m3": 1e-8 * mass_unit,
             "blade_impulse": "upstream nodal momentum exchange on prescribed blade",
             "pair_contact": "upstream MLS uses shared-grid transfer without an explicit pair-contact kernel",
+            "affine_transfer": "upstream MLS header stores C as (4/dx) sum w v (x_i-x_p)^T",
+            "initial_volume_assignment": "upstream grid-density estimate",
             "fixture": asdict(cfg),
         },
         "wall_s": time.perf_counter() - start,

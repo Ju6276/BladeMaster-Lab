@@ -99,6 +99,7 @@ class ContactProbe(Solver):
         self.impulses, self.board = zeros(self.n), zeros(1)
         self.speed, self.work = zeros(1, float), zeros(1, float)
         self.codes = zeros(self.n, wp.int64)
+        self.cut_released = zeros(1, int)
         self.topology_dirty = zeros(1, int)
         self.cut_index = 0
         self.max_cut_index = cut_code_capacity(config)["max_cut_index"]

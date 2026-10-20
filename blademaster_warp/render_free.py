@@ -172,6 +172,10 @@ def free_knife_video(kind, directory, output, title, fps=25):
         lo = reference.min(0) * 1000
         size = [extent[0] * 2.2, extent[1] * 4.0, 8.0]
         board = dict(size_mm=size, center_mm=[lo[0] + extent[0] / 2, lo[1] + extent[1] / 2, lo[2] - 4.0])
+        # No arm in this scene: keep the elevation, but face the side the knives enter from.
+        approach = blade_p[0].mean(0) - reference.mean(0)
+        if np.dot(direction[:2], approach[:2]) < 0:
+            direction = direction * [-1, -1, 1]
     scene = FreeScene(1280, 672, particle_radius(reference), board)
     for _ in range(blade_p.shape[1]):
         scene.add_blade(cfg["blade_half_size"], cfg["blade_bevel_height"])

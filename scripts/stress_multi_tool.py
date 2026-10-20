@@ -99,7 +99,7 @@ class ContactProbe(Solver):
         self.impulses, self.board = zeros(self.n), zeros(1)
         self.speed, self.work = zeros(1, float), zeros(1, float)
         self.codes = zeros(self.n, wp.int64)
-        self.cut_released = zeros(1, int)
+        self.cut_released = zeros(k, int)
         self.topology_dirty = zeros(1, int)
         self.cut_index = 0
         self.max_cut_index = cut_code_capacity(config)["max_cut_index"]
@@ -180,13 +180,13 @@ def capacity_stress(seed=17, device="cpu", tool_count=3, config=None):
         old = np.zeros(len(x), dtype=np.int64)
         for index in indices:
             for damage in probe.tool_damage:
-                damage.fill_(0.75)
+                damage.fill_(1.0)
             previous_index = probe.cut_index
             probe._set_cut(index)
             if index != previous_index:
                 assert all(not damage.numpy().any() for damage in probe.tool_damage)
             else:
-                assert all(np.all(damage.numpy() == 0.75) for damage in probe.tool_damage)
+                assert all(np.all(damage.numpy() == 1.0) for damage in probe.tool_damage)
             probe.contact(poses, velocities, rotations, np.zeros((tool_count, 3)), cut_index=index)
             probe.assign_sides(index, cutting=False)
             np.testing.assert_array_equal(probe.codes.numpy(), old)

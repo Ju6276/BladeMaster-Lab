@@ -222,7 +222,8 @@ class Solver:
         # First Piola stress of the current F, Fp (and Fv); written by every material step.
         self.stress = zeros(self.n, wp.mat33)
         self.codes, self.damage = zeros(self.n, wp.int64), zeros(self.n, float)
-        self.cut_released = zeros(1, int)
+        # Per knife: the current cut has paid the fracture threshold on some particle.
+        self.cut_released = zeros(cfg.tool_count, int)
         self.tool_damage = [self.damage] + [zeros(self.n, float) for _ in range(cfg.tool_count - 1)]
         # Codes used for particle-grid transfers; all zero in the single-field baseline.
         self.field_codes = self.codes
@@ -576,6 +577,7 @@ class Solver:
         if cut_index != self.cut_index:
             for damage in self.tool_damage:
                 damage.zero_()
+            self.cut_released.zero_()
             self.cut_index = cut_index
         return cut_index
 
@@ -881,8 +883,9 @@ class Solver:
     def assign_sides(self, cut_index, cutting=True):
         """Give particles crossed by the blade edge a side digit for this cut (knife i: cut_index + i)."""
         cfg = self.config
-        self.launch(c.mark_released, self.n, [self.damage, self.cut_released])
         for i, view in enumerate(self.tool_views):
+            released = self.cut_released[i : i + 1]
+            self.launch(c.mark_released, self.n, [self.tool_damage[i], released])
             self.launch(
                 c.assign,
                 self.n,
@@ -901,8 +904,8 @@ class Solver:
                     cfg.dt,
                     3 ** (cut_index + i),
                     int(cutting),
-                    self.damage,
-                    self.cut_released,
+                    self.tool_damage[i],
+                    released,
                     int(cfg.free_blade),
                     int(cfg.label_board_layer),
                     self.topology_dirty,

@@ -269,6 +269,17 @@ def test_rigid_translation_is_exact(split):
     np.testing.assert_allclose(out["deformation"], np.tile(np.eye(3), (s.n, 1, 1)), atol=1e-6)
 
 
+def test_release_is_per_cut_and_per_knife():
+    s = Solver(Config(free_blade=True, tool_count=2))
+    s.tool_damage[1].fill_(1.0)
+    s.assign_sides(0)
+    np.testing.assert_array_equal(s.cut_released.numpy(), [0, 1])
+    s._set_cut(2)
+    np.testing.assert_array_equal(s.cut_released.numpy(), [0, 0])
+    s.assign_sides(2)
+    np.testing.assert_array_equal(s.cut_released.numpy(), [0, 0])
+
+
 def test_cut_labels_persist_withdrawal_and_new_cut():
     s = Solver()
     s.damage.fill_(1.0)

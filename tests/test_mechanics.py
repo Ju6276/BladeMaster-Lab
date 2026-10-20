@@ -227,6 +227,7 @@ def test_material_step_fp64_and_momentum(viscosity):
 
 def test_cut_labels_persist_withdrawal_and_new_cut():
     s = Solver()
+    s.damage.fill_(1.0)
     s.tool_pos.assign([[0.0, 0.0, 0.03]])
     s.launch(
         c.assign,
@@ -245,6 +246,10 @@ def test_cut_labels_persist_withdrawal_and_new_cut():
             s.board_half,
             s.config.dt,
             1,
+            1,
+            s.damage,
+            s.cut_released,
+            0,
             1,
             s.topology_dirty,
         ],
@@ -270,6 +275,10 @@ def test_cut_labels_persist_withdrawal_and_new_cut():
             s.config.dt,
             1,
             1,
+            s.damage,
+            s.cut_released,
+            0,
+            1,
             s.topology_dirty,
         ],
     )
@@ -292,6 +301,10 @@ def test_cut_labels_persist_withdrawal_and_new_cut():
             s.board_half,
             s.config.dt,
             3,
+            1,
+            s.damage,
+            s.cut_released,
+            0,
             1,
             s.topology_dirty,
         ],

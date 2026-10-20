@@ -43,6 +43,11 @@ class Config:
     # Intact particles in the edge's path are pushed only along the cutting
     # direction, so they cannot slide around the edge before damage reaches 1.
     cut_hold: bool = False
+    # Lateral half-width of the pre-edge work band, in grid cells. Zero leaves
+    # only the exact midplane; six is the band used by the paper's side labels.
+    cut_band_cells: float = 6.0
+    # Particles pinched on the board beside a resting edge receive a side label.
+    label_board_layer: bool = True
     # Particle-to-knife contact distance in metres; 0 uses the particle radius h/4.
     # Raised to at least h/4 minus the blade half thickness, otherwise a blade
     # between two particle columns touches neither.
@@ -132,6 +137,8 @@ class Config:
             raise ValueError("Board normal scale must be in [0, 1]")
         if min(self.board_half_extent) < 0:
             raise ValueError("Board half extent must be non-negative")
+        if self.cut_band_cells < 0:
+            raise ValueError("Cut band width must be non-negative")
         if not 0 <= self.blade_bevel_height < 2 * self.blade_half_size[2]:
             raise ValueError("Invalid blade geometry")
         if sum((self.free_blade, self.pose_servo, self.external_tool)) > 1:
@@ -215,6 +222,7 @@ class Solver:
         # First Piola stress of the current F, Fp (and Fv); written by every material step.
         self.stress = zeros(self.n, wp.mat33)
         self.codes, self.damage = zeros(self.n, wp.int64), zeros(self.n, float)
+        self.cut_released = zeros(1, int)
         self.tool_damage = [self.damage] + [zeros(self.n, float) for _ in range(cfg.tool_count - 1)]
         # Codes used for particle-grid transfers; all zero in the single-field baseline.
         self.field_codes = self.codes
@@ -285,6 +293,9 @@ class Solver:
         self.reaction, self.torque = zeros(k, wp.vec3), zeros(k, wp.vec3)
         self.board = zeros(1, wp.vec3)
         self.work = zeros(1, float)
+        # Diagnostic split only. 0 broad-face normal, 1 edge or bevel normal,
+        # 2 friction, 3 grid-face constraint. The impulses themselves are unchanged.
+        self.contact_parts = zeros(4, wp.vec3)
         self.tool_table_impulse = zeros(k, wp.vec3)
         # Knife 0 uses the full arrays (kernels read element 0); knife i > 0 uses views.
         self.tool_views = [
@@ -604,6 +615,7 @@ class Solver:
                 self.radius,
                 self.blade_offset,
                 cfg.grid_spacing,
+                cfg.cut_band_cells,
                 self.mass,
                 cfg.blade_mass,
                 self.inertia_inv,
@@ -626,6 +638,7 @@ class Solver:
                 self.torque,
                 self.board,
                 self.work,
+                self.contact_parts,
             ],
         )
         for i in range(1, cfg.tool_count):
@@ -644,6 +657,7 @@ class Solver:
                     cfg.blade_bevel_height,
                     self.blade_offset,
                     cfg.grid_spacing,
+                    cfg.cut_band_cells,
                     self.mass,
                     cfg.blade_mass,
                     self.inertia_inv,
@@ -664,6 +678,7 @@ class Solver:
                     view["reaction"],
                     view["torque"],
                     self.work,
+                    self.contact_parts,
                 ],
             )
 
@@ -866,6 +881,7 @@ class Solver:
     def assign_sides(self, cut_index, cutting=True):
         """Give particles crossed by the blade edge a side digit for this cut (knife i: cut_index + i)."""
         cfg = self.config
+        self.launch(c.mark_released, self.n, [self.damage, self.cut_released])
         for i, view in enumerate(self.tool_views):
             self.launch(
                 c.assign,
@@ -885,6 +901,10 @@ class Solver:
                     cfg.dt,
                     3 ** (cut_index + i),
                     int(cutting),
+                    self.damage,
+                    self.cut_released,
+                    int(cfg.free_blade),
+                    int(cfg.label_board_layer),
                     self.topology_dirty,
                 ],
             )

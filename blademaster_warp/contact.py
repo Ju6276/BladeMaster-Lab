@@ -191,6 +191,7 @@ def resist_cut(
     half: wp.vec3,
     radius: float,
     spacing: float,
+    band: float,
     damage: wp.array(dtype=float),
     threshold: float,
     cutting: int,
@@ -215,7 +216,7 @@ def resist_cut(
     ahead_of_edge = (
         front >= 0.0
         and front <= 2.0 * radius
-        and wp.abs(local_edge[0]) <= 6.0 * spacing
+        and wp.abs(local_edge[0]) <= band * spacing
         and wp.abs(local_edge[1]) <= half[1]
     )
     if not ahead_of_edge:
@@ -245,6 +246,7 @@ def blade_at(
     bevel: float,
     blade_offset: float,
     spacing: float,
+    band: float,
     mass: float,
     blade_mass: float,
     inertia_inv: wp.vec3,
@@ -264,6 +266,7 @@ def blade_at(
     reaction: wp.array(dtype=wp.vec3),
     torque: wp.array(dtype=wp.vec3),
     work: wp.array(dtype=float),
+    parts: wp.array(dtype=wp.vec3),
 ):
     """Blade contact impulse on particle p: closest point on the (beveled) box,
     relative velocity at that point. Friction history in histories[row, p]."""
@@ -318,6 +321,7 @@ def blade_at(
                         half,
                         blade_offset,
                         spacing,
+                        band,
                         damage,
                         threshold,
                         cutting,
@@ -326,6 +330,16 @@ def blade_at(
                 result = j_blade
                 wp.atomic_add(reaction, 0, -j_blade)
                 wp.atomic_add(torque, 0, -wp.cross(lever, j_blade))
+                # Bookkeeping for the reported reaction. The broad face is the
+                # only feature whose normal is exactly the thickness axis. This
+                # bevel is nearly horizontal, so a loose threshold would file it
+                # as a face. Friction is the tangential remainder.
+                normal_impulse = wp.dot(j_blade, n) * n
+                slot = int(1)
+                if wp.abs(normal_local[1]) < 1.0e-6 and wp.abs(normal_local[2]) < 1.0e-6:
+                    slot = 0
+                wp.atomic_add(parts, slot, -normal_impulse)
+                wp.atomic_add(parts, 2, -(j_blade - normal_impulse))
     return result
 
 
@@ -343,6 +357,7 @@ def rigid_at(
     radius: float,
     blade_offset: float,
     spacing: float,
+    band: float,
     mass: float,
     blade_mass: float,
     inertia_inv: wp.vec3,
@@ -365,6 +380,7 @@ def rigid_at(
     torque: wp.array(dtype=wp.vec3),
     board: wp.array(dtype=wp.vec3),
     work: wp.array(dtype=float),
+    parts: wp.array(dtype=wp.vec3),
 ):
     """Gravity, board contact and blade contact impulse on particle p."""
     xp = x[p]
@@ -396,6 +412,7 @@ def rigid_at(
         bevel,
         blade_offset,
         spacing,
+        band,
         mass,
         blade_mass,
         inertia_inv,
@@ -415,6 +432,7 @@ def rigid_at(
         reaction,
         torque,
         work,
+        parts,
     )
     impulse[p] = total
 
@@ -433,6 +451,7 @@ def rigid_and_speed(
     radius: float,
     blade_offset: float,
     spacing: float,
+    band: float,
     mass: float,
     blade_mass: float,
     inertia_inv: wp.vec3,
@@ -455,6 +474,7 @@ def rigid_and_speed(
     torque: wp.array(dtype=wp.vec3),
     board: wp.array(dtype=wp.vec3),
     work: wp.array(dtype=float),
+    parts: wp.array(dtype=wp.vec3),
 ):
     """Rigid contacts for every particle, and the maximum particle speed for the pair search."""
     p = wp.tid()
@@ -472,6 +492,7 @@ def rigid_and_speed(
         radius,
         blade_offset,
         spacing,
+        band,
         mass,
         blade_mass,
         inertia_inv,
@@ -494,6 +515,7 @@ def rigid_and_speed(
         torque,
         board,
         work,
+        parts,
     )
 
 
@@ -509,6 +531,7 @@ def extra_blade(
     bevel: float,
     blade_offset: float,
     spacing: float,
+    band: float,
     mass: float,
     blade_mass: float,
     inertia_inv: wp.vec3,
@@ -529,6 +552,7 @@ def extra_blade(
     reaction: wp.array(dtype=wp.vec3),
     torque: wp.array(dtype=wp.vec3),
     work: wp.array(dtype=float),
+    parts: wp.array(dtype=wp.vec3),
 ):
     """Add the contact impulse of one more blade (after rigid_and_speed)."""
     p = wp.tid()
@@ -544,6 +568,7 @@ def extra_blade(
         bevel,
         blade_offset,
         spacing,
+        band,
         mass,
         blade_mass,
         inertia_inv,
@@ -563,6 +588,7 @@ def extra_blade(
         reaction,
         torque,
         work,
+        parts,
     )
 
 
@@ -994,6 +1020,16 @@ def pairs_all(
 
 
 @wp.kernel
+def mark_released(
+    damage: wp.array(dtype=float),
+    released: wp.array(dtype=int),
+):
+    """Remember that this cut has paid the fracture threshold on at least one particle."""
+    if damage[wp.tid()] >= 1.0:
+        wp.atomic_max(released, 0, 1)
+
+
+@wp.kernel
 def assign(
     x: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
@@ -1009,6 +1045,10 @@ def assign(
     dt: float,
     digit: wp.int64,
     cutting: int,
+    damage: wp.array(dtype=float),
+    released: wp.array(dtype=int),
+    free_blade: int,
+    label_board: int,
     topology_dirty: wp.array(dtype=int),
 ):
     p = wp.tid()
@@ -1030,8 +1070,20 @@ def assign(
         board_half[1] == 0.0 or wp.abs(xp[1]) <= board_half[1]
     )
     edge_here = edge + wp.quat_rotate(tool_rot[0], wp.vec3(0.0, local[1], 0.0))
-    pinched = on_board and edge_here[2] <= radius and xp[2] <= edge_here[2] + radius
-    if wp.abs(local[0]) <= 6.0 * spacing and wp.abs(local[1]) <= half[1] and (behind or pinched):
+    pinched = (
+        label_board != 0
+        and on_board
+        and edge_here[2] <= radius
+        and xp[2] <= edge_here[2] + radius
+    )
+    # Driven cuts keep the geometric band: the robot dwells until the cut is paid.
+    # A free knife opens that band only after some particle has paid for the cut,
+    # so a sharp knife finishes the plane and a dull knife, which never pays,
+    # stays inside the block. Particles pinched on the board stay labeled.
+    opened = free_blade == 0 or damage[p] >= 1.0 or released[0] != 0
+    if wp.abs(local[0]) <= 6.0 * spacing and wp.abs(local[1]) <= half[1] and (
+        (behind and opened) or pinched
+    ):
         side = int(2)
         if local[0] < 0.0:
             side = 1

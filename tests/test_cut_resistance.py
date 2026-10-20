@@ -35,6 +35,7 @@ def edge_resistance_probe(
         wp.vec3(0.0005, 0.025, 0.02),
         0.0015,
         0.006,
+        6.0,
         damage,
         0.001,
         contact.CUT_ON,

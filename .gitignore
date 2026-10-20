@@ -5,3 +5,4 @@ __pycache__/
 runs/
 *.pstats
 .DS_Store
+._*

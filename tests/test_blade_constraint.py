@@ -119,6 +119,33 @@ def test_held_blade_stops_shared_cut_fields_without_virtual_motion_or_restitutio
     assert not solver.errors.numpy().any()
 
 
+def test_embedded_center_is_placed_on_the_entry_face_without_added_speed(solver):
+    half = solver.config.blade_half_size[0]
+    positions = np.full((solver.n, 3), 1.0, np.float32)
+    velocity = np.zeros((solver.n, 3), np.float32)
+    side = np.zeros(solver.n, np.float32)
+    # Inside the entry face, past the midplane, and already outside.
+    positions[:3] = [[0.0, 0.001, 0.002], [-0.0002, 0.001, 0.002], [half + 0.001, 0.001, 0.002]]
+    velocity[:3] = [[-0.4, 0.1, 0.2], [-0.3, -0.05, 0.04], [-0.2, 0.0, 0.0]]
+    side[:2] = 1.0
+    solver.x.assign(positions)
+    solver.v.assign(velocity)
+    solver.blade_constraint.side.assign(side)
+
+    solver.blade_constraint.separate()
+    corrected = solver.x.numpy()
+    speed = solver.v.numpy()
+    assert corrected[0, 0] == pytest.approx(half, abs=1e-6)
+    assert corrected[1, 0] == pytest.approx(half, abs=1e-6)
+    np.testing.assert_allclose(corrected[2], positions[2], atol=1e-7)
+    np.testing.assert_allclose(corrected[:3, 1:], positions[:3, 1:], atol=1e-7)
+    # Inward speed is removed. No outward speed is introduced.
+    np.testing.assert_allclose(speed[0], [0.0, 0.1, 0.2], atol=1e-6)
+    np.testing.assert_allclose(speed[1], [0.0, -0.05, 0.04], atol=1e-6)
+    np.testing.assert_allclose(speed[2], velocity[2], atol=1e-7)
+    assert not solver.errors.numpy().any()
+
+
 def test_entry_side_survives_midplane_crossing_and_resets_after_finite_edge_exit(solver):
     slots, weights, masses = shared_grid(solver, np.zeros(solver.n, np.int64))
     positions = np.full((solver.n, 3), 1.0, np.float32)

@@ -83,9 +83,24 @@ class ExternalToolPort:
         self.trajectory = None
         self.trajectory_times = None
         self._results = {}
+        self._replays = {}
+        self._pack = np.empty(49, np.float32)
+        self._pending = None
         self.timing_s = dict(submission=0.0, completion_and_readback=0.0)
 
     def advance(self, state, duration_s, *, cutting=True, cut_index=0, graph=True):
+        self.begin(state, duration_s, cutting=cutting, cut_index=cut_index, graph=graph)
+        return self.finish()
+
+    def begin(self, state, duration_s, *, cutting=True, cut_index=0, graph=True):
+        """Queue one coupling interval without waiting for the device.
+
+        The tool state is fixed here. ``finish`` reads the wrench. Host work
+        that does not need that wrench can run between the two calls, while
+        the already queued substeps execute.
+        """
+        if self._pending is not None:
+            raise RuntimeError("The previous coupling interval has not been read back")
         submission_begin = time.perf_counter()
         state = state.checked()
         s = self.solver
@@ -103,73 +118,52 @@ class ExternalToolPort:
             if steps not in self._results:
                 self._results[steps] = wp.zeros(10 + 7 * samples, dtype=float, device=s.device)
             self.result = self._results[steps]
-        self.packed.assign(
-            np.concatenate(
-                [
-                    state.position,
-                    state.orientation_xyzw,
-                    state.linear_velocity,
-                    state.angular_velocity,
-                    state.mobility.ravel(),
-                ]
-            ).astype(np.float32)
-        )
-        load = (
-            tool.load_external_state,
-            1,
-            [
-                self.packed,
-                s.tool_pos,
-                s.tool_rot,
-                s.tool_vel,
-                s.tool_omega,
-                s.tool_mobility,
-                s.interval_impulse,
-                s.interval_angular_impulse,
-            ],
-        )
-        finish = [
-            (validate_interval, s.n, [s.x, s.v, s.F, s.errors]),
-            (tool.store_interval, 1, [s.interval_impulse, s.interval_angular_impulse, s.errors, self.result]),
-        ]
-        if s.blade_constraint is not None:
-            finish.append((store_residual, 1, [s.blade_constraint.max_violation, self.result]))
-        before = [load]
-        sample = None
-        if self.record_trajectory:
-
-            def sample(i):
-                # In hold mode every intermediate pose is bitwise identical.
-                if not held_pose or i == steps - 1:
-                    index = 1 if held_pose else i + 1
-                    s.launch(tool.record_pose, 1, [s.tool_pos, s.tool_rot, index, self.result])
-
-            before.append((tool.record_pose, 1, [s.tool_pos, s.tool_rot, 0, self.result]))
+        pack = self._pack
+        pack[0:3] = state.position
+        pack[3:7] = state.orientation_xyzw
+        pack[7:10] = state.linear_velocity
+        pack[10:13] = state.angular_velocity
+        pack[13:49] = state.mobility.ravel()
+        self.packed.assign(pack)
         if graph:
-            # One replay per interval: loading the tool state and storing the result are in the graph.
-            unused_targets = np.zeros((steps, 3), dtype=np.float32)
-            _, _, captured = s.prepare(
-                unused_targets,
-                cutting,
-                cut_index,
-                before=before,
-                after=finish,
-                tag=("external", id(self)),
-                after_step=sample,
+            # Friction history swaps buffers each substep, so a captured interval
+            # is valid only for the parity it was recorded at. Replaying it
+            # launches that same graph; the captured arrays keep their identity.
+            key = (
+                steps,
+                bool(cutting),
+                int(cut_index),
+                s.step_count % 2,
+                bool(s.single_field),
+                bool(self.record_trajectory),
             )
-            wp.capture_launch(captured)
+            replay = self._replays.get(key)
+            if replay is None:
+                replay = self._capture(steps, cutting, cut_index, held_pose, samples)
+                self._replays[key] = replay
+            else:
+                self._launch_graph(replay)
             s.step_count += steps
         else:
+            before, after, sample = self._boundary(held_pose, steps, samples)
             for launch in before:
                 s.launch(*launch)
-            for _ in range(steps):
+            for i in range(steps):
                 s._step_kernels((0.0, 0.0, 0.0), cutting, cut_index)
                 if sample is not None:
-                    sample(_)
-            for launch in finish:
+                    sample(i)
+            for launch in after:
                 s.launch(*launch)
+        self.timing_s["submission"] += time.perf_counter() - submission_begin
+        self._pending = (state, float(duration_s), samples)
+
+    def finish(self):
+        """Wait for the queued interval and return its wrench."""
+        if self._pending is None:
+            raise RuntimeError("No coupling interval is waiting for readback")
+        state, duration_s, samples = self._pending
+        self._pending = None
         readback_begin = time.perf_counter()
-        self.timing_s["submission"] += readback_begin - submission_begin
         # This wait includes any kernels still running when the host reaches
         # the readback; it is not a standalone PCIe transfer measurement.
         out = self.result.numpy().astype(np.float64)
@@ -186,4 +180,66 @@ class ExternalToolPort:
             )
         if not np.isfinite(out[-1]) or out[-1] > 1.0e-6:
             raise RuntimeError(f"Blade grid contact did not converge: inward residual {out[-1]:.6g} m/s")
-        return Reaction(float(duration_s), impulse, angular, state.position.copy())
+        return Reaction(duration_s, impulse, angular, state.position.copy())
+
+    def _boundary(self, held_pose, steps, samples):
+        s = self.solver
+        load = (
+            tool.load_external_state,
+            1,
+            [
+                self.packed,
+                s.tool_pos,
+                s.tool_rot,
+                s.tool_vel,
+                s.tool_omega,
+                s.tool_mobility,
+                s.interval_impulse,
+                s.interval_angular_impulse,
+            ],
+        )
+        after = [
+            (validate_interval, s.n, [s.x, s.v, s.F, s.errors]),
+            (tool.store_interval, 1, [s.interval_impulse, s.interval_angular_impulse, s.errors, self.result]),
+        ]
+        if s.blade_constraint is not None:
+            after.append((store_residual, 1, [s.blade_constraint.max_violation, self.result]))
+        before = [load]
+        sample = None
+        if self.record_trajectory:
+
+            def sample(i, _held=held_pose, _steps=steps):
+                # In hold mode every intermediate pose is bitwise identical.
+                if not _held or i == _steps - 1:
+                    index = 1 if _held else i + 1
+                    s.launch(tool.record_pose, 1, [s.tool_pos, s.tool_rot, index, self.result])
+
+            before.append((tool.record_pose, 1, [s.tool_pos, s.tool_rot, 0, self.result]))
+        return before, after, sample
+
+    def _capture(self, steps, cutting, cut_index, held_pose, samples):
+        before, after, sample = self._boundary(held_pose, steps, samples)
+        # One replay per interval: loading the tool state and storing the result are in the graph.
+        unused_targets = np.zeros((steps, 3), dtype=np.float32)
+        _, _, captured = self.solver.prepare(
+            unused_targets,
+            cutting,
+            cut_index,
+            before=before,
+            after=after,
+            tag=("external", id(self)),
+            after_step=sample,
+        )
+        wp.capture_launch(captured)
+        stream = captured.device.stream.cuda_stream if captured.device.is_cuda else None
+        return captured, captured.graph_exec, stream
+
+    def _launch_graph(self, replay):
+        captured, graph_exec, cuda_stream = replay
+        if not captured.device.is_cuda:
+            wp.capture_launch(captured)
+            return
+        from warp._src.context import runtime
+
+        if not runtime.core.wp_cuda_graph_launch(graph_exec, cuda_stream):
+            raise RuntimeError(runtime.get_error_string() or "CUDA graph launch failed")

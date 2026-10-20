@@ -284,6 +284,7 @@ class MlsSolver:
             self.board = wp.zeros(1, dtype=wp.vec3)
             self.speed = wp.zeros(1, dtype=float)
             self.work = wp.zeros(1, dtype=float)
+            self.contact_parts = wp.zeros(4, dtype=wp.vec3)
             self.impulse = wp.zeros(1, dtype=wp.vec3)
             self.angular_impulse = wp.zeros(1, dtype=wp.vec3)
             self.inversions = wp.zeros(1, dtype=int)
@@ -310,6 +311,7 @@ class MlsSolver:
                 self.radius,
                 self.blade_offset,
                 dx,
+                cfg.cut_band_cells,
                 self.mass,
                 cfg.blade_mass,
                 wp.vec3(0.0),
@@ -332,6 +334,7 @@ class MlsSolver:
                 self.torque,
                 self.board,
                 self.work,
+                self.contact_parts,
             ],
         )
         wp.launch(

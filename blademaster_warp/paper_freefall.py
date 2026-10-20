@@ -27,6 +27,8 @@ def run(
     normal_scale=1.0,
     board_normal_scale=1.0,
     cut_hold=False,
+    cut_band_cells=6.0,
+    label_board_layer=True,
     tilt_axis="thickness",
     cut_work="relative",
     grid_spacing=0.01,
@@ -50,6 +52,8 @@ def run(
         normal_scale=normal_scale,
         board_normal_scale=board_normal_scale,
         cut_hold=cut_hold,
+        cut_band_cells=cut_band_cells,
+        label_board_layer=label_board_layer,
         cut_work=cut_work,
         contact_reference_dt=contact_reference_dt,
     )
@@ -155,6 +159,7 @@ def run(
     }
     write(out / "result.json", result)
     print(result, flush=True)
+    return result
 
 
 if __name__ == "__main__":

@@ -366,6 +366,14 @@ class Franka:
         wrench = np.zeros(6) if wrench is None else np.asarray(wrench, dtype=float)
         if target.shape != (3,) or wrench.shape != (6,) or not np.isfinite([*target, *wrench]).all():
             raise ValueError("Invalid robot command/wrench")
+        requested = self.prepare_actuation(target, target_rotation)
+        return self.integrate(wrench, requested)
+
+    def prepare_actuation(self, target, target_rotation=None):
+        """Command joint torques from the current pose. The material wrench is not required."""
+        target = np.asarray(target, dtype=float)
+        if target.shape != (3,) or not np.isfinite(target).all():
+            raise ValueError("Invalid robot command")
         rotation = self.initial_rotation if target_rotation is None else np.asarray(target_rotation)
         if self.controller == "libfranka":
             qr = quat_xyzw(self.control_rotation.T @ rotation)
@@ -381,6 +389,15 @@ class Franka:
             requested = self.impedance(self.data, target, quat, HOME[:7])
         limits = self.model.actuator_ctrlrange[:7]
         self.data.ctrl[:7] = np.clip(requested, limits[:, 0], limits[:, 1])
+        return requested
+
+    def integrate(self, wrench=None, requested=None):
+        """Apply the interval wrench and advance MuJoCo one control step."""
+        wrench = np.zeros(6) if wrench is None else np.asarray(wrench, dtype=float)
+        if wrench.shape != (6,) or not np.isfinite(wrench).all():
+            raise ValueError("Invalid robot wrench")
+        if requested is None:
+            requested = np.zeros(7)
         self.data.qfrc_applied[:] = 0
         mj.mj_applyFT(
             self.model, self.data, wrench[:3], wrench[3:], self.position, self.body, self.data.qfrc_applied

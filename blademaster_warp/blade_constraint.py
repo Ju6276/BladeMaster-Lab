@@ -1,10 +1,11 @@
 """Prevent grid transport through the broad faces of an externally held blade.
 
-The original penalty, friction and cutting-work laws run first. This correction
-acts on the grid velocity that actually moves particles, using W = N^T M^-1 C N
-with the solver's compatible-field exchange. It adds no overlap recovery or
-restitution. The external body's pose is fixed during these material substeps;
-its measured mobility and the returned reaction remain in the original coupling.
+The original penalty, friction and cutting-work laws run first. The velocity
+solve uses W = N^T M^-1 C N with the solver's compatible-field exchange and does
+not add restitution. A center that is already inside a broad face is then moved
+to that face, and only an inward normal velocity is removed. The external body's
+pose is fixed during these material substeps; its measured mobility and the
+returned reaction remain in the original coupling.
 """
 
 import warp as wp
@@ -195,6 +196,11 @@ def apply_grid(
 
 
 @wp.kernel
+def add_constraint_part(linear: wp.array(dtype=wp.vec3), parts: wp.array(dtype=wp.vec3)):
+    parts[3] = parts[3] - linear[0]
+
+
+@wp.kernel
 def apply_reaction(
     linear: wp.array(dtype=wp.vec3),
     angular: wp.array(dtype=wp.vec3),
@@ -208,6 +214,34 @@ def apply_reaction(
 @wp.kernel
 def store_residual(maximum: wp.array(dtype=float), result: wp.array(dtype=float)):
     result[result.shape[0] - 1] = maximum[0]
+
+
+@wp.kernel
+def separate_embedded(
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    position: wp.array(dtype=wp.vec3),
+    rotation: wp.array(dtype=wp.quat),
+    half: wp.vec3,
+    bevel: float,
+    side: wp.array(dtype=float),
+):
+    """Place an embedded center on its remembered face without adding outward speed."""
+    p = wp.tid()
+    s = side[p]
+    if s == 0.0:
+        return
+    local = wp.quat_rotate_inv(rotation[0], x[p] - position[0])
+    if wp.abs(local[1]) >= half[1] or local[2] <= -half[2] + bevel or local[2] >= half[2]:
+        return
+    gap = s * local[0] - half[0]
+    if gap >= 0.0:
+        return
+    normal = wp.quat_rotate(rotation[0], wp.vec3(s, 0.0, 0.0))
+    x[p] = x[p] - gap * normal
+    inward = wp.dot(v[p], normal)
+    if inward < 0.0:
+        v[p] = v[p] - inward * normal
 
 
 class BladeConstraint:
@@ -283,6 +317,15 @@ class BladeConstraint:
         )
         wp.capture_if(self.needs_solve, self._iterations)
 
+    def separate(self):
+        """Move centers that remain inside a broad face onto that face."""
+        s = self.solver
+        s.launch(
+            separate_embedded,
+            s.n,
+            [s.x, s.v, s.tool_pos, s.tool_rot, s.half, s.config.blade_bevel_height, self.side],
+        )
+
     def _iterations(self):
         s = self.solver
         s._couple(self.grid, self.coupled)
@@ -292,6 +335,7 @@ class BladeConstraint:
         wp.capture_while(self.refine, self._refine)
         s.launch(apply_grid, s.grid_capacity, [s.grid_mass, self.coupled, s.new_v])
         s.launch(apply_reaction, 1, [self.linear, self.angular, s.reaction, s.torque])
+        s.launch(add_constraint_part, 1, [self.linear, s.contact_parts])
 
     def _refine(self):
         s = self.solver

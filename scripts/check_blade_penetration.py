@@ -11,8 +11,9 @@ python -m scripts.check_blade_penetration --prepared runs/penetration-check \
 The diagnostic NPZ mixes pre-step x/v/stress with post-step F. Its archived
 solver reconstructs pre-step F, Fp and friction history from the recording.
 Subsequent checks use the current Solver, a held tool pose/twist/mobility, and
-fixed physical contact stiffness. Positive height is the captured entry side;
-the zero threshold is the blade midplane, not its outer face or proxy offset.
+fixed physical contact stiffness. Positive height is the captured entry side. The zero height is the blade
+midplane. Face clearance subtracts the blade half-thickness: a positive
+midplane height can still lie inside the blade body.
 """
 
 import argparse
@@ -288,6 +289,9 @@ def evaluate(config, state, arrays, details, device, dt, duration, output, targe
     events, reactions = [], []
     worst = None
     tracked = initial_positive & initial_interior
+    face_tolerance = 1.0e-6
+    embedded_post_steps = 0
+    min_post_step_face_clearance = np.inf
     for step in range(steps + 1):
         if step:
             reaction = port.advance(state, dt, cutting=False, cut_index=details["cut_index"], graph=graph)
@@ -312,6 +316,13 @@ def evaluate(config, state, arrays, details, device, dt, duration, output, targe
                 )
             crossed |= crossing
             tracked |= (heights > 0) & (margins > solver.radius)
+            face_clearance = heights - config.blade_half_size[0]
+            entered = initial_positive & (margins > 0)
+            if entered.any():
+                step_clearance = float(np.min(face_clearance[entered]))
+                min_post_step_face_clearance = min(min_post_step_face_clearance, step_clearance)
+                if step_clearance < -face_tolerance:
+                    embedded_post_steps += 1
             height_trace.append(heights)
             margin_trace.append(margins)
         relevant = tracked & (margins > solver.radius)
@@ -356,7 +367,16 @@ def evaluate(config, state, arrays, details, device, dt, duration, output, targe
             if getattr(solver, "blade_constraint", None) is not None
             else None
         ),
-        passed=not crossed.any() and not any(gpu_errors),
+        min_post_step_face_clearance_m=(
+            None if not np.isfinite(min_post_step_face_clearance) else float(min_post_step_face_clearance)
+        ),
+        embedded_post_steps=int(embedded_post_steps),
+        passed=(
+            not crossed.any()
+            and not any(gpu_errors)
+            and embedded_post_steps == 0
+            and min_post_step_face_clearance >= -face_tolerance
+        ),
     )
     if 0 <= target < solver.n:
         result["target"] = dict(
@@ -454,6 +474,8 @@ def main():
                         "dt_s",
                         "new_crossing_count",
                         "new_crossing_ids",
+                        "min_post_step_face_clearance_m",
+                        "embedded_post_steps",
                         "worst_state",
                         "target",
                         "passed",

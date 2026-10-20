@@ -57,6 +57,11 @@ def test_interval_accumulation_matches_single_substeps():
     ra = pa.advance(state, 9 * a.config.dt, graph=True)
     rb = pb.advance(state, 9 * b.config.dt, graph=False)
     np.testing.assert_allclose(ra.impulse_ns, rb.impulse_ns, atol=2.0e-9)
+    # Nine substeps flips the history parity, so the next call replays the first graph.
+    ra = pa.advance(state, 9 * a.config.dt, graph=True)
+    rb = pb.advance(state, 9 * b.config.dt, graph=False)
+    np.testing.assert_allclose(ra.impulse_ns, rb.impulse_ns, atol=2.0e-9)
+    np.testing.assert_allclose(a.x.numpy(), b.x.numpy(), atol=1.0e-7)
 
 
 def test_moment_shift_and_power_invariance():

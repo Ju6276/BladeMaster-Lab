@@ -319,7 +319,36 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_validate --output runs/diff_clean
 - AD 对各档有限差分的最大相对误差：E 梯度 **0.201%**；刀位梯度 **0.00367%**。分段重算与完整反传的 E 梯度差 **0.000797%**。
 - 与原求解器的最大正向差：位置 **7.46e-9 m**、速度 **5.07e-7 m/s**、F **2.39e-7**、刀力 **4.58e-7 N**。
 - 27 项可微测试通过：应力的单位阵/重复伸长/剪切/旋转导数，初始速度与 F 方向导数，两个网格的正向结果，分段长度 1/7/32 的 VJP，粘着与滑动接触。
-- 4090 工作目录 `~/Projects/BladeMaster-Warp-diff-20261021`，报告 `runs/diff_clean/report.json`。下一步：长轨迹资源扫描、接触切换扫描和推压轨迹优化对照，见 DIFFERENTIABLE。
+- 4090 工作目录 `~/Projects/BladeMaster-Warp-diff-20261021`，报告 `runs/diff_clean/report.json`。
+
+### 长轨迹与接触切换
+
+2026-10-21，提交 `32f0378`（dirty=false），RTX 4090。两个网格、32/128/512 步自由弹性运动（重力为零），22 组完整/分段反传：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_horizon --output runs/diff_32f0378_horizon
+PYTHONPATH=. .venv/bin/python -m scripts.diff_contact_scan --output runs/diff_32f0378_contact
+```
+
+- AD 对两档有限差分的最大相对误差：E **0.812%**、初始速度方向 **0.0137%**、初始 F 方向 **0.0419%**。检查点对完整反传：E **0.00171%**，初始 F 的相对 L2 差 **0.00152%**。
+- 972 粒子、512 步（102.4 ms）：完整 Tape 峰值 CUDA 数组内存 **112.34 MiB**，前向 **0.1255 s**、反向 **0.0546 s**；32 步分段为 **9.21 MiB**，前向 **0.1076 s**、重算 **0.1306 s**、反向 **0.0637 s**。
+- 接触核的 116 档差分中，88 档保持同一分支，非零导数最大相对误差 **0.0475%**；零导数最大绝对误差 **4.81e-11**。其余 28 档跨接触或粘滑切换。零历史、压入 0.3 mm 时，临界切向速度 **1.00623 m/s**，静摩擦转动摩擦的切向力下降 **33.33%**。
+
+### 推压刀路优化
+
+2026-10-21，提交 `32f0378`（dirty=false），RTX 4090。288 粒子、128 步（25.6 ms）、四段刀速，目标为左侧四分之一粒子的末端位置；各方法共用五组初始刀路，初始 RMSE 为 **2.04–2.72 mm**。每组预算 20 s，成功条件为位置 RMSE ≤ 0.05 mm、刀力 ≤ 2 N，完整设置见 DIFFERENTIABLE。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_optimize --output runs/diff_32f0378_optimize
+```
+
+| 方法 | 成功数 | 最终 RMSE 中位数 | 达标时间中位数 | 前向次数中位数 | 峰值 CUDA 数组内存 |
+|---|---|---|---|---|---|
+| AD + Adam | 5/5 | 0.03681 mm | 8.35 s | 258 | 10.64 MiB |
+| FD + Adam | 2/5 | 0.05142 mm | >20 s | 746 | 0.157 MiB |
+| CMA-ES | 4/5 | 0.04915 mm | 8.23 s | 745 | 0.157 MiB |
+
+达标时间中位数将未成功样本记为 >20 s。AD 每次评估的前向/反向中位耗时约 **48.2/22.4 ms**；无梯度前向约 **26.7 ms**。15 条最优刀路的最大刀力 **0.392 N**；原求解器重放的最大位置差 **0.486 μm**。各初始刀路的四档差分与接触分支变化保存在报告 `initial_gradient_check`；接触与摩擦公式保持原值。
 
 ## 计时
 
@@ -344,7 +373,7 @@ Fig. 1 三刀，含 Franka、表面和录制（2026-10-20，提交 `8fad2c5`，R
 
 ## 测试
 
-2026-10-21：全量 **596 passed、8 skipped、18 subtests passed**，132.07 s。8 项跳过为 CRESSim 上游构建未配置。三刀置换测试有一次位置差 1.01e-7 m 超过 7.5e-8 m 容差；原基线定向复测 3/3、新实现定向与最终全量测试均通过，算法与容差保持原值。
+2026-10-21，提交 `32f0378`：全量 **603 passed、8 skipped、18 subtests passed**，135.58 s。8 项跳过为 CRESSim 上游构建未配置。三刀置换测试此前有一次位置差 1.01e-7 m 超过 7.5e-8 m 容差；原基线定向复测 3/3、新实现定向与最终全量测试均通过，算法与容差保持原值。
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest tests -q

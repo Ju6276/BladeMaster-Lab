@@ -266,12 +266,13 @@ Fig. 8 连续薄切（满分 5）：
 ## BladeMaster 力的收敛
 
 ```bash
-python -m scripts.force_seed_scan ...
-python -m scripts.timestep_reference ...
-python -m scripts.force_convergence ...
+python -m scripts.force_convergence --spacings .0025 .002 .0015 --seeds 20 \
+  --blade-contact-radius 0 --output runs/force_particle_radius
+python -m scripts.force_convergence --spacings .0025 .002 .0015 --seeds 5 \
+  --blade-contact-radius .0005 --output runs/force_fixed_radius
 ```
 
-所有组都切成两块，GPU 错误为 0。
+以下 20 种子结果来自 `runs/force_seed_scan_20261019/rows.jsonl`（2026-10-19，commit `51ac3ee`，dirty=true）。所有组都切成两块，GPU 错误为 0。
 
 | 网格 | 稳态切割力（20 个种子） | 变异系数 |
 |---|---|---|
@@ -288,19 +289,38 @@ python -m scripts.force_convergence ...
 
 ![力收敛](media/force_convergence.png)
 
+### 阈值灵敏度
+
+2026-10-21，commit `79d176e`，RTX 4090；2.5 mm、seed=1、粒子半径接触。\(G_c=700/1400\) 时，0.4–1.4 s 平均竖直力为 **0.83729 / 0.83694 N**，相差 0.041%；达损伤阈值粒子数均为 0，两次均分成两块。该工况下平台力对这次阈值加倍变化很小。
+
+```bash
+PYTHONPATH=. .venv/bin/python - <<'PY'
+from dataclasses import replace
+from scripts import force_convergence as study
+preset = study.banana_config
+for energy in (700.0, 1400.0):
+    study.banana_config = lambda: replace(preset(), cutting_energy=energy)
+    run = study.cut_trace(.0025, 1, 0.0)
+    force = study.summarize([run])["by_spacing"]["2.5 mm"]["steady_force_n"]["mean"]
+    print(energy, force, run["damaged_particles"], run["pieces"], run["revision"])
+PY
+```
+
+同日核对两组旧记录：默认半径 60 次、固定半径 15 次，均为 `51ac3ee` dirty=true。72 次达阈值粒子数为 0，3 次为 1；75 次均分成两块。下一步同时测方向计功、损伤事件及力的阈值响应，再建立输入功、储能与耗散的分项统计。
+
 ## 计时
 
-Table I 场景（RTX 4060，只计材料推进，不含表面）。论文数字来自 RTX 5090，不是同卡对比。
+Table I 场景的本地计时使用 RTX 4060，只计材料推进，不含表面；论文使用 RTX 5090。
 
-| 场景 | 粒子 | 本仓库 | 论文 |
+| 场景 | 本地粒子 | 论文粒子 | 本地 wall/sim |
 |---|---|---|---|
-| Fig. 3 重力刀 | 8960 | 0.42 | 0.33 |
-| Fig. 4 片抬升 | 8932 | 0.174 | 0.36 |
-| Fig. 7 划痕 | 3584 | 0.158 | 0.30 |
-| Fig. 8 薄切 | 7854 | 0.232 | 0.56 |
-| Fig. 6 多刀 | 7854 | 0.55 | 0.62 |
+| Fig. 3 重力刀 | 8960 | 8960 | 0.42 |
+| Fig. 4 片抬升 | 8932 | 8960 | 0.174 |
+| Fig. 7 划痕 | 3584 | 3584 | 0.158 |
+| Fig. 8 薄切 | 7854 | 7922 | 0.232 |
+| Fig. 6 多刀 | 7854 | 7922 | 0.55 |
 
-单位与论文 Table I 相同。
+单位为墙钟时间 / 仿真时间。下一次与论文比较性能时，先对齐 Fig. 4/6/8 的粒子数并记录步长与完整配置。
 
 Fig. 1 三刀，含 Franka、表面和录制（2026-10-20，提交 `8fad2c5`，RTX 4060）：
 

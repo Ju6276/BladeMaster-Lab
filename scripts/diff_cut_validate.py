@@ -152,7 +152,8 @@ def evaluate(cfg, origin, prefix, values, history, rows, controls, backward=Fals
                 branch_modes=np.concatenate(branch_modes), contact_modes=contact_modes)
 
 
-def run_case(spacing, material, prefix, steps, natural_branches=False):
+def run_case(spacing, material, prefix, steps, natural_branches=False,
+             control_epsilons=(0.01, 0.003, 0.001), parameters=None, repeats=1):
     cfg = configuration(spacing, material)
     controls = np.array([0.0, 1.0, 0.4])
     origin, values, history, rows, errors = capture_window(cfg, prefix, steps, controls)
@@ -161,10 +162,16 @@ def run_case(spacing, material, prefix, steps, natural_branches=False):
         for row, (rigid_modes, pair_modes, yielded) in zip(rows, recorded["contact_modes"]):
             row.update(rigid_modes=rigid_modes, pair_modes=pair_modes, yielded=yielded)
     base = evaluate(cfg, origin, prefix, values, history, rows, controls, backward=True)
+    repeat_losses = [base["loss"]]
+    repeat_gradients = [base["gradients"]]
+    for _ in range(repeats - 1):
+        repeated = evaluate(cfg, origin, prefix, values, history, rows, controls, backward=True)
+        repeat_losses.append(repeated["loss"])
+        repeat_gradients.append(repeated["gradients"])
     direction = np.array([0.7, 0.3, 0.4])
     friction = np.array([cfg.friction_static, cfg.friction_dynamic])
     checks = []
-    for parameter in ("young_modulus", "yield_stress", "friction", "controls"):
+    for parameter in parameters or ("young_modulus", "yield_stress", "friction", "controls"):
         gradient = base["gradients"][parameter]
         if parameter == "controls":
             ad = float(np.dot(gradient, direction))
@@ -172,7 +179,8 @@ def run_case(spacing, material, prefix, steps, natural_branches=False):
             ad = float(np.sum(gradient))
         else:
             ad = gradient * getattr(cfg, parameter)
-        for epsilon in (0.01, 0.003, 0.001):
+        epsilons = control_epsilons if parameter == "controls" else (0.01, 0.003, 0.001)
+        for epsilon in epsilons:
             losses = []
             changed = []
             changes_by_kind = []
@@ -207,6 +215,7 @@ def run_case(spacing, material, prefix, steps, natural_branches=False):
     del base["contact_modes"]
     return dict(config=asdict(cfg), material=material, prefix_steps=prefix, steps=steps,
                 controls=controls.tolist(), local_branch_policy="natural" if natural_branches else "recorded",
+                repeat_losses=repeat_losses, repeat_gradients=repeat_gradients,
                 original_errors=errors, initial_coded_particles=int(np.count_nonzero(rows[0]["codes"])),
                 side_changes=sum(int(np.count_nonzero(row["codes"] != row["next_codes"])) for row in rows),
                 yielding_particles=[int(np.count_nonzero(modes[2])) for modes in recorded["contact_modes"]],
@@ -224,16 +233,22 @@ def main():
     parser.add_argument("--prefixes", type=int, nargs="+", default=[1200, 2400])
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument("--natural-branches", action="store_true")
+    parser.add_argument("--control-epsilons", type=float, nargs="+", default=[0.01, 0.003, 0.001])
+    parser.add_argument("--parameters", nargs="+", choices=["young_modulus", "yield_stress", "friction", "controls"])
+    parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.steps < 1 or min(args.prefixes) < 0:
         parser.error("Steps must be positive and prefixes nonnegative")
+    if args.repeats < 1 or min(args.control_epsilons) <= 0:
+        parser.error("Repeats and control epsilons must be positive")
     args.output.mkdir(parents=True, exist_ok=True)
     report = dict(provenance=git_revision(), command=sys.argv, device="cuda:0", cases=[])
     for spacing in args.spacings:
         for material in args.materials:
             for prefix in args.prefixes:
-                row = run_case(spacing, material, prefix, args.steps, args.natural_branches)
+                row = run_case(spacing, material, prefix, args.steps, args.natural_branches,
+                               args.control_epsilons, args.parameters, args.repeats)
                 report["cases"].append(row)
                 (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
                 print(json.dumps(dict(spacing=spacing, material=material, prefix=prefix,

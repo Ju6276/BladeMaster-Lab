@@ -155,7 +155,7 @@ M1–M3 算例是 24×18×18 mm 弹性方块的侧向推压。M4 已加入原求
 
 4090 可微实验工作树：`~/Projects/BladeMaster-Warp-diff-20261021`，环境复用主仓库的 `.venv`。基础报告在 `runs/diff_clean/report.json`；`32f0378` 的报告在 `runs/diff_32f0378_{horizon,contact,optimize}/report.json`。接触分段重算与扩展推压提交为 `023d30d`，报告在 `runs/diff_023d30d_{contact_horizon,optimize_q8,optimize_q16,optimize_q16_full_ad}/report.json`。数值见 RESULTS 的“可微 TLMPM”。
 
-下一步完成 M4 验收：刀刃最近几何特征的分支核对、网格刀面约束和更长的切割轨迹。窗口命令为 `scripts.diff_cut_validate`，设置见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。固定事件后，现有反力路径对 G_c 的梯度为零；几何侧码、切割阈值与切开时刻的事件导数在 M5 处理。
+下一步完成 M4 验收：刀路方向导数的差分步长/重复性扫描、临界接触与刀刃几何分支核对、网格刀面约束和更长的切割轨迹。窗口命令为 `scripts.diff_cut_validate`，设置见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。固定事件后，现有反力路径对 G_c 的梯度为零；几何侧码、切割阈值与切开时刻的事件导数在 M5 处理。
 
 ## 6. 参考资料
 

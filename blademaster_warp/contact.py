@@ -607,6 +607,25 @@ def find_key(keys: wp.array(dtype=wp.int64), key: wp.int64, capacity: int):
 
 
 @wp.func
+def pair_activity(
+    xp: wp.vec3, xq: wp.vec3, vp: wp.vec3, vq: wp.vec3,
+    refp: wp.vec3, refq: wp.vec3, codep: wp.int64, codeq: wp.int64,
+    radius: float, spacing: float, dt: float,
+):
+    """1: predictive contact, 0: separated/compatible, -1: coincident centres."""
+    delta = xp - xq
+    dist = wp.length(delta)
+    if dist >= 2.0 * radius + dt * wp.length(vp - vq):
+        return 0
+    if compatible(codep, codeq) and wp.length(refp - refq) < 2.0 * spacing:
+        return 0
+    if dist < 1.0e-12:
+        return -1
+    predicted = 2.0 * radius - dist - dt * wp.min(wp.dot(vp - vq, delta / dist), 0.0)
+    return int(predicted > 0.0)
+
+
+@wp.func
 def pair_at(
     p: int,
     q: int,
@@ -634,20 +653,18 @@ def pair_at(
     impulses: wp.array(dtype=wp.vec3),
     errors: wp.array(dtype=int),
 ):
-    delta = x[p] - x[q]
-    dist = wp.length(delta)
-    if dist >= 2.0 * radius + dt * wp.length(v[p] - v[q]):
+    activity = pair_activity(x[p], x[q], v[p], v[q], ref[p], ref[q], codes[p], codes[q],
+                             radius, spacing, dt)
+    if activity == 0:
         return
-    if compatible(codes[p], codes[q]) and wp.length(ref[p] - ref[q]) < 2.0 * spacing:
-        return
-    if dist < 1.0e-12:
+    if activity < 0:
         wp.atomic_add(errors, 2, 1)
         return
+    delta = x[p] - x[q]
+    dist = wp.length(delta)
     normal = delta / dist
     relative = v[p] - v[q]
     predicted = 2.0 * radius - dist - dt * wp.min(wp.dot(relative, normal), 0.0)
-    if predicted <= 0.0:
-        return
     key = wp.int64(p) * wp.int64(n) + wp.int64(q)
     old = find_key(old_keys, key, capacity)
     history = wp.vec3(0.0)

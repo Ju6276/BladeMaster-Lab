@@ -49,6 +49,7 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 | `scripts.diff_cut_trajectory` | 完整下刀、退刀、推块的分段反向；`--comparison-video` 同镜头比较原/可微求解器，`--playback-speed 1` 按真实时间播放 |
 | `scripts.diff_cut_events` | 自然切割分支的刀位、下刀深度和断裂能扫描；记录分侧、释放时刻、刀力和功 |
 | `scripts.diff_release_validate` | 香蕉释放窗口：自然梯度、分段反向、损伤功、步长与 PIC/FLIP 耗散对照 |
+| `scripts.diff_natural_validate` | 自然分侧与接触对更新：原求解器对照、检查点、刀位/深度扰动的梯度与事件变化 |
 | `scripts.probe_substep`、`scripts.live_latency` | 材料子步分阶段计时、输入到 HTTP 状态帧延迟 |
 | `scripts.stress_teleop`、`scripts.stress_multi_tool`、`scripts.check_cut_release` | 会话与多刀压力测试、切透退刀检查 |
 | `scripts.surface_accuracy`、`scripts.surface_deformed`、`scripts.surface_observations` | 表面精度、自交与观测间隔检查 |

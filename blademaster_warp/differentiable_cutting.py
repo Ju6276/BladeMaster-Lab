@@ -238,6 +238,9 @@ class CutHistory:
     grid_residual: float = 0.0
     trial_damage: wp.array | None = None
     damage_work: wp.array | None = None
+    codes: wp.array | None = None
+    pair_keys: np.ndarray | None = None
+    cut_index: int = 0
 
 
 @dataclass
@@ -417,6 +420,11 @@ class FixedCutContact(PrescribedContact):
                     delta = np.abs(current_arrays[name].numpy() - expected_array.numpy())
                     error = float(delta.max()) if delta.size else 0.0
                     measured['recompute_max_abs'][name] = max(measured['recompute_max_abs'].get(name, 0.0), error)
+                if h.codes is not None:
+                    if (not np.array_equal(h.codes.numpy(), expected_history.codes.numpy())
+                            or not np.array_equal(h.pair_keys, expected_history.pair_keys)
+                            or h.cut_index != expected_history.cut_index):
+                        raise RuntimeError("Checkpoint recomputation changed the cutting topology")
             finished = now()
             measured['recompute_s'] += finished - begun
             seeds = {a: gradient[name] for name, a in current_arrays.items()}

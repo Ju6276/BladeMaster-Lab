@@ -75,6 +75,10 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 `FixedCutContact.checkpoint_vjp` 保存 x、v、F、Fp、应力及刀/板/粒子对的摩擦历史和损伤。网格约束逐次保存投影迭代，保持原求解器的迭代公式与批次；进入侧和求解批数作为离散状态。
 
+`differentiable_natural.NaturalCutContact` 每步从当前 x/v 和三进制侧码生成接触对，调用原 `contact.assign` 在步末更新侧码。候选对用空间树查找，半径 `2R + 2Δt max|v|` 覆盖预测接触；原求解器与可微流程共用 `contact.pair_activity` 筛选。切向历史按 `p*n+q` 继承，脱离后重新接触从零开始。每次扰动重新计算侧码、接触集合、接触模式和屈服分支；Warp 对本次执行的连续运算求导。整步边界分侧的事件时间导数待接入步内积分。
+
+`CutHistory` 保存侧码、排序后的粒子对 ID 和刀次；检查点重算同时核对连续状态及这些离散状态。同刀暂停保留 D，新刀按原求解器规则清零 D 并保留历史侧码。`release="boundary"` 使用原步末释放；`release="integrated"` 使用下节的步内刃向冲量积分。`scripts.diff_natural_validate` 从首次分侧附近的同一状态开始，逐步对照原求解器、比较不同检查点长度，分别记录差分误差及侧码/接触/释放的变化数。
+
 `Solver(precision="float64")` 与 `MaterialTrajectory(precision="float64")` 分别运行原正向流程和可微流程。`precision.py` 将同一份 Warp 函数的浮点类型及常量提升到双精度；分支和公式保持相同。原求解器继续使用动态多场注册与场交换，可微流程使用固定分支的稀疏映射；同精度对照检验两套推进结果。
 
 ## 损伤释放的步内积分

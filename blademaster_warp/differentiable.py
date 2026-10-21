@@ -1,6 +1,7 @@
 """Elastic TLMPM with immutable step states and fixed reference-grid connectivity."""
 
 from dataclasses import dataclass
+from time import perf_counter
 import numpy as np
 import warp as wp
 
@@ -203,7 +204,9 @@ class ElasticTrajectory:
         )
         return result
 
-    def checkpoint_vjp(self, initial, steps, segment_steps, seed, gravity=(0.0, 0.0, -9.81)):
+    def checkpoint_vjp(
+        self, initial, steps, segment_steps, seed, gravity=(0.0, 0.0, -9.81), timings=None,
+    ):
         """VJP of the terminal (x, v, F), recomputing one elastic segment at a time.
 
         seed contains the terminal loss derivatives. Returns (initial-state VJP,
@@ -211,6 +214,13 @@ class ElasticTrajectory:
         """
         if not self.requires_grad or steps < 1 or segment_steps < 1:
             raise ValueError("Checkpoint VJP requires gradients and positive step counts")
+        def timestamp():
+            wp.synchronize_device(self.device)
+            return perf_counter()
+
+        if timings is not None:
+            timings.update(forward_s=0.0, recompute_s=0.0, backward_s=0.0)
+            started = timestamp()
         checkpoints = [initial]
         lengths = []
         current = initial
@@ -222,20 +232,30 @@ class ElasticTrajectory:
             checkpoints.append(current)
             lengths.append(count)
             remaining -= count
+        if timings is not None:
+            timings["forward_s"] = timestamp() - started
         gradient = seed
         young_gradient = 0.0
         for index in reversed(range(len(lengths))):
             start = checkpoints[index]
             for array in (self.young, start.x, start.v, start.F):
                 array.grad.zero_()
+            if timings is not None:
+                started = timestamp()
             with wp.Tape() as tape:
                 current = start
                 for _ in range(lengths[index]):
                     current = self.step(current, gravity)
+            if timings is not None:
+                now = timestamp()
+                timings["recompute_s"] += now - started
+                started = now
             tape.backward(grads={current.x: gradient.x, current.v: gradient.v, current.F: gradient.F})
             gradient = State(
                 wp.clone(start.x.grad), wp.clone(start.v.grad), wp.clone(start.F.grad)
             )
             young_gradient += float(self.young.grad.numpy()[0])
             tape.zero()
+            if timings is not None:
+                timings["backward_s"] += timestamp() - started
         return gradient, young_gradient

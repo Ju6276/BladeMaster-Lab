@@ -1,6 +1,8 @@
 warp-lang==1.18.0
 numpy==2.5.4
 scipy==1.18.1
+# Derivative-free trajectory optimization baseline:
+cma==4.5.0
 # For the independent FP64 reference checks:
 numba==0.68.0
 pytest==9.1.1

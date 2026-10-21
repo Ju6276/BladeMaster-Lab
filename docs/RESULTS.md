@@ -581,7 +581,28 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
   --release boundary --epsilons .05 .005 .0005 .00005 .0000005
 ```
 
+### M5 几何分侧的步内状态积分（2026-10-21，`3e8f777`）
+
+8 个窗口、112 组自然差分，**63 组误差 >2%、19 组符号相反**；每个方向至少两档差分 ≤2% 的窗口为 **5/8**。原五档扰动对应的 80 组中 **60** 组误差 >2%。分侧时刻已进入实际前后分段及多场状态，接触切换验收失败。6 mm 香蕉的深度微扰 `5e-8` 在第 21 步、粒子 852 的砧板粘滑模式由 **11→12**；AD **0.10329855**，左右差分 **1.26101778/0.10351683**。微扰 `5e-9` 时模式不变，中央差分相对误差 **3.07e-7**。
+
+两网格三材料及方块/圆柱的新分侧数为 **68/55/42/37/42/14/48/32**；窗口粒子对峰值均为 **0**。16/32 步检查点的状态重算差为 **0**，控制量/初始位置梯度最大差 **1.16e-13/1.05e-11**。相对原步末积分，最大位置/速度/Fp/刀力差为 **1.427 μm/0.02156 m/s/3.18e-5/0.01645 N**。报告：`runs/m5_3e8f777_geometry_{materials,shapes}/report.json`，dirty=false。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/m5_3e8f777_geometry_materials --spacings .006 .004 \
+  --materials banana soft plastic --steps 64 --segment-steps 16 32 \
+  --release integrated --geometry event \
+  --epsilons .05 .005 .0005 .00005 .0000005 .00000005 .000000005
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/m5_3e8f777_geometry_shapes --spacings .006 --shapes block cylinder \
+  --materials soft --steps 64 --segment-steps 16 32 \
+  --release integrated --geometry event \
+  --epsilons .05 .005 .0005 .00005 .0000005 .00000005 .000000005
+```
+
 ## 测试
+
+2026-10-21，提交 `3e8f777`：全量 **740 passed、8 skipped、18 subtests passed**，142.37 s。新增 5 项分段时长检查和 28 项几何事件检查：固定刚度/PIC 速率、解析穿越、两网格与刚度、方块/圆柱、转动刀、自然生成两侧场、塑性及接触全状态 VJP、材料/刀路导数和检查点。8 项跳过为 CRESSim 上游构建未配置。
 
 2026-10-21，提交 `acead71`：全量 **707 passed、8 skipped、18 subtests passed**，142.84 s。新增 14 项覆盖方块/圆柱和转动刀的自然侧码对照、预测接触集合与原全对搜索、摩擦历史继承/重入清零、刀路改变侧码、同刀暂停/新刀重置、两种释放积分的自然轨迹梯度及分段重算。8 项跳过仍为 CRESSim 上游构建未配置。
 

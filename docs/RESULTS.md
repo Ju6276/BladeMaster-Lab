@@ -350,6 +350,62 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_optimize --output runs/diff_32f037
 
 达标时间中位数将未成功样本记为 >20 s。AD 每次评估的前向/反向中位耗时约 **48.2/22.4 ms**；无梯度前向约 **26.7 ms**。15 条最优刀路的最大刀力 **0.392 N**；原求解器重放的最大位置差 **0.486 μm**。各初始刀路的四档差分与接触分支变化保存在报告 `initial_gradient_check`；接触与摩擦公式保持原值。
 
+### 接触轨迹的分段重算
+
+2026-10-21，提交 `023d30d`（dirty=false），RTX 4090。6/4 mm 网格、128/512 步、8/16 段刀速，完整 Tape 与 32/128 步分段共 24 组，每组独立进程预热后测三次：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_contact_horizon --output runs/diff_023d30d_contact_horizon
+```
+
+32/128 步分段对完整 Tape 的控制量梯度最大相对 L2 差为 **0.0890% / 0.1327%**；完整 Tape 三次重复的最大梯度差为 **0.1371%**。末端位置最大差 **0.124 μm**。分段边界传递 x、v、F、刀和砧板的摩擦历史；逐步反力罚项与末端位置损失均参与反传。
+
+972 粒子、512 步、16 个控制量，以下为三次耗时中位数；显存是 CUDA 数组内存池实际使用量峰值：
+
+| 保存方式 | 显存 | 前向 | 重算 | 反向 | 整次梯度评估 |
+|---|---|---|---|---|---|
+| 完整 Tape | 141.06 MiB | 186.5 ms | 0 | 90.1 ms | 308.7 ms |
+| 每 32 步分段 | 11.88 MiB | 170.0 ms | 182.3 ms | 104.9 ms | 474.9 ms |
+| 每 128 步分段 | 36.37 MiB | 168.7 ms | 183.7 ms | 104.1 ms | 475.0 ms |
+
+32 步分段节省 **91.6%** 数组显存，整次梯度评估耗时增加 **53.8%**。整次耗时包含数组构造、读回、清理及 Python 调用；分阶段列分别取中位数。
+
+### 八控制量推压
+
+2026-10-21，提交 `023d30d`（dirty=false），RTX 4090。6 mm、288 粒子、128 步、八段刀速；AD 每 32 步分段重算，FD/CMA-ES 使用无梯度前向。每种方法相同五组初始刀路、20 s 预算，位置成功阈值 0.05 mm，力上限 2 N。初始位置 RMSE **2.136–2.496 mm**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_optimize --controls 8 --segment-steps 32 --output runs/diff_023d30d_optimize_q8
+```
+
+| 方法 | 成功数 | 最终 RMSE 中位数 | 达标时间中位数 | 前向次数中位数 | 峰值 CUDA 数组内存 |
+|---|---|---|---|---|---|
+| AD + Adam，32 步分段 | 5/5 | 0.02988 mm | 5.69 s | 172 | 2.99 MiB |
+| FD + Adam | 2/5 | 0.05040 mm | >20 s | 749 | 0.157 MiB |
+| CMA-ES | 5/5 | 0.01500 mm | 6.66 s | 740 | 0.157 MiB |
+
+15 条最优刀路的最大刀力 **0.405 N**，原求解器重放最大位置差 **0.00559 μm**，错误计数均为零。此任务中 AD 与 CMA-ES 成功率相同，CMA-ES 最终误差中位数更低。
+
+### 十六控制量、细网格与后移刀位
+
+2026-10-21，提交 `023d30d`（dirty=false），RTX 4090。4 mm、972 粒子、512 步（102.4 ms）、16 段刀速，初始刀位沿 x 后移 0.3 mm；各方法同五组初始化、20 s 预算。初始位置 RMSE **8.299–9.593 mm**，成功条件仍为位置 RMSE ≤ 0.05 mm、刀力 ≤ 2 N。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_optimize --controls 16 --steps 512 --spacing 0.004 --tool-offset -0.0003 0 0 --segment-steps 32 --output runs/diff_023d30d_optimize_q16
+PYTHONPATH=. .venv/bin/python -m scripts.diff_optimize --methods ad --controls 16 --steps 512 --spacing 0.004 --tool-offset -0.0003 0 0 --output runs/diff_023d30d_optimize_q16_full_ad
+```
+
+| 方法 | 成功数 | 最终 RMSE 中位数 | 前向次数中位数 | 峰值 CUDA 数组内存 |
+|---|---|---|---|---|
+| AD + Adam，完整 Tape | 0/5 | 0.10020 mm | 62 | 141.06 MiB |
+| AD + Adam，32 步分段 | 0/5 | 0.17009 mm | 43 | 11.88 MiB |
+| FD + Adam | 0/5 | 5.29368 mm | 188 | 0.529 MiB |
+| CMA-ES | 1/5 | 0.12350 mm | 188 | 0.529 MiB |
+
+这组任务中，AD 与 FD 均未达到位置阈值。完整 Tape 比分段 AD 多完成约 **44%** 的梯度评估，最终误差中位数低 **41.1%**。20 条最优刀路的最大刀力 **0.302 N**，原求解器重放最大位置差 **0.639 μm**，错误计数均为零。
+
+分段 AD/FD/CMA-ES 的初始刀路共 960 档参数差分，**956 档改变接触/摩擦模式**；五组分段 AD 的梯度与中心差分相对差中位数为 **1.26%–37.36%**，分母取两者绝对值的较大者。单侧差分与模式变化计数保存在报告。
+
 ## 计时
 
 Table I 场景的本地计时使用 RTX 4060，只计材料推进，不含表面；论文使用 RTX 5090。
@@ -373,7 +429,7 @@ Fig. 1 三刀，含 Franka、表面和录制（2026-10-20，提交 `8fad2c5`，R
 
 ## 测试
 
-2026-10-21，提交 `32f0378`：全量 **603 passed、8 skipped、18 subtests passed**，135.58 s。8 项跳过为 CRESSim 上游构建未配置。三刀置换测试此前有一次位置差 1.01e-7 m 超过 7.5e-8 m 容差；原基线定向复测 3/3、新实现定向与最终全量测试均通过，算法与容差保持原值。
+2026-10-21，提交 `023d30d`：提交前全量 **609 passed、8 skipped、18 subtests passed**，133.47 s。8 项跳过为 CRESSim 上游构建未配置。新增 6 项覆盖接触分段重算的初始状态、摩擦历史、E 与刀路梯度，含非整除分段及反力罚项生效的情况。
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest tests -q

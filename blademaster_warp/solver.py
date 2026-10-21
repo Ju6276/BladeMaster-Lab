@@ -220,11 +220,11 @@ class Solver:
         self.maxwell_relax = float(-np.expm1(-cfg.dt / cfg.maxwell_tau)) if self.maxwell else 0.0
         self.threshold = cfg.cutting_energy * self.volume ** (2 / 3) * (1 - cfg.sharpness) / cfg.sharpness
         self.normal_scale, self.tangent_stiffness = cfg.contact_scales()
-        self.half = wp.vec3(*cfg.blade_half_size)
-        self.board_half = wp.vec2(*cfg.board_half_extent)
+        self.half = self._dtype(wp.vec3)(*cfg.blade_half_size)
+        self.board_half = self._dtype(wp.vec2)(*cfg.board_half_extent)
         self.board_scale = cfg.board_normal_scale or self.normal_scale
         hx, hy, hz = cfg.blade_half_size
-        self.inertia_inv = wp.vec3(
+        self.inertia_inv = self._dtype(wp.vec3)(
             *(3 / (cfg.blade_mass * np.array([hy * hy + hz * hz, hx * hx + hz * hz, hx * hx + hy * hy])))
         )
 

@@ -136,12 +136,15 @@ def secant_time(lo: wp.array(dtype=float), hi: wp.array(dtype=float),
 @wp.kernel
 def assign_event(x: wp.array(dtype=wp.vec3), position: wp.array(dtype=wp.vec3),
                  rotation: wp.array(dtype=wp.quat), particle: int, digit: wp.int64,
-                 codes: wp.array(dtype=wp.int64)):
+                 edge_entry: int, codes: wp.array(dtype=wp.int64),
+                 edge_departed: wp.array(dtype=int)):
     local = wp.quat_rotate_inv(rotation[0], x[particle] - position[0])
     side = wp.int64(2)
     if local[0] < 0.0:
         side = wp.int64(1)
     codes[particle] += digit * side
+    if edge_entry != 0:
+        edge_departed[particle] = 1
 
 
 @wp.kernel
@@ -200,7 +203,9 @@ class GeometryEventContact(NaturalCutContact):
         keys = self.contact_keys(state, history.codes, float(duration.numpy()[0]))
         branch = self.freeze(history.codes.numpy(), keys, history.pair_keys,
                              history.damage.numpy() >= 1, cutting=cutting)
-        result, updated, force = FixedCutContact.step(self, state, history, tool, branch, duration=duration)
+        result, updated, force = FixedCutContact.step(
+            self, state, history, tool, branch, duration=duration, edge_departed=history.edge_departed,
+        )
         updated.codes, updated.pair_keys, updated.cut_index = history.codes, keys, history.cut_index
         return result, updated, force
 
@@ -211,9 +216,7 @@ class GeometryEventContact(NaturalCutContact):
         ghi = self.guard(trial, trial_tool, particle, kind, plane)
         if float(glo.numpy()[0]) <= 0 or float(ghi.numpy()[0]) > 0:
             raise RuntimeError('Geometric event lost its outside/inside bracket')
-        scale = max(m.config.grid_spacing, float(np.max(np.abs(state.x.numpy()))),
-                    float(np.max(np.abs(trial_tool.position.numpy()))))
-        tolerance = 32 * np.finfo(state.x.numpy().dtype).eps * scale
+        tolerance = self.root_tolerance(state, trial_tool)
         for _ in range(48):
             time = m.zeros(1, float)
             m.launch(secant_time, 1, inputs=[lo, hi, glo, ghi], outputs=[time], device=m.device)
@@ -240,13 +243,20 @@ class GeometryEventContact(NaturalCutContact):
                 hi, ghi = time, value
         raise RuntimeError(f'Geometric event root did not converge: residual={residual:g} m')
 
+    def root_tolerance(self, state, tool):
+        x = state.x.numpy()
+        scale = max(self.model.config.grid_spacing, float(np.max(np.abs(x))),
+                    float(np.max(np.abs(tool.position.numpy()))))
+        return 32 * np.finfo(x.dtype).eps * scale
+
     def step(self, state, history, tool, instruction=CutInstruction()):
         m, cfg = self.model, self.model.config
         if history.codes is None or history.pair_keys is None:
             raise ValueError('Geometric cutting history requires side codes and pair keys')
         self._check_cut_index(instruction.cut_index, history.cut_index)
         if instruction.cut_index != history.cut_index:
-            history = replace(history, damage=m.zeros(m.n, float), cut_index=int(instruction.cut_index))
+            history = replace(history, damage=m.zeros(m.n, float), cut_index=int(instruction.cut_index),
+                              edge_departed=None)
         elapsed = m.array([0.], float, False)
         end = m.duration
         end_tool = self.pose(tool, end)
@@ -289,10 +299,19 @@ class GeometryEventContact(NaturalCutContact):
                 state, history, elapsed = before, h, time
                 start_tool = event_tool
             codes = wp.clone(history.codes, requires_grad=False)
+            # At a located edge entry, the next flow uses the post-event side
+            # even when the root residual has the opposite roundoff sign.
+            departed = (m.zeros(m.n, int, False) if history.edge_departed is None
+                        else wp.clone(history.edge_departed, requires_grad=False))
+            edge_entry = kind == 0 and plane == 4
+            if kind == 0 and plane < 0:
+                edge_guard = self.guard(state, start_tool, particle, kind, 4)
+                edge_entry = abs(float(edge_guard.numpy()[0])) <= self.root_tolerance(state, start_tool)
             m.launch(assign_event, 1,
-                     inputs=[state.x, start_tool.position, start_tool.rotation, particle, 3 ** instruction.cut_index],
-                     outputs=[codes], device=m.device)
-            history = replace(history, codes=codes)
+                     inputs=[state.x, start_tool.position, start_tool.rotation, particle,
+                             3 ** instruction.cut_index, int(edge_entry)],
+                     outputs=[codes, departed], device=m.device)
+            history = replace(history, codes=codes, edge_departed=departed)
             events.append((particle, elapsed))
             if float(elapsed.numpy()[0]) >= cfg.dt:
                 history.damage_work = work

@@ -448,7 +448,7 @@ class MaterialTrajectory(ElasticTrajectory):
                       outputs=[stress], device=self.device)
         if impulse is None:
             impulse = self.zeros(self.n, wp.vec3)
-            self.launch(timed_body_impulse, self.n, inputs=[wp.vec3(*gravity), self.mass, duration],
+            self.launch(timed_body_impulse, self.n, inputs=[tuple(gravity), self.mass, duration],
                       outputs=[impulse], device=self.device)
         if self.ordered_transfers:
             self.launch(ordered_p2g, grid.count,

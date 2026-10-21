@@ -2,10 +2,9 @@
 
 The original penalty, friction and cutting-work laws run first. The velocity
 solve uses W = N^T M^-1 C N with the solver's compatible-field exchange and does
-not add restitution. A center that is already inside a broad face is then moved
-to that face, and only an inward normal velocity is removed. The external body's
-pose is fixed during these material substeps; its measured mobility and the
-returned reaction remain in the original coupling.
+not add restitution. The external body's pose is fixed during these material
+substeps; its measured mobility and the returned reaction remain in the original
+coupling.
 """
 
 import warp as wp

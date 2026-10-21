@@ -88,7 +88,7 @@ def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=Non
     offset = max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0])
     model.launch(prepare_timed, model.n,
               inputs=[x, grid.slots, model.weights, velocity, tool.position, tool.rotation,
-                      wp.vec3(*cfg.blade_half_size), cfg.blade_bevel_height, offset, duration],
+                      cfg.blade_half_size, cfg.blade_bevel_height, offset, duration],
               outputs=[side, normal, lever, rhs, active_weights, impulse, extrapolated, needs_solve],
               device=model.device)
     count = int(needs_solve.numpy()[0]) if fixed_batches is None else fixed_batches

@@ -85,6 +85,8 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 刀位在完整步内按给定线速度、角速度推进，各分段的接触计算使用该段开始的刀姿。求根空间容差是 `32×机器精度×坐标尺度`，最多 48 次迭代；括区间丢失、根落在区域外或事件排序失败时直接报错并要求减小完整步长。`CutHistory.geometry_events` 保存本步粒子 ID 与可求导的发生时间，扰动实验同时比较左右差分、事件集合和顺序。
 
+刀刃平面穿越后的第一个积分段使用事件后的计功分支：`CutHistory.edge_departed` 保存刚发生穿越的粒子，停止刃前计功和刃前保持；接触几何、粒子位置及法向罚力继续使用实际状态。一次正时长推进后清除此标记，恰好发生在步末的标记进入下一步及检查点。这是混合系统在事件边界选择后继模式的处理，避免求根残差的舍入符号重新选择事件前模式。
+
 运行 `scripts.diff_natural_validate --geometry event` 使用该积分；`--geometry boundary` 使用原步末分侧。两者共用材料、接触和损伤公式，完整步长及接触/PIC 参考时间分别记录在配置中。
 
 `Solver(precision="float64")` 与 `MaterialTrajectory(precision="float64")` 分别运行原正向流程和可微流程。`precision.py` 将同一份 Warp 函数的浮点类型及常量提升到双精度；分支和公式保持相同。原求解器继续使用动态多场注册与场交换，可微流程使用固定分支的稀疏映射；同精度对照检验两套推进结果。
@@ -114,6 +116,8 @@ PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定�
 `Config.flip_reference_dt > 0` 时，本实现固定 `λ=(1−flip_fraction)/flip_reference_dt`，每步取 `α=1−λΔt`。这是残差阻尼的显式积分，要求 `0≤λΔt≤1`；粒子位置仍使用插值网格速度推进。原求解器、弹性和塑性可微求解器共用该系数。`flip_reference_dt=0` 保持每步固定混合比例，`flip_fraction=1` 为纯 FLIP。
 
 `MaterialTrajectory.step` 和 `FixedCutContact.step` 接受可求导的单元素 `duration` 数组（秒）。分段时长 τ 同时进入重力/应力冲量、P2G/G2P/MUSL、塑性、摩擦历史、损伤计功、网格约束及反力换算。接触系数以完整步的值乘 `(τ/config.dt)²`，包括砧板系数，保持物理刚度；PIC 参考时间取显式 `flip_reference_dt`，未设置时取完整步长。分段时长取 `0<τ≤config.dt`。
+
+`board_normal_scale` 是每步无量纲罚因子。固定刚度的步长实验将显式砧板系数同步乘 `(新步长/基准步长)²`；其默认值 0 继续使用由 `contact_reference_dt` 换算的刀具法向系数。
 
 `scripts.diff_release_validate --transfers fixed-mix fixed-rate flip` 从同一初态对照三种传递设置；`fixed-rate` 用该网格的基准步长作为参考，6/4 mm 分别得到 λ=3200/3800 s⁻¹。网格间固定同一 λ 的对照需要显式使用同一参考步长。
 

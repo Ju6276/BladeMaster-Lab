@@ -120,8 +120,8 @@ class NaturalCutContact(FixedCutContact):
         m.launch(contact.mark_released, m.n, inputs=[updated.damage], outputs=[released], device=m.device)
         m.launch(contact.assign, m.n,
                  inputs=[result.x, result.v, updated.codes, tool.position, tool.velocity, tool.rotation,
-                         tool.omega, wp.vec3(*cfg.blade_half_size), cfg.grid_spacing, cfg.grid_spacing / 4,
-                         wp.vec2(*cfg.board_half_extent), cfg.dt, 3 ** instruction.cut_index,
+                         tool.omega, cfg.blade_half_size, cfg.grid_spacing, cfg.grid_spacing / 4,
+                         cfg.board_half_extent, cfg.dt, 3 ** instruction.cut_index,
                          int(instruction.cutting), updated.damage, released, 0, int(cfg.label_board_layer)],
                  outputs=[dirty], device=m.device)
         updated.pair_keys = keys

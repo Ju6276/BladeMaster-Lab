@@ -187,6 +187,7 @@ def main():
                     if transfer == 'flip':
                         fraction = 1.
                     cfg = replace(base, dt=base.dt / divisor, flip_fraction=fraction,
+                                  board_normal_scale=base.board_normal_scale / divisor**2,
                                   flip_reference_dt=base.dt if transfer == 'fixed-rate' else 0.)
                     if abs(round(args.duration / cfg.dt) * cfg.dt - args.duration) > 1e-12:
                         parser.error('Duration must be divisible by every selected time step')

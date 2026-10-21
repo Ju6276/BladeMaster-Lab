@@ -73,6 +73,7 @@ def rigid_step(
     history: wp.array2d(dtype=wp.vec3),
     damage: wp.array(dtype=float),
     released: wp.array(dtype=int),
+    edge_departed: wp.array(dtype=int),
     fixed_modes: wp.array2d(dtype=int),
     position: wp.array(dtype=wp.vec3),
     velocity: wp.array(dtype=wp.vec3),
@@ -133,7 +134,7 @@ def rigid_step(
     closest, normal, distance = blade_query(local, half, bevel)
     front = -half[2] - local[2]
     modes[3, p] = 0
-    if (cutting != 0 and cut_hold != 0 and is_released == 0
+    if (cutting != 0 and cut_hold != 0 and is_released == 0 and edge_departed[p] == 0
             and wp.abs(local[0]) <= half[0] + blade_offset
             and wp.abs(local[1]) <= half[1] and front >= 0.0):
         closest = wp.vec3(local[0], local[1], -half[2])
@@ -174,7 +175,7 @@ def rigid_step(
         if cut_advance != 0:
             advance = wp.dot(edge_velocity, down)
         local_edge = wp.quat_rotate_inv(q, xp - edge)
-        if (edge_front >= 0.0 and edge_front <= 2.0 * blade_offset
+        if (edge_departed[p] == 0 and edge_front >= 0.0 and edge_front <= 2.0 * blade_offset
                 and wp.abs(local_edge[0]) <= band_width and wp.abs(local_edge[1]) <= half[1]):
             push = wp.max(wp.dot(blade, down), 0.0)
             modes[4, p] = 1
@@ -267,6 +268,7 @@ class CutHistory:
     pair_keys: np.ndarray | None = None
     cut_index: int = 0
     geometry_events: tuple = ()
+    edge_departed: wp.array | None = None
 
 
 @dataclass
@@ -304,6 +306,7 @@ class FixedCutContact(PrescribedContact):
         self.friction = trajectory.array([cfg.friction_static, cfg.friction_dynamic], float)
         self.fracture_energy = trajectory.array([cfg.cutting_energy], float)
         self.integrate_release = False
+        self._no_edge_departure = trajectory.zeros(trajectory.n, int, False)
         self._topologies = {}
 
     def history(self, rigid=None, pairs=None, damage=None, side=None):
@@ -331,9 +334,10 @@ class FixedCutContact(PrescribedContact):
                           m.array(rigid_modes, int, False), m.array(pair_modes, int, False),
                           None if yielded is None else m.array(yielded, int, False), grid_batches)
 
-    def step(self, state, history, tool, frozen, *, duration=None):
+    def step(self, state, history, tool, frozen, *, duration=None, edge_departed=None):
         m, cfg = self.model, self.model.config
         duration = m.duration if duration is None else duration
+        edge_departed = self._no_edge_departure if edge_departed is None else edge_departed
         sn, gk = cfg.contact_scales()
         radius = cfg.grid_spacing / 4
         blade_offset = max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0])
@@ -348,10 +352,11 @@ class FixedCutContact(PrescribedContact):
         updated.trial_damage = m.zeros(m.n, float)
         updated.damage_work = m.zeros(m.n, float)
         m.launch(rigid_step, m.n,
-                  inputs=[state.x, state.v, history.rigid, history.damage, frozen.released, frozen.rigid_modes,
+                  inputs=[state.x, state.v, history.rigid, history.damage, frozen.released, edge_departed,
+                          frozen.rigid_modes,
                           tool.position, tool.velocity, tool.rotation, tool.omega, self.friction,
-                          wp.vec3(*cfg.blade_half_size), cfg.blade_bevel_height, radius, blade_offset,
-                          wp.vec2(*cfg.board_half_extent), m.mass, duration, cfg.dt, sn, cfg.board_normal_scale or sn,
+                          cfg.blade_half_size, cfg.blade_bevel_height, radius, blade_offset,
+                          cfg.board_half_extent, m.mass, duration, cfg.dt, sn, cfg.board_normal_scale or sn,
                           gk, cfg.tangent_damping, cfg.cut_band_cells * cfg.grid_spacing,
                           self.fracture_energy, threshold_factor, int(self.integrate_release),
                           int(self.friction_update == 'projected'),
@@ -457,6 +462,12 @@ class FixedCutContact(PrescribedContact):
                             or not np.array_equal(h.pair_keys, expected_history.pair_keys)
                             or h.cut_index != expected_history.cut_index):
                         raise RuntimeError("Checkpoint recomputation changed the cutting topology")
+                actual_boundary = h.edge_departed
+                expected_boundary = expected_history.edge_departed
+                if ((actual_boundary is None) != (expected_boundary is None)
+                        or (actual_boundary is not None
+                            and not np.array_equal(actual_boundary.numpy(), expected_boundary.numpy()))):
+                    raise RuntimeError("Checkpoint recomputation changed the event boundary state")
             finished = now()
             measured['recompute_s'] += finished - begun
             seeds = {a: gradient[name] for name, a in current_arrays.items()}

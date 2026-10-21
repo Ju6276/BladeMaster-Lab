@@ -7,6 +7,7 @@ import pytest
 import warp as wp
 
 from blademaster_warp.differentiable_material import MaterialTrajectory, hencky_project
+from blademaster_warp.differentiable_cutting import FixedCutContact
 from blademaster_warp.solver import Config, Solver
 from blademaster_warp.coupling import ExternalToolPort, ToolState
 
@@ -73,6 +74,31 @@ def test_ordered_and_atomic_transfers_agree():
     for name, tolerance in (('x', 1e-6), ('v', 1e-4), ('F', 1e-5), ('Fp', 1e-5)):
         np.testing.assert_allclose(getattr(states[0], name).numpy(), getattr(states[1], name).numpy(),
                                    rtol=0, atol=tolerance)
+
+
+def test_double_uniform_gravity_uses_the_given_acceleration():
+    cfg = Config(size=(.012, .012, .012), grid_spacing=.006, dt=.0002)
+    model = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
+    gravity = np.array([.1234567890123, -.2345678901234, -9.81])
+    result = model.step(model.state(), gravity=gravity)
+    np.testing.assert_allclose(result.v.numpy(), np.tile(cfg.dt * gravity, (model.n, 1)),
+                               rtol=0, atol=2e-15)
+
+
+def test_double_contact_uses_the_given_blade_dimensions():
+    cfg = Config(size=(.012, .012, .012), grid_spacing=.006, dt=.0002,
+                 blade_half_size=(.000512345678901, .025, .02), external_tool=True)
+    model = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
+    contact = FixedCutContact(model)
+    x = model.reference + [0, 0, .03]
+    offset = cfg.grid_spacing / 4
+    origin = [x[:, 0].max() + cfg.blade_half_size[0] + offset - .0001, 0, .036]
+    branch = contact.freeze(np.zeros(model.n), [], [], np.zeros(model.n), cutting=False)
+    _, _, force = contact.step(model.state(x=x), contact.history(), contact.tool(origin), branch)
+    penetration = np.maximum(x[:, 0] + cfg.blade_half_size[0] + offset - origin[0], 0)
+    stiffness = cfg.contact_scales()[0] * model.mass / cfg.dt**2
+    np.testing.assert_allclose(force.numpy()[0], [stiffness * penetration.sum(), 0, 0],
+                               rtol=1e-11, atol=1e-13)
 
 
 def test_double_reference_coupling_graph_matches_eager():

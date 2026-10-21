@@ -83,7 +83,8 @@ def main():
                 report['cases'].append(case)
                 previous = None
                 for divisor in sorted(set(args.dt_divisors)):
-                    cfg = replace(base, dt=base.dt / divisor)
+                    cfg = replace(base, dt=base.dt / divisor,
+                                  board_normal_scale=base.board_normal_scale / divisor**2)
                     row, arrays = evaluate(cfg, steps * divisor, args.release, args.epsilons,
                                            args.segment_steps, args.geometry, args.friction_update,
                                            initial_window=window, return_arrays=True)

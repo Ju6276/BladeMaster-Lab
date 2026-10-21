@@ -151,3 +151,19 @@ def test_cut_fields_plastic_state_and_history_vjp(parameter):
             source.assign(base + sign * epsilon * direction)
             values.append(sum(np.sum(a.numpy() * s) for a, s in zip(evaluate(), seeds)))
         np.testing.assert_allclose(ad, (values[1] - values[0]) / (2 * epsilon), rtol=3e-4, atol=1e-7)
+
+
+@pytest.mark.parametrize('shift_ulps', [-1, 0, 1])
+def test_simultaneous_edge_entries_use_post_event_damage_branch(shift_ulps):
+    m, c, initial, history, tool = fixture(seed=0)
+    x = initial.x.numpy()
+    top = x[:, 2] == x[:, 2].max()
+    origin = tool.position.numpy().copy()
+    origin[0, 2] = x[:, 2].max() + m.config.blade_half_size[2]
+    origin[0, 2] += shift_ulps * np.spacing(origin[0, 2])
+    tool.position.assign(origin)
+    damage = np.where(top, .99, 0.)
+    history = c.history(damage=damage)
+    _, updated, _ = c.step(initial, history, tool)
+    assert np.all(updated.codes.numpy()[top] != 0)
+    np.testing.assert_allclose(updated.damage.numpy()[top], .99, rtol=0, atol=1e-10)

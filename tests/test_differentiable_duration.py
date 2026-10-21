@@ -60,8 +60,9 @@ def test_material_duration_gradient_and_reference_dt(ordered, monkeypatch):
 
 
 @pytest.mark.parametrize('contact_type', [FixedCutContact, EventCutContact])
-def test_cut_duration_gradient_and_fixed_stiffness(contact_type, monkeypatch):
-    cfg = config(cutting_energy=1.)
+@pytest.mark.parametrize('board_scale', [0., .6])
+def test_cut_duration_gradient_and_fixed_stiffness(contact_type, board_scale, monkeypatch):
+    cfg = config(cutting_energy=1., board_normal_scale=board_scale)
 
     def setup(cfg):
         model = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
@@ -85,7 +86,8 @@ def test_cut_duration_gradient_and_fixed_stiffness(contact_type, monkeypatch):
         s, h, f = contact.step(state, history, tool, branch, duration=dt)
         return [s.x, s.v, s.F, s.Fp, s.stress, h.rigid, h.pairs, h.damage, h.damage_work, f]
 
-    shorter, other, s, h, b = setup(replace(cfg, dt=.00013))
+    shorter, other, s, h, b = setup(replace(
+        cfg, dt=.00013, board_normal_scale=board_scale * (.00013 / cfg.dt)**2))
     s, h, f = other.step(s, h, other.tool([0, 0, .04], [0, 0, -.12]), b)
     expected = [s.x, s.v, s.F, s.Fp, s.stress, h.rigid, h.pairs, h.damage, h.damage_work, f]
     for a, b in zip(evaluate(duration), expected):

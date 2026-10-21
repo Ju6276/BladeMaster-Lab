@@ -147,7 +147,7 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 | M2 | 多步状态与分段重算 VJP | 两网格、32/128/512 步的梯度、耗时和显存扫描完成 |
 | M3 | 刀与砧板接触、摩擦、推压轨迹优化对照 | 接触分段重算及 8/16 控制量扩展；八控制量 AD/FD/CMA-ES 成功 5/2/5（各五组），长轨迹见 RESULTS |
 | M4 | 固定切割分支、多场、塑性和刀路梯度 | 已完成：12 个窗口的正向与梯度、活跃网格约束、完整检查点及 67200 步切割/退刀/推块通过 |
-| M5 | 损伤达阈值和切开事件的梯度 | 步内事件定位、G_c 导数、分段重算和两网格 24 例自然事件扫描完成；下一项为事件后状态导数 |
+| M5 | 损伤达阈值和切开事件的梯度 | 事件定位、24 例自然扫描和 16 种损伤释放窗口的状态/刀力梯度完成；步长收敛失败，几何分侧与接触集合导数待做 |
 
 当前实现：`differentiable.py`、`differentiable_contact.py`、`differentiable_material.py`、`differentiable_cutting.py`、`differentiable_constraint.py`、`differentiable_events.py`。`precision.py` 从同一份 Warp 函数定义生成双精度核。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
 
@@ -163,11 +163,13 @@ M4 数值验收提交 `fe6a422`，dirty=false。保留塑性投影应力、固�
 
 完整轨迹入口按网格 CFL 和切向接触历史稳定条件取步长，当前香蕉为 **15.625 μs**，参考接触刚度保持相同。62.5 μs 长轨迹梯度验收失败（放大至 1e18）；步长对照在 `runs/m4_a6ede54_{default,half,quarter}_dt`。原求解器 float32 的 Fp 重复极差达到 **1.475e-5**，记录为 `runs/m4_a6ede54_precision_repeat`；最终正向使用同精度 float64 对照。
 
-M5 已启动。`differentiable_events` 定位固定法向平面穿越和损伤阈值的步内时刻，`FixedCutContact.fracture_energy` 接入 G_c 的 Tape/分段重算导数；10 项新检查覆盖刀位、粒子位移、初始损伤与 G_c。自然事件扫描入口为 `scripts.diff_cut_events`，原推进仍在子步边界切换；下一步将事件时刻导数传入后续粒子状态。
+M5 已接入损伤释放后的状态导数。`differentiable_events` 定位平面穿越和损伤阈值的步内时刻；`EventCutContact` 根据剩余断裂功积分刃口冲量，事件时刻通过冲量进入 x/v/F/Fp、应力和刀力。自然事件扫描入口为 `scripts.diff_cut_events`，释放梯度与步长对照为 `scripts.diff_release_validate`。
 
 M5 首批提交 `26c9fe5`，全量 **672 passed、8 skipped、18 subtests passed**。`runs/m5_26c9fe5_events_{6,4}mm` 共 **24** 例自然切割扫描：默认 G_c=700 时最大损伤 **0.13835/0.19641**，释放 **0/0** 个；G_c=70 时释放 **4/5** 个。刀偏移 +0.05 mm 时，分侧时刻改变 **263/1817** 个；偏移 −2 mm 时切块为 **674/778、2330/2562**。完整数字与命令见 RESULTS。
 
-完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。固定事件后，现有反力路径对 G_c 的梯度为零。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件，M5 分别测量。
+释放积分提交 `abd6b02`，全量 **680 passed、8 skipped、18 subtests passed**。`runs/m5_abd6b02_release{,_refined,_small_eps}` 覆盖 6/4 mm、G_c=7/70、四档步长的 **16** 种 2 ms 窗口；刀路/G_c 的自然差分和分段反向通过，损伤功平衡误差 ≤**1.77e-19 J**。最细相邻两档的刀路/G_c 导数相对差最高 **22.52%/57.69%**，步长收敛失败。下一步分离 PIC/FLIP 传递耗散与接触切换的影响，再处理几何侧码和接触集合；参考 DiffTaichi TOI、Saltation matrices、APIC 和 DiSECt，链接见 DIFFERENTIABLE。
+
+完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。
 
 ## 6. 参考资料
 

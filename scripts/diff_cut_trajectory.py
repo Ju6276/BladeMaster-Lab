@@ -204,6 +204,8 @@ def render(directory):
     surface = SurfaceRecorder(geometry, None, embedding_backend='cuda', ccd_backend='cuda')
     board = dict(size_mm=[190, 130, 8], center_mm=[0, 0, -4])
     scenes = [ReplayScene(asdict(cfg), board, 640, 600, style='paper') for _ in range(2)]
+    for scene in scenes:
+        scene.renderer.GetActiveCamera().SetParallelScale(70)
     font = ImageFont.truetype('DejaVuSans.ttf', 22)
     small = ImageFont.truetype('DejaVuSans.ttf', 18)
     filename = directory / 'differentiable_cutting.mp4'
@@ -254,6 +256,7 @@ def main():
     parser.add_argument('--spacing', type=float, default=.006)
     parser.add_argument('--material', choices=['banana', 'soft', 'plastic'], default='banana')
     parser.add_argument('--duration', type=float, default=1.05)
+    parser.add_argument('--dt', type=float, help='Material step in seconds; default uses banana_dt')
     parser.add_argument('--controls', type=float, nargs=3, default=[0., 1., 1.])
     parser.add_argument('--frame-stride', type=int, default=160)
     parser.add_argument('--segment-steps', type=int, default=32)
@@ -284,7 +287,9 @@ def main():
         frozen = freeze_archive(contact, archive)
     else:
         cfg = replace(configuration(args.spacing, args.material), blade_grid_constraint=True)
-        cfg = replace(cfg, dt=banana_dt(cfg, args.spacing))
+        cfg = replace(cfg, dt=banana_dt(cfg, args.spacing) if args.dt is None else args.dt)
+        if cfg.dt <= 0 or args.duration <= 0 or args.frame_stride < 1:
+            parser.error("Step, duration and frame stride must be positive")
         controls = np.asarray(args.controls)
         model, contact, initial, history, frozen, forward = record(
             cfg, controls, args.duration, args.output, args.frame_stride, args.ordered_transfers, args.precision)
@@ -317,6 +322,8 @@ def main():
                                relative_error=abs(ad-fd) / max(abs(ad), abs(fd), 1e-12)))
             report['finite_difference'] = checks
             report_path.write_text(json.dumps(report, indent=2) + '\n')
+    report['peak_live_cuda_pool_bytes'] = wp.get_mempool_used_mem_high(model.device)
+    report_path.write_text(json.dumps(report, indent=2) + '\n')
     if args.video:
         render(args.output)
     print(json.dumps(dict(provenance=report['provenance'], forward=report['forward'],

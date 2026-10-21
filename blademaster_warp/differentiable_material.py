@@ -142,12 +142,13 @@ def compute_stress(
     F: wp.array(dtype=wp.mat33),
     Fp: wp.array(dtype=wp.mat33),
     young: wp.array(dtype=float),
-    poisson: float,
+    poisson: wp.float64,
     stress: wp.array(dtype=wp.mat33),
 ):
     p = wp.tid()
-    mu = young[0] / (2.0 * (1.0 + poisson))
-    lam = young[0] * poisson / ((1.0 + poisson) * (1.0 - 2.0 * poisson))
+    mu = float(wp.float64(young[0]) / (wp.float64(2.0) * (wp.float64(1.0) + poisson)))
+    lam = float(wp.float64(young[0]) * poisson / ((wp.float64(1.0) + poisson)
+                                                * (wp.float64(1.0) - wp.float64(2.0) * poisson)))
     inverse = wp.inverse(Fp[p])
     stress[p] = elastic_stress(F[p] * inverse, mu, lam) * wp.transpose(inverse)
 
@@ -158,15 +159,16 @@ def project_plastic(
     Fp: wp.array(dtype=wp.mat33),
     young: wp.array(dtype=float),
     yield_stress: wp.array(dtype=float),
-    poisson: float,
+    poisson: wp.float64,
     fixed_yielded: wp.array(dtype=int),
     next_Fp: wp.array(dtype=wp.mat33),
     yielded: wp.array(dtype=int),
     next_stress: wp.array(dtype=wp.mat33),
 ):
     p = wp.tid()
-    mu = young[0] / (2.0 * (1.0 + poisson))
-    lam = young[0] * poisson / ((1.0 + poisson) * (1.0 - 2.0 * poisson))
+    mu = float(wp.float64(young[0]) / (wp.float64(2.0) * (wp.float64(1.0) + poisson)))
+    lam = float(wp.float64(young[0]) * poisson / ((wp.float64(1.0) + poisson)
+                                                * (wp.float64(1.0) - wp.float64(2.0) * poisson)))
     limit = yield_stress[0] / (2.0 * mu) * wp.sqrt(2.0 / 3.0)
     branch = fixed_yielded[p]
     if yield_stress[0] <= 0.0:
@@ -272,13 +274,34 @@ class MaterialTrajectory(ElasticTrajectory):
     required for both F and Fp. Each step retains its own plastic state.
     """
 
-    def __init__(self, config, device="cuda:0", requires_grad=True, *, ordered_transfers=False):
+    def __init__(self, config, device="cuda:0", requires_grad=True, *, ordered_transfers=False, precision="float32"):
+        if precision not in ("float32", "float64"):
+            raise ValueError("Material precision must be float32 or float64")
+        self.precision = precision
         super().__init__(replace(config, yield_stress=0.0), device, requires_grad)
         self.config = config
         self.ordered_transfers = ordered_transfers
         self.yield_stress = self.array([config.yield_stress], float)
         self.nodes = self.slots.numpy()
         self.uncut = self.topology(np.zeros(self.n, dtype=np.int64))
+
+    def array(self, values, dtype, requires_grad=None):
+        if self.precision == "float64":
+            from .precision import double_type
+            dtype = double_type(dtype)
+        return super().array(values, dtype, requires_grad)
+
+    def zeros(self, count, dtype, requires_grad=None):
+        if self.precision == "float64":
+            from .precision import double_type
+            dtype = double_type(dtype)
+        return super().zeros(count, dtype, requires_grad)
+
+    def launch(self, kernel, dim, **kwargs):
+        if self.precision == "float64":
+            from .precision import launch_double
+            return launch_double(kernel, dim, **kwargs)
+        return wp.launch(kernel, dim, **kwargs)
 
     def state(self, x=None, v=None, F=None, Fp=None, stress=None):
         base = super().state(x, v, F)
@@ -329,7 +352,7 @@ class MaterialTrajectory(ElasticTrajectory):
 
     def couple(self, grid, source):
         result = self.zeros(grid.count, wp.vec3)
-        wp.launch(couple_fixed, grid.count,
+        self.launch(couple_fixed, grid.count,
                   inputs=[grid.offsets, grid.sources, grid.coefficients, source],
                   outputs=[result], device=self.device)
         return result
@@ -352,43 +375,43 @@ class MaterialTrajectory(ElasticTrajectory):
             fixed_yielded.fill_(-1)
         if stress is None:
             stress = self.zeros(self.n, wp.mat33)
-            wp.launch(compute_stress, self.n, inputs=[state.F, state.Fp, self.young, cfg.poisson_ratio],
+            self.launch(compute_stress, self.n, inputs=[state.F, state.Fp, self.young, cfg.poisson_ratio],
                       outputs=[stress], device=self.device)
         if impulse is None:
             impulse = self.zeros(self.n, wp.vec3, False)
-            wp.launch(body_impulse, self.n, inputs=[wp.vec3(*gravity), self.mass, cfg.dt],
+            self.launch(body_impulse, self.n, inputs=[wp.vec3(*gravity), self.mass, cfg.dt],
                       outputs=[impulse], device=self.device)
         if self.ordered_transfers:
-            wp.launch(ordered_p2g, grid.count,
+            self.launch(ordered_p2g, grid.count,
                       inputs=[grid.particle_offsets, grid.particles, grid.corners, self.weights, self.gradients,
                               state.v, stress, impulse, self.mass, self.volume, cfg.dt],
                       outputs=[grid_mass, momentum, grid_impulse], device=self.device)
         else:
-            wp.launch(m.p2g, (self.n, 8),
+            self.launch(m.p2g, (self.n, 8),
                       inputs=[state.v, stress, impulse, grid.slots, self.weights, self.gradients,
                               self.mass, self.volume, cfg.dt],
                       outputs=[grid_mass, momentum, grid_impulse], device=self.device)
         coupled_momentum = self.couple(grid, momentum)
         coupled_impulse = self.couple(grid, grid_impulse)
-        wp.launch(m.grid_vel, grid.count, inputs=[grid_mass, coupled_momentum, coupled_impulse],
+        self.launch(m.grid_vel, grid.count, inputs=[grid_mass, coupled_momentum, coupled_impulse],
                   outputs=[old_v, new_v], device=self.device)
         if self.ordered_transfers:
-            wp.launch(gather_particles, self.n,
+            self.launch(gather_particles, self.n,
                       inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v, cfg.dt, cfg.flip_fraction],
                       outputs=[result.x, result.v], device=self.device)
-            wp.launch(ordered_remap, grid.count,
+            self.launch(ordered_remap, grid.count,
                       inputs=[grid.particle_offsets, grid.particles, grid.corners, self.weights, result.v, self.mass],
                       outputs=[remapped], device=self.device)
         else:
-            wp.launch(gather_remap, self.n,
+            self.launch(gather_remap, self.n,
                       inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v,
                               cfg.dt, cfg.flip_fraction, self.mass],
                       outputs=[result.x, result.v, remapped], device=self.device)
         coupled = self.couple(grid, remapped)
-        wp.launch(update_deformation, self.n,
+        self.launch(update_deformation, self.n,
                   inputs=[state.F, grid.slots, self.gradients, grid_mass, coupled, cfg.dt],
                   outputs=[result.F], device=self.device)
-        wp.launch(project_plastic, self.n,
+        self.launch(project_plastic, self.n,
                   inputs=[result.F, state.Fp, self.young, self.yield_stress, cfg.poisson_ratio, fixed_yielded],
                   outputs=[result.Fp, result.yielded, result.stress], device=self.device)
         return result

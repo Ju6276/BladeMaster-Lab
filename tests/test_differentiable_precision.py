@@ -1,13 +1,52 @@
-"""Repeatability and forward equivalence of ordered grid reductions."""
+"""Independent float64 references and reproducible fixed-field time integration."""
+
+from dataclasses import replace
 
 import numpy as np
-from blademaster_warp.differentiable_material import MaterialTrajectory
+import pytest
+import warp as wp
+
+from blademaster_warp.differentiable_material import MaterialTrajectory, hencky_project
 from blademaster_warp.solver import Config
 
 
-def test_ordered_transfers_recompute_exactly():
+@wp.kernel
+def project64_input(f: wp.array(dtype=wp.mat33), limit: wp.array(dtype=float), out: wp.array(dtype=wp.mat33)):
+    out[0] = hencky_project(f[0], limit[0])
+
+
+def numpy_projection(f, limit):
+    u, s, vt = np.linalg.svd(f)
+    e = np.log(s)
+    dev = e - e.mean()
+    radius = np.linalg.norm(dev)
+    return f if radius <= limit else (u * np.exp(e - (1 - limit / radius) * dev)) @ vt
+
+
+@pytest.mark.parametrize('f', [np.eye(3), np.diag([1.25, 1.25, .8]),
+                               np.array([[1.2, .1, 0], [0, .9, .1], [0, 0, 1.05]])])
+def test_float64_projection_matches_numpy(f):
+    model = MaterialTrajectory(Config(), precision='float64', ordered_transfers=True)
+    a, limit = model.array([f], wp.mat33), model.array([.08], float)
+    output = model.zeros(1, wp.mat33)
+    assert a.dtype == wp.mat33d and limit.dtype == wp.float64
+    seed = np.random.default_rng(8).normal(size=(3, 3))
+    direction = np.random.default_rng(9).normal(size=(3, 3))
+    with wp.Tape() as tape:
+        model.launch(project64_input, 1, inputs=[a, limit], outputs=[output], device=model.device)
+    tape.backward(grads={output: model.array([seed], wp.mat33, False)})
+    np.testing.assert_allclose(output.numpy()[0], numpy_projection(f, .08), atol=5e-12)
+    ad = np.sum(a.grad.numpy()[0] * direction)
+    eps = 1e-6
+    fd = np.sum((numpy_projection(f + eps * direction, .08)
+                 - numpy_projection(f - eps * direction, .08)) * seed) / (2 * eps)
+    np.testing.assert_allclose(ad, fd, rtol=1e-6, atol=1e-8)
+
+
+@pytest.mark.parametrize('precision', ['float32', 'float64'])
+def test_ordered_transfers_recompute_exactly(precision):
     cfg = Config(size=(.024, .018, .018), grid_spacing=.006, dt=.0002, yield_stress=200)
-    model = MaterialTrajectory(cfg, ordered_transfers=True)
+    model = MaterialTrajectory(cfg, ordered_transfers=True, precision=precision)
     grid = model.topology(np.where(model.reference[:, 0] < 0, 1, 2))
     initial = model.state(F=np.tile(np.diag([1.1, .95, 1]), (model.n, 1, 1)))
     states = []

@@ -91,7 +91,8 @@ def record(cfg, controls, duration, output, frame_stride, ordered_transfers=Fals
     rows = {key: [] for key in ('code_index', 'released', 'rigid_modes', 'yielded', 'pair_keys',
                                 'pair_modes', 'grid_batches', 'cutting')}
     code_table, code_lookup, offsets = [], {}, [0]
-    frames = {key: [] for key in ('time', 'x', 'F', 'codes', 'tool', 'force', 'pieces')}
+    frames = {key: [] for key in ('time', 'x', 'v', 'F', 'codes', 'tool', 'force', 'pieces',
+                                  'reference_x', 'reference_v', 'reference_F', 'reference_force', 'pair_count')}
     maximum = dict.fromkeys((*values, 'force'), 0.)
     original_s = replay_s = 0.
     previous = np.empty(0, np.int64)
@@ -100,15 +101,18 @@ def record(cfg, controls, duration, output, frame_stride, ordered_transfers=Fals
     peak_pairs, peak_residual = 0, 0.
     force_samples = []
 
-    def frame(elapsed, tool, codes, force):
+    def frame(elapsed, tool, codes, force, reference_force, pair_count):
         labels, sizes = components(model.nodes, model.weights.numpy(), codes)
-        for key, value in dict(time=elapsed, x=state.x.numpy(), F=state.F.numpy(), codes=codes,
-                               tool=np.r_[tool.position, tool.orientation_xyzw], force=force, pieces=labels).items():
+        snapshot = dict(time=elapsed, x=state.x.numpy(), v=state.v.numpy(), F=state.F.numpy(), codes=codes,
+                        tool=np.r_[tool.position, tool.orientation_xyzw], force=force, pieces=labels,
+                        reference_x=original.x.numpy(), reference_v=original.v.numpy(),
+                        reference_F=original.F.numpy(), reference_force=reference_force, pair_count=pair_count)
+        for key, value in snapshot.items():
             frames[key].append(value)
         return sizes
 
     tool = motion(cfg, 0., controls)[0]
-    sizes = frame(0., tool, original.codes.numpy(), np.zeros(3))
+    sizes = frame(0., tool, original.codes.numpy(), np.zeros(3), np.zeros(3), 0)
     for i in range(steps):
         elapsed = i * cfg.dt
         tool = motion(cfg, elapsed, controls)[0]
@@ -156,7 +160,7 @@ def record(cfg, controls, duration, output, frame_stride, ordered_transfers=Fals
                 if not np.isfinite(actual).all():
                     raise FloatingPointError(f'Nonfinite {name} at step {i}')
                 maximum[name] = max(maximum[name], float(np.max(np.abs(actual - getattr(original, name).numpy()))))
-            sizes = frame((i + 1) * cfg.dt, tool, original.codes.numpy(), force_np)
+            sizes = frame((i + 1) * cfg.dt, tool, original.codes.numpy(), force_np, reaction.force_n, len(keys))
             if (i + 1) % (frame_stride * 10) == 0:
                 print(json.dumps(dict(step=i + 1, steps=steps, time_s=(i + 1) * cfg.dt,
                                       pieces=sizes.tolist(), forward_max_abs=maximum,
@@ -192,7 +196,7 @@ def replay(model, contact, initial, history, frozen, controls):
     return total
 
 
-def render(directory):
+def render(directory, comparison=False, playback_speed=.1):
     import subprocess
     from PIL import Image, ImageDraw, ImageFont
     from blademaster_warp.replay_style import ReplayScene
@@ -203,7 +207,10 @@ def render(directory):
     cfg = Config(**report['config'])
     frames = np.load(directory / 'trajectory.npz')
     geometry = Solver(cfg)
-    surface = SurfaceRecorder(geometry, None, embedding_backend='cuda', ccd_backend='cuda')
+    if comparison and 'reference_x' not in frames:
+        raise ValueError('Comparison rendering requires recorded original-solver states')
+    surfaces = [SurfaceRecorder(geometry, None, embedding_backend='cuda', ccd_backend='cuda')
+                for _ in range(2 if comparison else 1)]
     board = dict(size_mm=[190, 130, 8], center_mm=[0, 0, -4])
     scenes = [ReplayScene(asdict(cfg), board, 640, 600, style='paper') for _ in range(2)]
     corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
@@ -213,7 +220,10 @@ def render(directory):
     rotated = (corners[None, :, :] + rotations[:, None, 3:] * cross
                + np.cross(rotations[:, None, :3], cross))
     tool_points = rotated + frames['tool'][:, None, :3]
-    points = 1000 * np.concatenate((frames['x'].reshape(-1, 3), tool_points.reshape(-1, 3)))
+    point_sets = [frames['x'].reshape(-1, 3), tool_points.reshape(-1, 3)]
+    if comparison:
+        point_sets.append(frames['reference_x'].reshape(-1, 3))
+    points = 1000 * np.concatenate(point_sets)
     for scene in scenes:
         camera = scene.renderer.GetActiveCamera()
         forward = np.asarray(camera.GetDirectionOfProjection())
@@ -230,44 +240,78 @@ def render(directory):
         camera.SetParallelScale(max(half_height, half_width / (640 / 600)) + 1000 * cfg.grid_spacing)
     font = ImageFont.truetype('DejaVuSans.ttf', 22)
     small = ImageFont.truetype('DejaVuSans.ttf', 18)
-    filename = directory / 'differentiable_cutting.mp4'
+    stem = 'solver_comparison' if comparison else 'differentiable_cutting'
+    suffix = '' if playback_speed == .1 else f'_{playback_speed:g}x'
+    filename = directory / f'{stem}{suffix}.mp4'
     output_fps = 20
+    duration = float(frames['time'][-1])
+    output_times = np.minimum(np.arange(int(np.ceil(duration * output_fps / playback_speed)) + 1)
+                              * playback_speed / output_fps, duration)
+    indices = np.searchsorted(frames['time'], output_times)
+    previous = np.maximum(indices - 1, 0)
+    indices = np.where(abs(frames['time'][previous] - output_times)
+                       < abs(frames['time'][indices] - output_times), previous, indices)
     command = ['ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24',
                '-s', '1280x720', '-r', str(output_fps), '-i', '-', '-an', '-c:v', 'libx264',
                '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(filename)]
     proc = subprocess.Popen(command, stdin=subprocess.PIPE)
     try:
+        # Surface topology consumes every recorded observation, including frames skipped at faster playback.
+        output_cursor = 0
         for index, elapsed in enumerate(frames['time']):
             tool = ToolState(frames['tool'][index, :3], frames['tool'][index, 3:], [0, 0, 0], [0, 0, 0])
-            surface.update(float(elapsed), frames['x'][index], frames['F'][index], frames['codes'][index],
-                           tool, cutting=elapsed <= .24)
+            for surface_index, surface in enumerate(surfaces):
+                prefix = 'reference_' if comparison and surface_index == 0 else ''
+                surface.update(float(elapsed), frames[f'{prefix}x'][index], frames[f'{prefix}F'][index],
+                               frames['codes'][index], tool, cutting=elapsed <= .24)
+            if output_cursor == len(indices) or indices[output_cursor] != index:
+                continue
             ids = frames['pieces'][index]
             colors = piece_rgb(ids, [.985, .95, .78])
             image = Image.new('RGB', (1280, 720), (245, 248, 248))
             for column, scene in enumerate(scenes):
-                scene.update(surface.current, frames['x'][index], frames['codes'][index], colors)
-                image.paste(Image.fromarray(scene.frame(particles=bool(column))), (column * 640, 60))
+                prefix = 'reference_' if comparison and column == 0 else ''
+                surface = surfaces[column if comparison else 0]
+                scene.update(surface.current, frames[f'{prefix}x'][index], frames['codes'][index], colors)
+                image.paste(Image.fromarray(scene.frame(particles=bool(column) and not comparison)), (column * 640, 60))
             draw = ImageDraw.Draw(image)
             phase = 'Cut' if elapsed <= .24 else 'Withdraw' if elapsed <= .48 else 'Reposition / push' if elapsed <= .85 else 'Withdraw'
-            draw.text((20, 10), 'Differentiable TLMPM | Banana cutting', font=font, fill=(30, 45, 50))
+            title = 'Original vs differentiable TLMPM' if comparison else 'Differentiable TLMPM | Banana cutting'
+            draw.text((20, 10), title, font=font, fill=(30, 45, 50))
             draw.text((940, 12), f'{phase}  |  {elapsed:.3f} s', font=small, fill=(30, 45, 50))
-            draw.text((20, 37), 'Surface', font=small, fill=(60, 70, 75))
-            draw.text((660, 37), 'Simulated particles | color by separated piece', font=small, fill=(60, 70, 75))
-            draw.text((20, 681), f"{int(ids.max()) + 1} pieces | {len(ids)} particles | {report.get('precision', 'float32')}",
-                      font=small, fill=(30, 45, 50))
-            draw.text((660, 681), f"Knife reaction: {np.linalg.norm(frames['force'][index]):.3f} N | fixed cutting branches",
-                      font=small, fill=(30, 45, 50))
-            proc.stdin.write(np.asarray(image).tobytes())
+            if comparison:
+                draw.text((20, 37), f"Original solver | {report['reference_precision']}", font=small, fill=(60, 70, 75))
+                draw.text((660, 37), f"Differentiable solver | {report['precision']}", font=small, fill=(60, 70, 75))
+                for column, key in enumerate(('reference_force', 'force')):
+                    draw.text((20 + 640 * column, 667), f"Knife reaction: {np.linalg.norm(frames[key][index]):.3f} N",
+                              font=small, fill=(30, 45, 50))
+                error = np.max(np.abs(frames['x'][index] - frames['reference_x'][index]))
+                detail = f'Same material, path, step and camera | {playback_speed:g}x speed | position difference: {error:.2e} m'
+                draw.text((20, 694), detail, font=small, fill=(30, 45, 50))
+            else:
+                draw.text((20, 37), 'Surface', font=small, fill=(60, 70, 75))
+                draw.text((660, 37), 'Simulated particles | color by separated piece', font=small, fill=(60, 70, 75))
+                draw.text((20, 681), f"{int(ids.max()) + 1} pieces | {len(ids)} particles | {playback_speed:g}x speed",
+                          font=small, fill=(30, 45, 50))
+                draw.text((660, 681), f"Knife reaction: {np.linalg.norm(frames['force'][index]):.3f} N | fixed cutting branches",
+                          font=small, fill=(30, 45, 50))
+            while output_cursor < len(indices) and indices[output_cursor] == index:
+                proc.stdin.write(np.asarray(image).tobytes())
+                output_cursor += 1
         proc.stdin.close()
         if proc.wait() != 0:
             raise RuntimeError('ffmpeg failed')
     finally:
-        surface.close()
+        for surface in surfaces:
+            surface.close()
         if proc.poll() is None:
             proc.terminate()
             proc.wait()
-    report['video'] = dict(file=filename.name, frames=len(frames['time']), fps=output_fps,
-                          source='MaterialTrajectory and FixedCutContact particle states')
+    key = ('comparison_video' if comparison else 'video') + suffix
+    source = ('Solver and MaterialTrajectory/FixedCutContact particle states' if comparison
+              else 'MaterialTrajectory and FixedCutContact particle states')
+    report[key] = dict(file=filename.name, frames=len(indices), fps=output_fps,
+                       playback_speed=playback_speed, source=source)
     (directory / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(filename, flush=True)
 
@@ -285,16 +329,20 @@ def main():
     parser.add_argument('--backward', action='store_true')
     parser.add_argument('--reuse', action='store_true')
     parser.add_argument('--video', action='store_true')
+    parser.add_argument('--comparison-video', action='store_true', help='Render original and differentiable states side by side')
+    parser.add_argument('--playback-speed', type=float, default=.1, help='Video simulation seconds per playback second')
     parser.add_argument('--render-only', action='store_true')
     parser.add_argument('--ordered-transfers', action='store_true')
     parser.add_argument('--precision', choices=['float32', 'float64'], default='float32')
     parser.add_argument('--reference-precision', choices=['float32', 'float64'], default='float32')
     parser.add_argument('--epsilons', type=float, nargs='+', default=[])
     args = parser.parse_args()
+    if not np.isfinite(args.playback_speed) or args.playback_speed <= 0:
+        parser.error('Playback speed must be finite and positive')
     args.output.mkdir(parents=True, exist_ok=True)
     report_path = args.output / 'report.json'
     if args.render_only:
-        render(args.output)
+        render(args.output, args.comparison_video, args.playback_speed)
         return
     if args.reuse:
         report = json.loads(report_path.read_text())
@@ -350,8 +398,8 @@ def main():
             report_path.write_text(json.dumps(report, indent=2) + '\n')
     report['peak_live_cuda_pool_bytes'] = wp.get_mempool_used_mem_high(model.device)
     report_path.write_text(json.dumps(report, indent=2) + '\n')
-    if args.video:
-        render(args.output)
+    if args.video or args.comparison_video:
+        render(args.output, args.comparison_video, args.playback_speed)
     print(json.dumps(dict(provenance=report['provenance'], forward=report['forward'],
                           backward={key: value for key, value in report.get('backward', {}).items() if key != 'timings'},
                           finite_difference=report.get('finite_difference', []))), flush=True)

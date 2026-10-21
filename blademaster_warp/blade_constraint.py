@@ -11,8 +11,9 @@ returned reaction remain in the original coupling.
 import warp as wp
 
 
-@wp.kernel
-def prepare(
+@wp.func
+def prepare_at(
+    p: int,
     x: wp.array(dtype=wp.vec3),
     slots: wp.array2d(dtype=int),
     weights: wp.array2d(dtype=float),
@@ -32,7 +33,6 @@ def prepare(
     extrapolated: wp.array(dtype=float),
     needs_solve: wp.array(dtype=int),
 ):
-    p = wp.tid()
     local = wp.quat_rotate_inv(rotation[0], x[p] - position[0])
     normal[p] = wp.vec3(0.0)
     impulse[p] = 0.0
@@ -69,6 +69,19 @@ def prepare(
             wp.atomic_add(active_weights, slot, wp.vec3(weights[p, a], 0.0, 0.0))
     if rhs[p] > 1.0e-7:
         wp.atomic_max(needs_solve, 0, 1)
+
+
+@wp.kernel
+def prepare(
+    x: wp.array(dtype=wp.vec3), slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
+    velocity: wp.array(dtype=wp.vec3), position: wp.array(dtype=wp.vec3), rotation: wp.array(dtype=wp.quat),
+    half: wp.vec3, bevel: float, radius: float, dt: float,
+    side: wp.array(dtype=float), normal: wp.array(dtype=wp.vec3), lever: wp.array(dtype=wp.vec3),
+    rhs: wp.array(dtype=float), active_weights: wp.array(dtype=wp.vec3),
+    impulse: wp.array(dtype=float), extrapolated: wp.array(dtype=float), needs_solve: wp.array(dtype=int),
+):
+    prepare_at(wp.tid(), x, slots, weights, velocity, position, rotation, half, bevel, radius, dt,
+               side, normal, lever, rhs, active_weights, impulse, extrapolated, needs_solve)
 
 
 @wp.kernel

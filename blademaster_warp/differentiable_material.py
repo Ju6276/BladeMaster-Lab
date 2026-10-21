@@ -6,8 +6,7 @@ import numpy as np
 import warp as wp
 
 from . import material as m
-from .differentiable import ElasticTrajectory, State, body_impulse, elastic_stress
-from .differentiable import gather_remap, update_deformation
+from .differentiable import ElasticTrajectory, State, elastic_stress
 
 
 @wp.func
@@ -204,10 +203,11 @@ def ordered_p2g(
     offsets: wp.array(dtype=int), particles: wp.array(dtype=int), corners: wp.array(dtype=int),
     weights: wp.array2d(dtype=float), gradients: wp.array2d(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3), stress: wp.array(dtype=wp.mat33), impulses: wp.array(dtype=wp.vec3),
-    mass: float, volume: float, dt: float, grid_mass: wp.array(dtype=float),
+    mass: float, volume: float, duration: wp.array(dtype=float), grid_mass: wp.array(dtype=float),
     momentum: wp.array(dtype=wp.vec3), grid_impulse: wp.array(dtype=wp.vec3),
 ):
     slot = wp.tid()
+    dt = duration[0]
     total_mass = float(0.0)
     total_momentum = wp.vec3(0.0)
     total_impulse = wp.vec3(0.0)
@@ -222,20 +222,86 @@ def ordered_p2g(
     grid_impulse[slot] = total_impulse
 
 
-@wp.kernel
-def gather_particles(
+@wp.func
+def gather_at(
+    p: int,
     x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3), slots: wp.array2d(dtype=int),
     weights: wp.array2d(dtype=float), old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
-    dt: float, flip: float, next_x: wp.array(dtype=wp.vec3), next_v: wp.array(dtype=wp.vec3),
+    duration: wp.array(dtype=float), flip: float, reference_dt: float,
 ):
-    p = wp.tid()
+    dt = duration[0]
+    alpha = 1.0 - (1.0 - flip) * dt / reference_dt
     pic, dv = wp.vec3(0.0), wp.vec3(0.0)
     for a in range(8):
         slot = slots[p, a]
         pic += weights[p, a] * new_v[slot]
         dv += weights[p, a] * (new_v[slot] - old_v[slot])
-    next_x[p] = x[p] + dt * pic
-    next_v[p] = (1.0 - flip) * pic + flip * (v[p] + dv)
+    return x[p] + dt * pic, (1.0 - alpha) * pic + alpha * (v[p] + dv)
+
+
+@wp.kernel
+def gather_particles(
+    x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3), slots: wp.array2d(dtype=int),
+    weights: wp.array2d(dtype=float), old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
+    duration: wp.array(dtype=float), flip: float, reference_dt: float,
+    next_x: wp.array(dtype=wp.vec3), next_v: wp.array(dtype=wp.vec3),
+):
+    p = wp.tid()
+    xp, vp = gather_at(p, x, v, slots, weights, old_v, new_v, duration, flip, reference_dt)
+    next_x[p] = xp
+    next_v[p] = vp
+
+
+@wp.kernel
+def timed_body_impulse(gravity: wp.vec3, mass: float, duration: wp.array(dtype=float),
+                       impulse: wp.array(dtype=wp.vec3)):
+    impulse[wp.tid()] = mass * duration[0] * gravity
+
+
+@wp.kernel
+def timed_p2g(
+    v: wp.array(dtype=wp.vec3), stress: wp.array(dtype=wp.mat33), impulses: wp.array(dtype=wp.vec3),
+    slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float), gradients: wp.array2d(dtype=wp.vec3),
+    mass: float, volume: float, duration: wp.array(dtype=float), grid_mass: wp.array(dtype=float),
+    momentum: wp.array(dtype=wp.vec3), grid_impulse: wp.array(dtype=wp.vec3),
+):
+    p, a = wp.tid()
+    slot = slots[p, a]
+    if slot >= 0:
+        w = weights[p, a]
+        wp.atomic_add(grid_mass, slot, mass * w)
+        wp.atomic_add(momentum, slot, mass * w * v[p])
+        wp.atomic_add(grid_impulse, slot, w * impulses[p] - duration[0] * volume * stress[p] * gradients[p, a])
+
+
+@wp.kernel
+def timed_gather_remap(
+    x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3), slots: wp.array2d(dtype=int),
+    weights: wp.array2d(dtype=float), old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
+    duration: wp.array(dtype=float), flip: float, reference_dt: float, mass: float,
+    next_x: wp.array(dtype=wp.vec3), next_v: wp.array(dtype=wp.vec3), momentum: wp.array(dtype=wp.vec3),
+):
+    p = wp.tid()
+    xp, vp = gather_at(p, x, v, slots, weights, old_v, new_v, duration, flip, reference_dt)
+    next_x[p] = xp
+    next_v[p] = vp
+    for a in range(8):
+        wp.atomic_add(momentum, slots[p, a], mass * weights[p, a] * vp)
+
+
+@wp.kernel
+def timed_deformation(
+    F: wp.array(dtype=wp.mat33), slots: wp.array2d(dtype=int), gradients: wp.array2d(dtype=wp.vec3),
+    grid_mass: wp.array(dtype=float), remapped: wp.array(dtype=wp.vec3), duration: wp.array(dtype=float),
+    next_F: wp.array(dtype=wp.mat33),
+):
+    p = wp.tid()
+    rate = wp.mat33(0.0)
+    for a in range(8):
+        slot = slots[p, a]
+        if grid_mass[slot] > 0.0:
+            rate += wp.outer(remapped[slot] / grid_mass[slot], gradients[p, a])
+    next_F[p] = F[p] + duration[0] * rate
 
 
 @wp.kernel
@@ -284,6 +350,7 @@ class MaterialTrajectory(ElasticTrajectory):
         self.yield_stress = self.array([config.yield_stress], float)
         self.nodes = self.slots.numpy()
         self.uncut = self.topology(np.zeros(self.n, dtype=np.int64))
+        self.duration = self.array([config.dt], float, False)
 
     def array(self, values, dtype, requires_grad=None):
         if self.precision == "float64":
@@ -357,8 +424,10 @@ class MaterialTrajectory(ElasticTrajectory):
                   outputs=[result], device=self.device)
         return result
 
-    def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None, grid_transform=None):
+    def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None,
+             grid_transform=None, duration=None):
         cfg = self.config
+        duration = self.duration if duration is None else duration
         grid = self.uncut if topology is None else topology
         stress = state.stress
         grid_mass = self.zeros(grid.count, float, False)
@@ -378,18 +447,18 @@ class MaterialTrajectory(ElasticTrajectory):
             self.launch(compute_stress, self.n, inputs=[state.F, state.Fp, self.young, cfg.poisson_ratio],
                       outputs=[stress], device=self.device)
         if impulse is None:
-            impulse = self.zeros(self.n, wp.vec3, False)
-            self.launch(body_impulse, self.n, inputs=[wp.vec3(*gravity), self.mass, cfg.dt],
+            impulse = self.zeros(self.n, wp.vec3)
+            self.launch(timed_body_impulse, self.n, inputs=[wp.vec3(*gravity), self.mass, duration],
                       outputs=[impulse], device=self.device)
         if self.ordered_transfers:
             self.launch(ordered_p2g, grid.count,
                       inputs=[grid.particle_offsets, grid.particles, grid.corners, self.weights, self.gradients,
-                              state.v, stress, impulse, self.mass, self.volume, cfg.dt],
+                              state.v, stress, impulse, self.mass, self.volume, duration],
                       outputs=[grid_mass, momentum, grid_impulse], device=self.device)
         else:
-            self.launch(m.p2g, (self.n, 8),
+            self.launch(timed_p2g, (self.n, 8),
                       inputs=[state.v, stress, impulse, grid.slots, self.weights, self.gradients,
-                              self.mass, self.volume, cfg.dt],
+                              self.mass, self.volume, duration],
                       outputs=[grid_mass, momentum, grid_impulse], device=self.device)
         coupled_momentum = self.couple(grid, momentum)
         coupled_impulse = self.couple(grid, grid_impulse)
@@ -400,19 +469,19 @@ class MaterialTrajectory(ElasticTrajectory):
         if self.ordered_transfers:
             self.launch(gather_particles, self.n,
                       inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v,
-                              cfg.dt, cfg.effective_flip_fraction()],
+                              duration, cfg.flip_fraction, cfg.flip_reference_dt or cfg.dt],
                       outputs=[result.x, result.v], device=self.device)
             self.launch(ordered_remap, grid.count,
                       inputs=[grid.particle_offsets, grid.particles, grid.corners, self.weights, result.v, self.mass],
                       outputs=[remapped], device=self.device)
         else:
-            self.launch(gather_remap, self.n,
+            self.launch(timed_gather_remap, self.n,
                       inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v,
-                              cfg.dt, cfg.effective_flip_fraction(), self.mass],
+                              duration, cfg.flip_fraction, cfg.flip_reference_dt or cfg.dt, self.mass],
                       outputs=[result.x, result.v, remapped], device=self.device)
         coupled = self.couple(grid, remapped)
-        self.launch(update_deformation, self.n,
-                  inputs=[state.F, grid.slots, self.gradients, grid_mass, coupled, cfg.dt],
+        self.launch(timed_deformation, self.n,
+                  inputs=[state.F, grid.slots, self.gradients, grid_mass, coupled, duration],
                   outputs=[result.F], device=self.device)
         self.launch(project_plastic, self.n,
                   inputs=[result.F, state.Fp, self.young, self.yield_stress, cfg.poisson_ratio, fixed_yielded],

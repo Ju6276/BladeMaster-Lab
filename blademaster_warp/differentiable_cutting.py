@@ -73,7 +73,8 @@ def rigid_step(
     blade_offset: float,
     board_half: wp.vec2,
     mass: float,
-    dt: float,
+    duration: wp.array(dtype=float),
+    reference_dt: float,
     sn: float,
     board_sn: float,
     gk: float,
@@ -94,6 +95,11 @@ def rigid_step(
     modes: wp.array2d(dtype=int),
 ):
     p = wp.tid()
+    dt = duration[0]
+    ratio = dt / reference_dt
+    sn = sn * ratio * ratio
+    board_sn = board_sn * ratio * ratio
+    gk = gk * ratio * ratio
     is_released = released[p]
     if integrate_release != 0:
         is_released = int(damage[p] >= 1.0)
@@ -194,7 +200,8 @@ def pair_step(
     friction: wp.array(dtype=float),
     diameter: float,
     mass: float,
-    dt: float,
+    duration: wp.array(dtype=float),
+    reference_dt: float,
     sn: float,
     gk: float,
     gc: float,
@@ -203,6 +210,10 @@ def pair_step(
     modes: wp.array(dtype=int),
 ):
     index = wp.tid()
+    dt = duration[0]
+    ratio = dt / reference_dt
+    sn = sn * ratio * ratio
+    gk = gk * ratio * ratio
     p, q = pairs[index, 0], pairs[index, 1]
     delta = x[p] - x[q]
     distance = wp.length(delta)
@@ -302,8 +313,9 @@ class FixedCutContact(PrescribedContact):
                           m.array(rigid_modes, int, False), m.array(pair_modes, int, False),
                           None if yielded is None else m.array(yielded, int, False), grid_batches)
 
-    def step(self, state, history, tool, frozen):
+    def step(self, state, history, tool, frozen, *, duration=None):
         m, cfg = self.model, self.model.config
+        duration = m.duration if duration is None else duration
         sn, gk = cfg.contact_scales()
         radius = cfg.grid_spacing / 4
         blade_offset = max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0])
@@ -321,7 +333,7 @@ class FixedCutContact(PrescribedContact):
                   inputs=[state.x, state.v, history.rigid, history.damage, frozen.released, frozen.rigid_modes,
                           tool.position, tool.velocity, tool.rotation, tool.omega, self.friction,
                           wp.vec3(*cfg.blade_half_size), cfg.blade_bevel_height, radius, blade_offset,
-                          wp.vec2(*cfg.board_half_extent), m.mass, cfg.dt, sn, cfg.board_normal_scale or sn,
+                          wp.vec2(*cfg.board_half_extent), m.mass, duration, cfg.dt, sn, cfg.board_normal_scale or sn,
                           gk, cfg.tangent_damping, cfg.cut_band_cells * cfg.grid_spacing,
                           self.fracture_energy, threshold_factor, int(self.integrate_release),
                           int(frozen.cutting), int(cfg.cut_hold), int(cfg.cut_work == "advance")],
@@ -331,7 +343,7 @@ class FixedCutContact(PrescribedContact):
             m.launch(pair_step, frozen.pairs.shape[0],
                       inputs=[state.x, state.v, frozen.pairs, frozen.previous, frozen.pair_modes,
                               history.pairs, self.friction,
-                              2 * radius, m.mass, cfg.dt, sn, gk, cfg.tangent_damping],
+                              2 * radius, m.mass, duration, cfg.dt, sn, gk, cfg.tangent_damping],
                       outputs=[updated.pairs, pairs, updated.pair_modes], device=m.device)
         m.launch(add_impulses, m.n, inputs=[rigid, pairs], outputs=[impulse], device=m.device)
         constraint_result = None
@@ -339,12 +351,12 @@ class FixedCutContact(PrescribedContact):
         def constrain(grid, mass, velocity):
             nonlocal constraint_result
             constraint_result = grid_constraint.solve(
-                m, grid, mass, velocity, state.x, tool, history.side, frozen.grid_batches,
+                m, grid, mass, velocity, state.x, tool, history.side, frozen.grid_batches, duration=duration,
             )
             return constraint_result.velocity
 
         result = m.step(state, impulse=impulse, topology=frozen.topology, fixed_yielded=frozen.yielded,
-                        grid_transform=constrain if cfg.blade_grid_constraint else None)
+                        grid_transform=constrain if cfg.blade_grid_constraint else None, duration=duration)
         updated.side = history.side
         if constraint_result is not None:
             updated.side = constraint_result.side
@@ -352,7 +364,7 @@ class FixedCutContact(PrescribedContact):
             updated.grid_residual = constraint_result.residual
             combined = m.zeros(1, wp.vec3)
             m.launch(grid_constraint.add_reaction, 1,
-                      inputs=[reaction, constraint_result.linear_impulse, cfg.dt],
+                      inputs=[reaction, constraint_result.linear_impulse, duration],
                       outputs=[combined], device=m.device)
             reaction = combined
         return result, updated, reaction

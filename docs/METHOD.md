@@ -97,6 +97,8 @@ PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定�
 
 `Config.flip_reference_dt > 0` 时，本实现固定 `λ=(1−flip_fraction)/flip_reference_dt`，每步取 `α=1−λΔt`。这是残差阻尼的显式积分，要求 `0≤λΔt≤1`；粒子位置仍使用插值网格速度推进。原求解器、弹性和塑性可微求解器共用该系数。`flip_reference_dt=0` 保持每步固定混合比例，`flip_fraction=1` 为纯 FLIP。
 
+`MaterialTrajectory.step` 和 `FixedCutContact.step` 接受可求导的单元素 `duration` 数组（秒）。分段时长 τ 同时进入重力/应力冲量、P2G/G2P/MUSL、塑性、摩擦历史、损伤计功、网格约束及反力换算。接触系数以完整步的值乘 `(τ/config.dt)²`，包括砧板系数，保持物理刚度；PIC 参考时间取显式 `flip_reference_dt`，未设置时取完整步长。分段时长取 `0<τ≤config.dt`。
+
 `scripts.diff_release_validate --transfers fixed-mix fixed-rate flip` 从同一初态对照三种传递设置；`fixed-rate` 用该网格的基准步长作为参考，6/4 mm 分别得到 λ=3200/3800 s⁻¹。网格间固定同一 λ 的对照需要显式使用同一参考步长。
 
 ## 与论文的差异

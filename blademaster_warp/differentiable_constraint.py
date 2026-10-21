@@ -8,6 +8,20 @@ from . import blade_constraint as constraint
 
 
 @wp.kernel
+def prepare_timed(
+    x: wp.array(dtype=wp.vec3), slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
+    velocity: wp.array(dtype=wp.vec3), position: wp.array(dtype=wp.vec3), rotation: wp.array(dtype=wp.quat),
+    half: wp.vec3, bevel: float, radius: float, duration: wp.array(dtype=float),
+    side: wp.array(dtype=float), normal: wp.array(dtype=wp.vec3), lever: wp.array(dtype=wp.vec3),
+    rhs: wp.array(dtype=float), active_weights: wp.array(dtype=wp.vec3),
+    impulse: wp.array(dtype=float), extrapolated: wp.array(dtype=float), needs_solve: wp.array(dtype=int),
+):
+    constraint.prepare_at(wp.tid(), x, slots, weights, velocity, position, rotation, half, bevel,
+                          radius, duration[0], side, normal, lever, rhs, active_weights,
+                          impulse, extrapolated, needs_solve)
+
+
+@wp.kernel
 def project(
     slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
     mass: wp.array(dtype=float), coupled: wp.array(dtype=wp.vec3),
@@ -39,8 +53,8 @@ def apply_grid(mass: wp.array(dtype=float), coupled: wp.array(dtype=wp.vec3),
 
 @wp.kernel
 def add_reaction(contact: wp.array(dtype=wp.vec3), constraint_impulse: wp.array(dtype=wp.vec3),
-                 dt: float, force: wp.array(dtype=wp.vec3)):
-    force[0] = contact[0] - constraint_impulse[0] / dt
+                 duration: wp.array(dtype=float), force: wp.array(dtype=wp.vec3)):
+    force[0] = contact[0] - constraint_impulse[0] / duration[0]
 
 
 @dataclass
@@ -52,13 +66,14 @@ class GridConstraintResult:
     residual: float
 
 
-def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=None):
+def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=None, *, duration=None):
     """Same 48-iteration batches and residual stopping rule as BladeConstraint.
 
     Entry sides and the iteration count are discrete. A supplied fixed_batches
     replays the recorded solve schedule while x, tool pose and iterates carry VJPs.
     """
     cfg = model.config
+    duration = model.duration if duration is None else duration
     side = model.zeros(model.n, float, False)
     if old_side is not None:
         wp.copy(side, old_side)
@@ -71,9 +86,9 @@ def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=Non
     needs_solve = model.zeros(1, int, False)
     radius = cfg.grid_spacing / 4
     offset = max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0])
-    model.launch(constraint.prepare, model.n,
+    model.launch(prepare_timed, model.n,
               inputs=[x, grid.slots, model.weights, velocity, tool.position, tool.rotation,
-                      wp.vec3(*cfg.blade_half_size), cfg.blade_bevel_height, offset, cfg.dt],
+                      wp.vec3(*cfg.blade_half_size), cfg.blade_bevel_height, offset, duration],
               outputs=[side, normal, lever, rhs, active_weights, impulse, extrapolated, needs_solve],
               device=model.device)
     count = int(needs_solve.numpy()[0]) if fixed_batches is None else fixed_batches

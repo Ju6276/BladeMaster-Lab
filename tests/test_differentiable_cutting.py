@@ -125,7 +125,8 @@ def test_pair_history_vjp_and_momentum(history_scale):
     impulse = model.zeros(2, wp.vec3)
     modes = model.zeros(1, int, False)
     fixed_modes = model.array([-1], int, False)
-    inputs = [x, v, pairs, previous, fixed_modes, h, friction, 0.003, 3e-5, 0.0002, 0.1, 0.05, 0.1]
+    inputs = [x, v, pairs, previous, fixed_modes, h, friction, 0.003, 3e-5,
+              model.array([0.0002], float, False), 0.0002, 0.1, 0.05, 0.1]
     with wp.Tape() as tape:
         wp.launch(pair_step, 1, inputs=inputs, outputs=[updated, impulse, modes], device=model.device)
     tape.backward(grads={impulse: model.array(seed, wp.vec3, False),

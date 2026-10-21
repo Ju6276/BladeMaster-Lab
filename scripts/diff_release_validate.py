@@ -164,6 +164,8 @@ def main():
     parser.add_argument('--dt-divisors', type=int, nargs='+', default=[1, 2, 4])
     parser.add_argument('--duration', type=float, default=.002)
     parser.add_argument('--epsilons', type=float, nargs='+', default=[.01, .001, .0001, .00001, .000001])
+    parser.add_argument('--transfers', nargs='+', choices=('fixed-mix', 'fixed-rate', 'flip'),
+                        default=['fixed-mix'])
     args = parser.parse_args()
     numbers = [*args.spacings, *args.energies, *args.dt_divisors, args.duration, *args.epsilons]
     if any(not np.isfinite(value) or value <= 0 for value in numbers):
@@ -178,29 +180,37 @@ def main():
             base = replace(base, dt=tangent_history_dt(base, banana_dt(base, spacing)))
             prefix, saved = before_first_release(base)
             start_time = prefix * base.dt
-            levels = []
-            for divisor in sorted(set(args.dt_divisors)):
-                cfg = replace(base, dt=base.dt / divisor)
-                if abs(round(args.duration / cfg.dt) * cfg.dt - args.duration) > 1e-12:
-                    parser.error('Duration must be divisible by every selected time step')
-                row, arrays = evaluate(cfg, start_time, args.duration, saved, args.epsilons)
-                name = f'h{spacing:g}_gc{energy:g}_dt{divisor}'
-                row.update(name=name, config=asdict(cfg))
-                np.savez_compressed(args.output / f'{name}.npz', **arrays)
-                report['cases'].append(row)
-                levels.append((row, arrays))
+            for transfer in dict.fromkeys(args.transfers):
+                levels = []
+                for divisor in sorted(set(args.dt_divisors)):
+                    fraction = base.flip_fraction
+                    if transfer == 'flip':
+                        fraction = 1.
+                    cfg = replace(base, dt=base.dt / divisor, flip_fraction=fraction,
+                                  flip_reference_dt=base.dt if transfer == 'fixed-rate' else 0.)
+                    if abs(round(args.duration / cfg.dt) * cfg.dt - args.duration) > 1e-12:
+                        parser.error('Duration must be divisible by every selected time step')
+                    row, arrays = evaluate(cfg, start_time, args.duration, saved, args.epsilons)
+                    name = f'h{spacing:g}_gc{energy:g}_dt{divisor}'
+                    if transfer != 'fixed-mix':
+                        name += f'_{transfer}'
+                    row.update(name=name, transfer=transfer, config=asdict(cfg),
+                               pic_rate_s_inv=(1 - cfg.effective_flip_fraction()) / cfg.dt)
+                    np.savez_compressed(args.output / f'{name}.npz', **arrays)
+                    report['cases'].append(row)
+                    levels.append((row, arrays))
+                    (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+                    print(json.dumps(row), flush=True)
+                finest_row, finest = levels[-1]
+                for row, arrays in levels:
+                    common = (arrays['event_times'] >= 0) & (finest['event_times'] >= 0)
+                    row['vs_finest'] = dict(x_max_distance_m=float(np.max(np.linalg.norm(arrays['x'] - finest['x'], axis=1))),
+                                            v_max_distance_m_s=float(np.max(np.linalg.norm(arrays['v'] - finest['v'], axis=1))),
+                                            event_time_max_error_s=float(np.max(np.abs(arrays['event_times'][common] - finest['event_times'][common]))) if np.any(common) else 0.,
+                                            different_event_particles=int(np.count_nonzero((arrays['event_times'] >= 0) != (finest['event_times'] >= 0))),
+                                            gradient_controls_max_abs=float(np.max(np.abs(np.asarray(row['gradient_controls']) - finest_row['gradient_controls']))),
+                                            gradient_fracture_energy_abs=abs(row['gradient_fracture_energy'] - finest_row['gradient_fracture_energy']))
                 (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
-                print(json.dumps(row), flush=True)
-            finest_row, finest = levels[-1]
-            for row, arrays in levels:
-                common = (arrays['event_times'] >= 0) & (finest['event_times'] >= 0)
-                row['vs_finest'] = dict(x_max_distance_m=float(np.max(np.linalg.norm(arrays['x'] - finest['x'], axis=1))),
-                                        v_max_distance_m_s=float(np.max(np.linalg.norm(arrays['v'] - finest['v'], axis=1))),
-                                        event_time_max_error_s=float(np.max(np.abs(arrays['event_times'][common] - finest['event_times'][common]))) if np.any(common) else 0.,
-                                        different_event_particles=int(np.count_nonzero((arrays['event_times'] >= 0) != (finest['event_times'] >= 0))),
-                                        gradient_controls_max_abs=float(np.max(np.abs(np.asarray(row['gradient_controls']) - finest_row['gradient_controls']))),
-                                        gradient_fracture_energy_abs=abs(row['gradient_fracture_energy'] - finest_row['gradient_fracture_energy']))
-            (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
 
 
 if __name__ == '__main__':

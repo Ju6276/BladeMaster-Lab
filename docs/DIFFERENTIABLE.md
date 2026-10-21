@@ -133,6 +133,8 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_release.py -q
 
 释放窗口从原求解器首个损伤事件之前的共同状态起步，保持 2 ms 物理时长，比较三档步长。G_c=7/70 J/m² 用于激活损伤释放；默认香蕉仍为 700 J/m²。每次扰动重新判断损伤释放、刚体接触、粘滑和屈服分支；报告事件步号及刚体接触模式变化。侧码和粒子对集合在窗口内保持不变，原求解器重放逐步核对这两个条件。目标包含平均刀力和末端 v/Fp；比较完整 Tape、16 步分段反向以及五档自然有限差分，同时核对损伤功、终态及事件时刻的步长收敛。
 
+`--transfers fixed-mix fixed-rate flip` 对照每步固定混合比例、固定单位时间耗散率和纯 FLIP。三组及其细化步长共用原求解器在基准步长下生成的初态，报告 `pic_rate_s_inv`；`fixed-rate` 的参考步长写入配置，数值公式见 METHOD。只运行一组可指定 `--transfers fixed-rate`。
+
 提交 `abd6b02` 的三档扫描加 `--dt-divisors 4 8 --epsilons .00001 .000001`，共覆盖 16 种配置。每个刀路/G_c 方向至少两档差分误差 ≤2%；完整 Tape 与分段反向的控制量/G_c 最大差为 4.89e-15/1.74e-17，全部状态重算差为 0。4 mm、G_c=70 的粗步长在 ε=1e-6 时跨过砧板接触分支，刀路差分误差 18.86%；补充 ε=1e-7/1e-8 后误差降至 7.59e-7%/1.44e-5%，分支变化为 0。
 
 步长收敛验收失败。最细相邻两档的刀路方向导数相对差为 5.04–22.52%，G_c 导数为 1.95–57.69%；6/4 mm、G_c=70 在 2 ms 窗口内的释放数分别从 4/3 变为 3/5。该窗口由共同的固定初态起步；报告与命令见 RESULTS。
@@ -156,5 +158,6 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_release.py -q
 - [接触梯度与碰撞时刻修正](https://arxiv.org/abs/2305.00092)、[Saltation Matrices](https://arxiv.org/abs/2306.06862)：事件发生时刻与事件前后状态变化的导数。
 - [DiSECt](https://diff-cutting-sim.github.io/)：沿切面的连接逐渐软化，作为连续损伤方案的对照。
 - [APIC](https://doi.org/10.1145/2766996)：粒子—网格传递的数值耗散及局部仿射速度表示，用于分析当前 PIC/FLIP 的步长敏感性。
+- [NairnMPM PIC damping](https://osupdocs.forestry.oregonstate.edu/index.php?title=Damping_Options#PIC_Damping)：PIC/FLIP 混合与传递残差阻尼的关系；据此实现固定耗散率的步长对照。
 
 首版使用普通 kernel launch；梯度核对通过后再测 CUDA Graph 的前反向调度。

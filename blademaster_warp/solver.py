@@ -25,6 +25,8 @@ class Config:
     maxwell_fraction: float = 0.0
     yield_stress: float = 0.0  # Disabled, not zero-strength plasticity.
     flip_fraction: float = 0.95
+    # >0 fixes PIC damping rate (1-flip_fraction)/flip_reference_dt [1/s].
+    flip_reference_dt: float = 0.0
     normal_scale: float = 0.1
     friction_static: float = 0.3
     friction_dynamic: float = 0.2
@@ -129,10 +131,13 @@ class Config:
         if not (0 <= self.flip_fraction <= 1 and 0 <= self.friction_dynamic <= self.friction_static):
             raise ValueError("Invalid transfer/friction")
         if (
-            min(self.dynamic_viscosity, self.yield_stress, self.tangent_damping, self.contact_reference_dt)
+            min(self.dynamic_viscosity, self.yield_stress, self.tangent_damping,
+                self.contact_reference_dt, self.flip_reference_dt)
             < 0
         ):
             raise ValueError("Negative damping/plasticity/reference step")
+        if not 0 <= self.effective_flip_fraction() <= 1:
+            raise ValueError("PIC damping exceeds one per step; reduce dt")
         if self.maxwell_tau < 0 or not 0 <= self.maxwell_fraction <= 1:
             raise ValueError("maxwell_tau must be non-negative and maxwell_fraction in [0, 1]")
         if max(self.contact_scales()) > 1:
@@ -158,6 +163,12 @@ class Config:
         """Effective (s_n, gamma_k) used by the kernels at this dt."""
         ratio = 1.0 if self.contact_reference_dt == 0 else (self.dt / self.contact_reference_dt) ** 2
         return self.normal_scale * ratio, self.tangent_stiffness * ratio
+
+    def effective_flip_fraction(self):
+        """Explicit PIC damping requires 0 <= rate*dt <= 1."""
+        if self.flip_reference_dt == 0:
+            return self.flip_fraction
+        return 1 - (1 - self.flip_fraction) * self.dt / self.flip_reference_dt
 
 
 PAIR_LANES = 64
@@ -520,7 +531,7 @@ class Solver:
                 self.old_v,
                 self.new_v,
                 cfg.dt,
-                cfg.flip_fraction,
+                cfg.effective_flip_fraction(),
                 self.mass,
                 self.remapped,
             ],

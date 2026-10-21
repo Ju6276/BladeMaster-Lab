@@ -81,15 +81,26 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 `EventCutContact` 使用每粒子阈值 Q = G_c V₀^(2/3) (1−ζ)/ζ（J）。将本步接触核算出的刃向冲量记为 J，正向相对推进速度记为 u，当前损伤为 D；步内恒定力和 u 下，完整步损伤增量为 Ju/Q，剩余断裂功为 R=(1−D)Q。若 Ju≥R，释放时刻 τ=Δt R/(Ju)，保留刃向冲量 R/u，并移除余下的 J−R/u；该步损伤功取 R，损伤变为 1。已释放粒子继续撤除原计功带内的刃向推力。其余方向的冲量和摩擦历史使用现有公式，粒子通过原一阶 MPM 步更新。
 
+同一个 `cut_index` 内，D 累积并保留到后续子步，暂停或退刀不清零；`Solver._set_cut` 切换切割编号时重置各刀的 D 和释放标记。历史三进制侧码及塑性形变 Fp 保留，分别记忆旧切口和塑性变形。D 表示当前这一刀的断裂功进度；`EventCutContact` 将它作为逐步状态和检查点状态传递。
+
 τ 的导数通过冲量进入刀力和粒子状态，自动微分与有限差分评估同一正向公式。`CutHistory.damage_work` 记录各粒子的损伤计功，核对 ΣW = QΣΔD；整体系的输入功、储能、塑性及摩擦耗散另行统计。侧码及粒子对集合由调用者给定；`cut_hold=False` 使释放前后的刃口接触法向规则保持一致。
 
 事件积分思路参考 [DiffTaichi 的 TOI 实现](https://github.com/taichi-dev/difftaichi/blob/master/examples/mass_spring.py)。[Saltation matrices](https://arxiv.org/abs/2306.06862) 给出跨事件的状态灵敏度更新；当前实现对上述一阶离散积分直接求导。事件时间、终态与梯度的步长对照使用 `scripts.diff_release_validate`。
+
+## PIC 传递耗散的时间尺度
+
+PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定每步 α 时，粒子速度残差的有效耗散率为 `(1−α)/Δt`，步长减半会使该速率加倍。[NairnMPM 的 PIC damping 推导](https://osupdocs.forestry.oregonstate.edu/index.php?title=Damping_Options#PIC_Damping) 将这一混合解释为对传递残差的数值阻尼。
+
+`Config.flip_reference_dt > 0` 时，本实现固定 `λ=(1−flip_fraction)/flip_reference_dt`，每步取 `α=1−λΔt`。这是残差阻尼的显式积分，要求 `0≤λΔt≤1`；粒子位置仍使用插值网格速度推进。原求解器、弹性和塑性可微求解器共用该系数。`flip_reference_dt=0` 保持每步固定混合比例，`flip_fraction=1` 为纯 FLIP。
+
+`scripts.diff_release_validate --transfers fixed-mix fixed-rate flip` 从同一初态对照三种传递设置；`fixed-rate` 用该网格的基准步长作为参考，6/4 mm 分别得到 λ=3200/3800 s⁻¹。网格间固定同一 λ 的对照需要显式使用同一参考步长。
 
 ## 与论文的差异
 
 | 项 | 论文 | 这里 |
 |---|---|---|
 | 粒子位置更新 | 未写明 | 用插值网格速度推进（de Vaucorbeil 2020 TLMPM 式 13），速度用 PIC/FLIP |
+| 传递耗散 | PIC/FLIP 混合 | 默认每步固定比例；步长对照可用 `flip_reference_dt` 固定单位时间的残差阻尼，避免细化步长时同时改变耗散率 |
 | 刀身穿透处理 | 粒子罚接触 | 外部 `hold` 模式补充网格刀面法向约束，见上节 |
 | 接触刚度 | 每步常数 \(s_n\) | 默认按参考步长固定物理刚度，见上节 |
 | 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |

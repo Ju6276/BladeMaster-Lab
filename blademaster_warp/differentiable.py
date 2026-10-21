@@ -194,7 +194,7 @@ class ElasticTrajectory:
         wp.launch(
             gather_remap, self.n,
             inputs=[state.x, state.v, self.slots, self.weights, old_v, new_v,
-                    cfg.dt, cfg.flip_fraction, self.mass],
+                    cfg.dt, cfg.effective_flip_fraction(), self.mass],
             outputs=[result.x, result.v, remapped], device=self.device,
         )
         wp.launch(

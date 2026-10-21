@@ -399,7 +399,8 @@ class MaterialTrajectory(ElasticTrajectory):
             new_v = grid_transform(grid, grid_mass, new_v)
         if self.ordered_transfers:
             self.launch(gather_particles, self.n,
-                      inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v, cfg.dt, cfg.flip_fraction],
+                      inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v,
+                              cfg.dt, cfg.effective_flip_fraction()],
                       outputs=[result.x, result.v], device=self.device)
             self.launch(ordered_remap, grid.count,
                       inputs=[grid.particle_offsets, grid.particles, grid.corners, self.weights, result.v, self.mass],
@@ -407,7 +408,7 @@ class MaterialTrajectory(ElasticTrajectory):
         else:
             self.launch(gather_remap, self.n,
                       inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v,
-                              cfg.dt, cfg.flip_fraction, self.mass],
+                              cfg.dt, cfg.effective_flip_fraction(), self.mass],
                       outputs=[result.x, result.v, remapped], device=self.device)
         coupled = self.couple(grid, remapped)
         self.launch(update_deformation, self.n,

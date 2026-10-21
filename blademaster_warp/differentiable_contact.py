@@ -1,9 +1,13 @@
 """Prescribed rigid-tool contact with separate friction history for every step."""
 
 from dataclasses import dataclass
+from time import perf_counter
+
+import numpy as np
 import warp as wp
 
 from .contact import blade_query, penalty_impulse
+from .differentiable import State
 
 
 @wp.kernel
@@ -67,6 +71,16 @@ class Tool:
     omega: wp.array
 
 
+@dataclass
+class ContactGradient:
+    terminal: State
+    history: wp.array
+    loss: wp.array
+    initial_gradient: State
+    history_gradient: wp.array
+    parameter_gradients: dict
+
+
 class PrescribedContact:
     """Zero tool mobility, fixed contact coefficients, no cutting or side labels.
 
@@ -112,3 +126,72 @@ class PrescribedContact:
             outputs=[next_history, impulse, reaction], device=model.device,
         )
         return model.step(state, impulse=impulse), next_history, reaction
+
+    def checkpoint_vjp(
+        self, initial, history, steps, segment_steps, tool_at_step, objective,
+        parameters=(), timings=None,
+    ):
+        """Differentiate an additive objective while retaining segment boundaries.
+
+        tool_at_step(step) builds a Tool from the supplied parameter arrays.
+        objective(step, state, history, reaction, loss) accumulates into loss;
+        callbacks must reproduce their computations during segment recomputation.
+        State, friction history and parameter gradient buffers are cleared here.
+        Young's modulus is included in parameter_gradients automatically.
+        """
+        model = self.model
+        if not model.requires_grad or steps < 1 or segment_steps < 1:
+            raise ValueError("Contact checkpoint VJP requires gradients and positive step counts")
+        parameters = tuple(dict.fromkeys((*parameters, model.young)))
+        arrays = (initial.x, initial.v, initial.F, history, *parameters)
+        if any(array.grad is None for array in arrays):
+            raise ValueError("Initial state, history and parameters must have gradient buffers")
+        parameter_gradients = {array: np.zeros(array.numpy().shape, dtype=float) for array in parameters}
+
+        def timestamp():
+            wp.synchronize_device(model.device)
+            return perf_counter()
+
+        measured = dict(forward_s=0.0, recompute_s=0.0, backward_s=0.0)
+        begun = timestamp()
+        loss = model.zeros(1, float)
+        checkpoints = [(0, initial, history)]
+        current = initial
+        current_history = history
+        for step in range(steps):
+            current, current_history, reaction = self.step(current, current_history, tool_at_step(step))
+            objective(step, current, current_history, reaction, loss)
+            if (step + 1) % segment_steps == 0 or step + 1 == steps:
+                checkpoints.append((step + 1, current, current_history))
+        terminal, terminal_history = current, current_history
+        measured["forward_s"] = timestamp() - begun
+        gradient = State(model.zeros(model.n, wp.vec3, False), model.zeros(model.n, wp.vec3, False),
+                         model.zeros(model.n, wp.mat33, False))
+        history_gradient = model.zeros(history.shape, wp.vec3, False)
+        loss_seed = model.array([1.0], float, False)
+        for index in reversed(range(len(checkpoints) - 1)):
+            begun = timestamp()
+            first, start, start_history = checkpoints[index]
+            last = checkpoints[index + 1][0]
+            for array in (start.x, start.v, start.F, start_history, *parameters):
+                array.grad.zero_()
+            local_loss = model.zeros(1, float)
+            with wp.Tape() as tape:
+                current, current_history = start, start_history
+                for step in range(first, last):
+                    current, current_history, reaction = self.step(current, current_history, tool_at_step(step))
+                    objective(step, current, current_history, reaction, local_loss)
+            now = timestamp()
+            measured["recompute_s"] += now - begun
+            tape.backward(grads={current.x: gradient.x, current.v: gradient.v, current.F: gradient.F,
+                                 current_history: history_gradient, local_loss: loss_seed})
+            gradient = State(wp.clone(start.x.grad), wp.clone(start.v.grad), wp.clone(start.F.grad))
+            history_gradient = wp.clone(start_history.grad)
+            for array in parameters:
+                parameter_gradients[array] += array.grad.numpy()
+            tape.zero()
+            measured["backward_s"] += timestamp() - now
+            del tape
+        if timings is not None:
+            timings.update(measured)
+        return ContactGradient(terminal, terminal_history, loss, gradient, history_gradient, parameter_gradients)

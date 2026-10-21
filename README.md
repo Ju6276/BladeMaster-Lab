@@ -43,7 +43,8 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 | `scripts.force_convergence`、`scripts.indentation`、`scripts.cut_force` | 网格与采样扫描、压入与松弛、切割力曲线 |
 | `scripts.fig5_compare`、`scripts.topocut_compare` | CRESSim-MPM 与 TopoCut 式基线对照 |
 | `scripts.diff_validate` | 可微弹性、检查点和刀/砧板接触的正向与梯度核对 |
-| `scripts.diff_horizon`、`scripts.diff_contact_scan`、`scripts.diff_optimize` | 长轨迹显存/耗时、接触切换导数、AD/FD/CMA-ES 推压刀路优化 |
+| `scripts.diff_horizon`、`scripts.diff_contact_horizon` | 弹性/含摩擦轨迹的完整保存与分段重算：梯度、耗时、显存 |
+| `scripts.diff_contact_scan`、`scripts.diff_optimize` | 接触切换导数、AD/FD/CMA-ES 推压刀路优化 |
 | `scripts.probe_substep`、`scripts.live_latency` | 材料子步分阶段计时、输入到 HTTP 状态帧延迟 |
 | `scripts.stress_teleop`、`scripts.stress_multi_tool`、`scripts.check_cut_release` | 会话与多刀压力测试、切透退刀检查 |
 | `scripts.surface_accuracy`、`scripts.surface_deformed`、`scripts.surface_observations` | 表面精度、自交与观测间隔检查 |

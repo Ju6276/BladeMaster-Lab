@@ -57,19 +57,26 @@ def force_objective(
 
 
 class PushTask:
-    def __init__(self, spacing=0.006, steps=128, controls=4, maximum_speed=0.2, force_limit=2.0):
+    def __init__(self, spacing=0.006, steps=128, controls=4, maximum_speed=0.2, force_limit=2.0,
+                 segment_steps=0, tool_offset=(0.0, 0.0, 0.0)):
         if steps < controls or controls < 2 or steps % controls:
             raise ValueError("steps must be a positive multiple of the control count, with at least two controls")
+        if segment_steps < 0:
+            raise ValueError("segment_steps must be nonnegative")
         self.config = replace(configuration(spacing), external_tool=True)
         self.steps = steps
         self.controls = controls
         self.maximum_speed = maximum_speed
         self.force_limit = force_limit
+        self.segment_steps = segment_steps
+        self.tool_offset = np.asarray(tool_offset, dtype=float)
+        if self.tool_offset.shape != (3,) or not np.isfinite(self.tool_offset).all():
+            raise ValueError("tool_offset must contain three finite coordinates in metres")
         self.scale = 0.001
         self.models = {flag: ElasticTrajectory(self.config, requires_grad=flag) for flag in (False, True)}
         model = self.models[False]
         self.origin = np.array([model.reference[:, 0].min() - self.config.blade_half_size[0] - spacing / 4 - 5e-5,
-                                0.0, self.config.size[2] / 2])
+                                0.0, self.config.size[2] / 2]) + self.tool_offset
         self.selected = model.reference[:, 0] <= np.quantile(model.reference[:, 0], 0.25)
         self.target = model.reference.copy()
         self.target_controls = np.resize(np.array([0.7, 0.5, 0.8, 0.4]), controls)
@@ -77,6 +84,8 @@ class PushTask:
 
     def evaluate(self, values, gradient=False, details=False, audit=False):
         started = perf_counter()
+        if gradient and self.segment_steps and (details or audit):
+            raise ValueError("Capture trajectory details and contact modes with a forward evaluation")
         model = self.models[gradient]
         contact = PrescribedContact(model)
         parameters = model.array(values, float)
@@ -85,42 +94,63 @@ class PushTask:
         state = model.state()
         history = contact.history()
         loss = model.zeros(1, float)
-        norms = model.zeros(self.steps, float)
+        norms = model.zeros(self.steps, float, False)
         rotation = model.array([[0, 0, 0, 1]], wp.quat, False)
         omega = model.zeros(1, wp.vec3, False)
         positions, velocities = [], []
         modes = model.zeros((self.steps, model.n), int, False) if audit else None
-        with wp.Tape() if gradient else nullcontext() as tape:
-            for step in range(self.steps):
-                position = model.zeros(1, wp.vec3)
-                velocity = model.zeros(1, wp.vec3)
-                wp.launch(prescribed_motion, 1,
-                          [parameters, step, self.steps // self.controls, self.config.dt,
-                           self.maximum_speed, wp.vec3(*self.origin)], [position, velocity], device=model.device)
-                if audit:
-                    cfg = self.config
-                    sn, gk = cfg.contact_scales()
-                    radius = cfg.grid_spacing / 4
-                    offset = max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0])
-                    wp.launch(trajectory_modes, model.n,
-                              [state.x, state.v, history, position, velocity, wp.vec3(*cfg.blade_half_size),
-                               cfg.blade_bevel_height, radius, offset, cfg.dt, sn, cfg.board_normal_scale or sn,
-                               cfg.friction_static, gk, cfg.tangent_damping, step], [modes], device=model.device)
-                state, history, reaction = contact.step(state, history, Tool(position, velocity, rotation, omega))
-                wp.launch(force_objective, 1, [reaction, self.force_limit, self.steps, step],
-                          [norms, loss], device=model.device)
-                if details:
-                    positions.append(position)
-                    velocities.append(velocity)
-            wp.launch(target_objective, model.n, [state.x, target, selected, int(self.selected.sum()), self.scale],
-                      [loss], device=model.device)
-        wp.synchronize_device(model.device)
-        forward_end = perf_counter()
+
+        def tool_at_step(step):
+            position = model.zeros(1, wp.vec3)
+            velocity = model.zeros(1, wp.vec3)
+            wp.launch(prescribed_motion, 1,
+                      [parameters, step, self.steps // self.controls, self.config.dt,
+                       self.maximum_speed, wp.vec3(*self.origin)], [position, velocity], device=model.device)
+            return Tool(position, velocity, rotation, omega)
+
+        def objective(step, current, current_history, reaction, value):
+            wp.launch(force_objective, 1, [reaction, self.force_limit, self.steps, step],
+                      [norms, value], device=model.device)
+            if step + 1 == self.steps:
+                wp.launch(target_objective, model.n,
+                          [current.x, target, selected, int(self.selected.sum()), self.scale],
+                          [value], device=model.device)
+
         derivative = None
-        if gradient:
-            tape.backward(loss)
-            derivative = parameters.grad.numpy().astype(float)
-        backward_end = perf_counter()
+        timings = dict(forward_s=0.0, recompute_s=0.0, backward_s=0.0)
+        tape = None
+        if gradient and self.segment_steps:
+            setup_end = perf_counter()
+            checkpoint = contact.checkpoint_vjp(state, history, self.steps, self.segment_steps,
+                                                tool_at_step, objective, [parameters], timings)
+            state, loss = checkpoint.terminal, checkpoint.loss
+            derivative = checkpoint.parameter_gradients[parameters]
+            timings["forward_s"] += setup_end - started
+        else:
+            with wp.Tape() if gradient else nullcontext() as tape:
+                for step in range(self.steps):
+                    tool = tool_at_step(step)
+                    if audit:
+                        cfg = self.config
+                        sn, gk = cfg.contact_scales()
+                        radius = cfg.grid_spacing / 4
+                        offset = max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0])
+                        wp.launch(trajectory_modes, model.n,
+                                  [state.x, state.v, history, tool.position, tool.velocity,
+                                   wp.vec3(*cfg.blade_half_size), cfg.blade_bevel_height, radius, offset,
+                                   cfg.dt, sn, cfg.board_normal_scale or sn, cfg.friction_static, gk,
+                                   cfg.tangent_damping, step], [modes], device=model.device)
+                    state, history, reaction = contact.step(state, history, tool)
+                    objective(step, state, history, reaction, loss)
+                    if details:
+                        positions.append(tool.position)
+                        velocities.append(tool.velocity)
+            wp.synchronize_device(model.device)
+            forward_end = perf_counter()
+            if gradient:
+                tape.backward(loss)
+                derivative = parameters.grad.numpy().astype(float)
+            timings.update(forward_s=forward_end - started, backward_s=perf_counter() - forward_end)
         x = state.x.numpy()
         value = float(loss.numpy()[0])
         result = dict(loss=value, position_rmse_m=float(np.sqrt(np.mean(np.sum(
@@ -133,10 +163,10 @@ class PushTask:
             result["contact_modes"] = modes.numpy()
         if not np.isfinite(value) or (derivative is not None and not np.isfinite(derivative).all()):
             raise FloatingPointError("Non-finite pushing objective or gradient")
-        if gradient:
+        if tape is not None:
             tape.zero()
-        result["timings"] = dict(forward_s=forward_end - started, backward_s=backward_end - forward_end,
-                                 readback_cleanup_s=perf_counter() - backward_end)
+        timings["readback_cleanup_s"] = perf_counter() - started - sum(timings.values())
+        result["timings"] = timings
         return derivative, result
 
     def gradient_check(self, values, epsilons=(0.003, 0.001, 0.0003, 0.0001)):
@@ -186,7 +216,7 @@ def optimize(task, method, seed, budget, learning_rate, fd_step, tolerance):
     evaluations = 0
     backward_calls = 0
     gradient_seconds = 0.0
-    phase_totals = dict(forward_s=0.0, backward_s=0.0, readback_cleanup_s=0.0)
+    phase_totals = dict(forward_s=0.0, recompute_s=0.0, backward_s=0.0, readback_cleanup_s=0.0)
 
     def evaluate(parameters, gradient=False):
         nonlocal evaluations, backward_calls, best
@@ -275,6 +305,8 @@ def main():
     parser.add_argument("--spacing", type=float, default=0.006)
     parser.add_argument("--steps", type=int, default=128)
     parser.add_argument("--controls", type=int, default=4)
+    parser.add_argument("--segment-steps", type=int, default=0)
+    parser.add_argument("--tool-offset", type=float, nargs=3, default=(0.0, 0.0, 0.0), metavar=("X", "Y", "Z"))
     parser.add_argument("--budget", type=float, default=20.0)
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     parser.add_argument("--methods", nargs="+", choices=["ad", "fd", "cma"], default=["ad", "fd", "cma"])
@@ -288,7 +320,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     if args.worker:
         wp.config.verify_autograd_array_access = True
-        task = PushTask(args.spacing, args.steps, args.controls)
+        task = PushTask(args.spacing, args.steps, args.controls,
+                        segment_steps=args.segment_steps, tool_offset=args.tool_offset)
         report = optimize(task, args.methods[0], args.seeds[0], args.budget,
                           args.learning_rate, args.fd_step, args.tolerance)
         report.update(revision=git_revision(), command=sys.argv)
@@ -296,7 +329,8 @@ def main():
         report["task"] = dict(steps=task.steps, controls=task.controls, maximum_speed_m_s=task.maximum_speed,
                               force_limit_n=task.force_limit, target_controls=task.target_controls.tolist(),
                               selected_particles=int(task.selected.sum()), position_tolerance_m=args.tolerance,
-                              objective_scale_m=task.scale, force_penalty_weight=10.0)
+                              objective_scale_m=task.scale, force_penalty_weight=10.0,
+                              segment_steps=task.segment_steps, tool_offset_m=task.tool_offset.tolist())
         np.save(args.output / "target.npy", task.target)
     else:
         report = dict(revision=git_revision(), command=sys.argv, warp_version=wp.__version__,
@@ -310,7 +344,8 @@ def main():
                            "--spacing", str(args.spacing), "--steps", str(args.steps), "--controls", str(args.controls),
                            "--budget", str(args.budget), "--seeds", str(seed), "--methods", method,
                            "--learning-rate", str(args.learning_rate), "--fd-step", str(args.fd_step),
-                           "--tolerance", str(args.tolerance)]
+                           "--tolerance", str(args.tolerance), "--segment-steps", str(args.segment_steps),
+                           "--tool-offset", *map(str, args.tool_offset)]
                 with (output / "worker.log").open("w") as log:
                     subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
                 row = json.loads((output / "report.json").read_text())

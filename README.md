@@ -8,7 +8,7 @@
 - 已实现 Fig. 1、3、4、6、7、8 对应场景。Fig. 5（CRESSim-MPM 独立操作对照）和 Fig. 3(d) 的停刀深度仍在 TODO；低锋利度切不透使用 `cut_hold` 对照开关。逐项见 RESULTS。
 - 接触刚度与步长解耦，25–77 μs 下刀阶段平均力相差 < 2%。
 
-详细数字见 [docs/RESULTS.md](docs/RESULTS.md)，公式对照与数值设置见 [docs/METHOD.md](docs/METHOD.md)，论文各实验参数、DexLab 与文献数据见 [docs/PARAMETERS.md](docs/PARAMETERS.md)，剩余工作见 [TODO.md](TODO.md)。
+详细数字见 [docs/RESULTS.md](docs/RESULTS.md)，公式对照与数值设置见 [docs/METHOD.md](docs/METHOD.md)，论文各实验参数、DexLab 与文献数据见 [docs/PARAMETERS.md](docs/PARAMETERS.md)，剩余工作见 [TODO.md](TODO.md)，机器访问与交接见 [docs/HANDOFF.md](docs/HANDOFF.md)。
 
 ![连续三刀，3 mm 网格](docs/media/fig1_sequence_3mm.png)
 

@@ -58,3 +58,28 @@ def banana_dt(cfg, spacing, robot_step=0.001):
     wave_speed = math.sqrt(p_modulus / cfg.density)
     limit = min(0.0000625, 0.5 * spacing / wave_speed)
     return robot_step / math.ceil(robot_step / limit - 1e-9)
+
+
+def tangent_history_dt(cfg, maximum):
+    """Halve a step until fixed-normal sticking history has eigenvalues inside the unit circle.
+
+    Contact stiffness stays fixed through contact_reference_dt. For state
+    (tangent velocity, history / dt), the update is [[1-d, -k], [1, 1]],
+    where k=gamma_k and d=2*gamma_c*sqrt(k).
+    """
+    if maximum <= 0:
+        raise ValueError("Maximum time step must be positive")
+    if cfg.tangent_stiffness == 0:
+        return maximum
+    if cfg.tangent_damping <= 0:
+        raise ValueError("Explicit sticking history requires positive tangential damping")
+    step = maximum
+    while True:
+        ratio = 1.0 if cfg.contact_reference_dt == 0 else (step / cfg.contact_reference_dt) ** 2
+        stiffness = cfg.tangent_stiffness * ratio
+        damping = 2 * cfg.tangent_damping * math.sqrt(stiffness)
+        if stiffness < damping and 4 - 2 * damping + stiffness > 0:
+            return step
+        if cfg.contact_reference_dt == 0:
+            raise ValueError("Reducing dt requires contact_reference_dt to preserve contact stiffness")
+        step *= 0.5

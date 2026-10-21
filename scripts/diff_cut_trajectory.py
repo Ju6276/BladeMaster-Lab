@@ -14,7 +14,7 @@ from blademaster_warp.coupling import ExternalToolPort, ToolState
 from blademaster_warp.differentiable_contact import Tool
 from blademaster_warp.differentiable_cutting import FixedCutContact, pair_snapshot
 from blademaster_warp.differentiable_material import MaterialTrajectory
-from blademaster_warp.presets import banana_dt
+from blademaster_warp.presets import banana_dt, tangent_history_dt
 from blademaster_warp.provenance import git_revision
 from blademaster_warp.solver import Config, Solver
 from blademaster_warp.topology import components
@@ -256,7 +256,7 @@ def main():
     parser.add_argument('--spacing', type=float, default=.006)
     parser.add_argument('--material', choices=['banana', 'soft', 'plastic'], default='banana')
     parser.add_argument('--duration', type=float, default=1.05)
-    parser.add_argument('--dt', type=float, help='Material step in seconds; default uses banana_dt')
+    parser.add_argument('--dt', type=float, help='Material step in seconds; default satisfies grid and sticking-history bounds')
     parser.add_argument('--controls', type=float, nargs=3, default=[0., 1., 1.])
     parser.add_argument('--frame-stride', type=int, default=160)
     parser.add_argument('--segment-steps', type=int, default=32)
@@ -287,7 +287,8 @@ def main():
         frozen = freeze_archive(contact, archive)
     else:
         cfg = replace(configuration(args.spacing, args.material), blade_grid_constraint=True)
-        cfg = replace(cfg, dt=banana_dt(cfg, args.spacing) if args.dt is None else args.dt)
+        dt = tangent_history_dt(cfg, banana_dt(cfg, args.spacing)) if args.dt is None else args.dt
+        cfg = replace(cfg, dt=dt)
         if cfg.dt <= 0 or args.duration <= 0 or args.frame_stride < 1:
             parser.error("Step, duration and frame stride must be positive")
         controls = np.asarray(args.controls)

@@ -1,7 +1,7 @@
 """Compare natural cutting rollouts and differentiate across a side-assignment window."""
 
 import argparse
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 import sys
@@ -32,19 +32,39 @@ def first_side_prefix(cfg):
     raise RuntimeError('No geometric side assignment in the first 0.2 seconds')
 
 
-def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='lagged'):
+@dataclass
+class WindowState:
+    origin: np.ndarray
+    values: dict
+    history: dict
+    codes: np.ndarray
+    pair_keys: np.ndarray
+    start_time: float
+    reference_dt: float
+    rows: list
+
+
+def capture_initial(cfg, steps):
     prefix = first_side_prefix(cfg)
+    origin, values, saved, rows, _ = capture_window(cfg, prefix, steps, [0., 1., 1.], precision='float64')
+    return WindowState(origin, values, saved, rows[0]['codes'], rows[0]['previous'],
+                       prefix * cfg.dt, cfg.dt, rows)
+
+
+def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='lagged',
+             *, initial_window=None, return_arrays=False):
+    window = capture_initial(cfg, steps) if initial_window is None else initial_window
+    origin, values, saved, rows = window.origin, window.values, window.history, window.rows
     controls = np.array([0., 1., 1.])
-    origin, values, saved, rows, _ = capture_window(cfg, prefix, steps, controls, precision='float64')
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
     contact_type = GeometryEventContact if geometry == 'event' else NaturalCutContact
     c = contact_type(m, release=release, friction_update=friction_update)
     initial = m.state(**values)
-    history = c.history(**saved, codes=rows[0]['codes'], pair_keys=rows[0]['previous'])
+    history = c.history(**saved, codes=window.codes, pair_keys=window.pair_keys)
     q = m.array(controls, float)
 
     def knife(step):
-        return differentiable_tool(m, q, origin, (prefix + step) * cfg.dt)
+        return differentiable_tool(m, q, origin, window.start_time + step * cfg.dt)
 
     def objective(step, state, h, force, loss):
         m.launch(reaction_loss, 1, inputs=[force, cfg.dt], outputs=[loss], device=m.device)
@@ -56,6 +76,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
         loss = m.zeros(1, float)
         codes, pairs, released, rigid_modes = [], [], [], []
         geometry_events = []
+        forces, damage_work = [], 0.
         error = {name: 0. for name in (*values, 'force', 'rigid_history', 'pair_history', 'damage')}
         discrete = dict(side_particles=0, pair_keys=0)
         for step in range(steps):
@@ -66,6 +87,8 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
             released.append(h.damage.numpy() >= 1)
             rigid_modes.append(h.rigid_modes.numpy())
             geometry_events.append({p: float(t.numpy()[0]) for p, t in h.geometry_events})
+            forces.append(force.numpy()[0])
+            damage_work += float(np.sum(h.damage_work.numpy()))
             if compare:
                 row = rows[step]
                 for name in values:
@@ -83,14 +106,20 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                     error['pair_history'] = max(error['pair_history'], float(np.max(
                         np.abs(h.pairs.numpy() - row['pairs']))))
         return loss, state, h, dict(codes=np.asarray(codes), pairs=pairs, released=np.asarray(released),
-                                   rigid_modes=np.asarray(rigid_modes), geometry=geometry_events), error, discrete
+                                   rigid_modes=np.asarray(rigid_modes), geometry=geometry_events,
+                                   force=np.asarray(forces), damage_work=damage_work), error, discrete
 
+    compare = cfg.dt == window.reference_dt and steps == len(rows)
     with wp.Tape() as tape:
-        loss, terminal, terminal_history, events, forward_error, discrete_error = rollout(compare=True)
+        loss, terminal, terminal_history, events, forward_error, discrete_error = rollout(compare=compare)
     tape.backward(loss)
     gradient = q.grad.numpy().copy()
     gradient_x = initial.x.grad.numpy().copy()
+    parameters = dict(young_modulus=m.young, yield_stress=m.yield_stress,
+                      friction=c.friction, fracture_energy=c.fracture_energy)
+    parameter_gradients = {name: array.grad.numpy().copy() for name, array in parameters.items()}
     tape.zero()
+    del tape
     checkpoint = []
     for length in segment_steps:
         timings = {}
@@ -100,7 +129,13 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
         error_x = float(np.max(np.abs(result.initial_gradient.x.numpy() - gradient_x)))
         np.testing.assert_allclose(result.parameter_gradients[q], gradient, rtol=1e-8, atol=1e-10)
         np.testing.assert_allclose(result.initial_gradient.x.numpy(), gradient_x, rtol=1e-8, atol=1e-8)
+        material_error = {}
+        for name, array in parameters.items():
+            actual, expected = result.parameter_gradients[array], parameter_gradients[name]
+            np.testing.assert_allclose(actual, expected, rtol=1e-8, atol=1e-10)
+            material_error[name] = float(np.max(np.abs(actual - expected)))
         checkpoint.append(dict(segment_steps=length, controls_max_abs=error_q, initial_x_max_abs=error_x,
+                               material_max_abs=material_error,
                                recompute_max_abs=timings['recompute_max_abs']))
     finite_difference = []
     baseline_loss = float(loss.numpy()[0])
@@ -146,13 +181,29 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     new_labels = np.count_nonzero(events['codes'][-1] != history.codes.numpy())
     if not new_labels:
         raise RuntimeError('Selected window contains no new side assignments')
-    return dict(config=asdict(cfg), release=release, geometry=geometry, friction_update=friction_update,
-                particles=m.n, prefix_steps=prefix,
-                start_time_s=prefix * cfg.dt, steps=steps, duration_s=steps * cfg.dt,
+    threshold = cfg.cutting_energy * m.volume**(2 / 3) * (1 - cfg.sharpness) / cfg.sharpness
+    work_from_damage = threshold * np.sum(terminal_history.damage.numpy() - history.damage.numpy())
+    result = dict(config=asdict(cfg), release=release, geometry=geometry, friction_update=friction_update,
+                particles=m.n, prefix_steps=round(window.start_time / cfg.dt),
+                start_time_s=window.start_time, steps=steps, duration_s=steps * cfg.dt,
                 newly_labelled_particles=int(new_labels), peak_pairs=max(map(len, events['pairs'])),
                 loss=float(loss.numpy()[0]), gradient_controls=gradient.tolist(),
-                vs_original_max_abs=forward_error, vs_original_discrete=discrete_error,
+                gradient_materials={name: value.tolist() for name, value in parameter_gradients.items()},
+                damage_work_j=events['damage_work'], damage_work_balance_error_j=abs(events['damage_work']-work_from_damage),
+                knife_impulse_ns=(cfg.dt * np.sum(events['force'], axis=0)).tolist(),
+                vs_original_max_abs=forward_error if compare else None,
+                vs_original_discrete=discrete_error if compare else None,
                 checkpoint=checkpoint, finite_difference=finite_difference)
+    if not return_arrays:
+        return result
+    event_times = np.full(m.n, np.nan)
+    for step, entries in enumerate(events['geometry']):
+        for particle, time in entries.items():
+            event_times[particle] = window.start_time + step * cfg.dt + time
+    arrays = {name: getattr(terminal, name).numpy() for name in values}
+    arrays.update(codes=terminal_history.codes.numpy(), damage=terminal_history.damage.numpy(),
+                  pair_keys=terminal_history.pair_keys.copy(), force=events['force'], event_times=event_times)
+    return result, arrays
 
 
 def main():

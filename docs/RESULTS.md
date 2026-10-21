@@ -634,3 +634,22 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 
 - 网格交换（论文式 8）、刀距离、摩擦（论文式 12–13）、粒子传输的 FP64 参考；
 - 动量守恒、刚体平移、切割标签和接触的不变量。
+
+### M5 投影摩擦与自然窗口（2026-10-22，`4fe7e4a`）
+
+8/8 窗口的刀位/行程梯度各有至少两档差分误差 ≤2%，最差第二档 **0.004304%**。全部 112 组扰动中 **47** 组偏差 >2%、**6** 组符号相反；原五档 80 组子集对应 **47/6**。新分侧数 **68/55/42/37/42/14/48/32**，粒子对峰值均为 0。16/32 步检查点状态重算差 **0**，控制量/初始位置梯度最大差 **1.11e-14/1.47e-12**。相对原求解器最大位置/速度/Fp/刀力差 **4.915 μm/0.01928 m/s/7.53e-5/0.01640 N**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/m5_4fe7e4a_projected_materials --spacings .006 .004 \
+  --materials banana soft plastic --steps 64 --segment-steps 16 32 \
+  --release integrated --geometry event --friction-update projected \
+  --epsilons .05 .005 .0005 .00005 .0000005 .00000005 .000000005
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/m5_4fe7e4a_projected_shapes --spacings .006 --shapes block cylinder \
+  --materials soft --steps 64 --segment-steps 16 32 \
+  --release integrated --geometry event --friction-update projected \
+  --epsilons .05 .005 .0005 .00005 .0000005 .00000005 .000000005
+```
+
+两个报告均为 dirty=false。全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**772 passed、8 skipped、18 subtests passed**，147.52 s；新增 8 项摩擦与 24 项投影摩擦/几何事件组合检查。8 项跳过为 CRESSim 上游构建未配置。

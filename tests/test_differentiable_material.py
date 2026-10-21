@@ -7,6 +7,7 @@ import pytest
 import warp as wp
 
 from blademaster_warp.differentiable_material import MaterialTrajectory, hencky_project
+from blademaster_warp.differentiable_contact import PrescribedContact
 from blademaster_warp.solver import Config, Solver
 
 
@@ -80,6 +81,13 @@ def cut_codes(model):
     codes = np.where(model.reference[:, 0] < 0, 1, 2)
     codes[model.reference[:, 2] < 0.007] = 0
     return codes
+
+
+def test_elastic_checkpoint_rejects_plastic_state():
+    model = MaterialTrajectory(replace(config(), external_tool=True))
+    contact = PrescribedContact(model)
+    with pytest.raises(ValueError, match="elastic x/v/F"):
+        contact.checkpoint_vjp(model.state(), contact.history(), 1, 1, None, None)
 
 
 @pytest.mark.parametrize("spacing", [0.006, 0.004])

@@ -140,6 +140,8 @@ class PrescribedContact:
         Young's modulus is included in parameter_gradients automatically.
         """
         model = self.model
+        if type(initial) is not State:
+            raise ValueError("This checkpoint routine requires elastic x/v/F states")
         if not model.requires_grad or steps < 1 or segment_steps < 1:
             raise ValueError("Contact checkpoint VJP requires gradients and positive step counts")
         parameters = tuple(dict.fromkeys((*parameters, model.young)))

@@ -146,16 +146,16 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 | M1 | 单步弹性、应力伴随、解析与有限差分核对 | 已实现，4090 测试 |
 | M2 | 多步状态与分段重算 VJP | 两网格、32/128/512 步的梯度、耗时和显存扫描完成 |
 | M3 | 刀与砧板接触、摩擦、推压轨迹优化对照 | 接触分段重算及 8/16 控制量扩展；八控制量 AD/FD/CMA-ES 成功 5/2/5（各五组），长轨迹见 RESULTS |
-| M4 | 固定切割分支、多场、塑性和刀路梯度 | 待做 |
+| M4 | 固定切割分支、多场、塑性和刀路梯度 | 材料、多场和粒子对接触已实现；香蕉切割窗口与完整轨迹验收进行中 |
 | M5 | 损伤达阈值和切开事件的梯度 | 待做 |
 
-当前实现：`differentiable.py`、`differentiable_contact.py`。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
+当前实现：`differentiable.py`、`differentiable_contact.py`、`differentiable_material.py`、`differentiable_cutting.py`。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
 
-当前可微算例是 24×18×18 mm 弹性方块的侧向推压，全部粒子的运动和变形进入梯度链。分段刀速决定刀路，末端形状与反力决定损失。香蕉切割的多场、塑性与分离事件按 M4–M5 接入；目标由实际刀路决定切口。
+M1–M3 算例是 24×18×18 mm 弹性方块的侧向推压。M4 已加入原求解器实际下刀产生的香蕉切割窗口，多场、Fp、刀/板/粒子对的接触进入梯度链，侧码与释放标记来自该次正向运行。目标由实际刀路决定切口。
 
 4090 可微实验工作树：`~/Projects/BladeMaster-Warp-diff-20261021`，环境复用主仓库的 `.venv`。基础报告在 `runs/diff_clean/report.json`；`32f0378` 的报告在 `runs/diff_32f0378_{horizon,contact,optimize}/report.json`。接触分段重算与扩展推压提交为 `023d30d`，报告在 `runs/diff_023d30d_{contact_horizon,optimize_q8,optimize_q16,optimize_q16_full_ad}/report.json`。数值见 RESULTS 的“可微 TLMPM”。
 
-下一步进入 M4：保存塑性状态 Fp，接入固定切割分支的多场交换、粒子对接触与摩擦历史，再核对香蕉切割状态的正向与梯度。接触建立处有导数折点，静动摩擦切换会跳变；轨迹差分报告分支变化。固定事件后，现有反力路径对 G_c 的梯度为零；几何侧码、切割阈值与切开时刻的事件导数在 M5 处理。
+下一步完成 M4 验收：刀刃最近几何特征的分支核对、网格刀面约束和更长的切割轨迹。窗口命令为 `scripts.diff_cut_validate`，设置见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。固定事件后，现有反力路径对 G_c 的梯度为零；几何侧码、切割阈值与切开时刻的事件导数在 M5 处理。
 
 ## 6. 参考资料
 

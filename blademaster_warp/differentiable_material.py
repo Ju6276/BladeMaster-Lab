@@ -11,27 +11,27 @@ from .differentiable import gather_remap, update_deformation
 
 
 @wp.func
-def hencky_project(f: wp.mat33, limit: float):
+def hencky_branch(f: wp.mat33, limit: float, branch: int):
     U, s, V = wp.svd3(f)
     e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
     mean = (e[0] + e[1] + e[2]) / 3.0
     dev = e - wp.vec3(mean)
     norm = wp.length(dev)
-    if norm <= limit:
+    if branch == 0 or (branch < 0 and norm <= limit):
         return f
     projected = e - (1.0 - limit / norm) * dev
     t = wp.vec3(wp.exp(projected[0]), wp.exp(projected[1]), wp.exp(projected[2]))
     return U * wp.diag(t) * wp.transpose(V)
 
 
-@wp.func_grad(hencky_project)
-def hencky_project_grad(f: wp.mat33, limit: float, adj: wp.mat33):
+@wp.func_grad(hencky_branch)
+def hencky_branch_grad(f: wp.mat33, limit: float, branch: int, adj: wp.mat33):
     U, s, V = wp.svd3(f)
     e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
     mean = (e[0] + e[1] + e[2]) / 3.0
     dev = e - wp.vec3(mean)
     norm = wp.length(dev)
-    if norm <= limit:
+    if branch == 0 or (branch < 0 and norm <= limit):
         wp.adjoint[f] += adj
     else:
         a = limit / norm
@@ -58,6 +58,11 @@ def hencky_project_grad(f: wp.mat33, limit: float, adj: wp.mat33):
         wp.adjoint[f] += U * result * wp.transpose(V)
 
 
+@wp.func
+def hencky_project(f: wp.mat33, limit: float):
+    return hencky_branch(f, limit, -1)
+
+
 @wp.kernel
 def compute_stress(
     F: wp.array(dtype=wp.mat33),
@@ -80,24 +85,29 @@ def project_plastic(
     young: wp.array(dtype=float),
     yield_stress: wp.array(dtype=float),
     poisson: float,
+    fixed_yielded: wp.array(dtype=int),
     next_Fp: wp.array(dtype=wp.mat33),
+    yielded: wp.array(dtype=int),
 ):
     p = wp.tid()
     result = Fp[p]
+    yielded[p] = 0
     if yield_stress[0] > 0.0:
         f = F[p] * wp.inverse(Fp[p])
         mu = young[0] / (2.0 * (1.0 + poisson))
         limit = yield_stress[0] / (2.0 * mu) * wp.sqrt(2.0 / 3.0)
-        projected = hencky_project(f, limit)
+        projected = hencky_branch(f, limit, fixed_yielded[p])
         # The elastic branch returns f exactly and must leave Fp unchanged.
         if wp.ddot(projected - f, projected - f) > 0.0:
             result = wp.inverse(projected) * F[p]
+            yielded[p] = 1
     next_Fp[p] = result
 
 
 @dataclass
 class PlasticState(State):
     Fp: wp.array
+    yielded: wp.array | None = None
 
 
 @dataclass
@@ -188,7 +198,7 @@ class MaterialTrajectory(ElasticTrajectory):
                   outputs=[result], device=self.device)
         return result
 
-    def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None):
+    def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None):
         cfg = self.config
         grid = self.uncut if topology is None else topology
         stress = self.zeros(self.n, wp.mat33)
@@ -199,7 +209,11 @@ class MaterialTrajectory(ElasticTrajectory):
         new_v = self.zeros(grid.count, wp.vec3)
         remapped = self.zeros(grid.count, wp.vec3)
         result = PlasticState(self.zeros(self.n, wp.vec3), self.zeros(self.n, wp.vec3),
-                              self.zeros(self.n, wp.mat33), self.zeros(self.n, wp.mat33))
+                              self.zeros(self.n, wp.mat33), self.zeros(self.n, wp.mat33),
+                              self.zeros(self.n, int, False))
+        if fixed_yielded is None:
+            fixed_yielded = self.zeros(self.n, int, False)
+            fixed_yielded.fill_(-1)
         wp.launch(compute_stress, self.n, inputs=[state.F, state.Fp, self.young, cfg.poisson_ratio],
                   outputs=[stress], device=self.device)
         if impulse is None:
@@ -223,8 +237,8 @@ class MaterialTrajectory(ElasticTrajectory):
                   inputs=[state.F, grid.slots, self.gradients, grid_mass, coupled, cfg.dt],
                   outputs=[result.F], device=self.device)
         wp.launch(project_plastic, self.n,
-                  inputs=[result.F, state.Fp, self.young, self.yield_stress, cfg.poisson_ratio],
-                  outputs=[result.Fp], device=self.device)
+                  inputs=[result.F, state.Fp, self.young, self.yield_stress, cfg.poisson_ratio, fixed_yielded],
+                  outputs=[result.Fp, result.yielded], device=self.device)
         return result
 
     def checkpoint_vjp(self, *args, **kwargs):

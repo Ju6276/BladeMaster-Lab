@@ -18,6 +18,8 @@
 - `differentiable_cutting.FixedCutContact`：固定侧码、损伤释放标记和粒子对 ID，逐步保存刀、板和粒子对的摩擦历史；支持记录的法向闭合、粘滑及屈服分支。
 - 切割窗口使用完整 Tape，外部刀为 hold 模式，关闭网格刀面约束。网格刀面约束与完整切割轨迹的验收继续推进。
 
+M4 实验提交为 `26fff83` / `f5f1e30`：两网格三材料 12 个切割窗口；刀路细扫 7/8 个软/塑性窗口达到至少两档误差 ≤2%。6 mm 后段塑性窗口及刀力/Fp 的少量正向超差继续核对，数字见 RESULTS。报告分别在 `runs/diff_26fff83_cut{,_single,_natural}` 与 `runs/diff_8a_refine`，均为 dirty=false。
+
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable.py -q
 PYTHONPATH=. .venv/bin/python -m scripts.diff_validate \

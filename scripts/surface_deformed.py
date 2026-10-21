@@ -124,7 +124,15 @@ def segment_triangle_pairs(a, b, tri, strict=False):
     det = np.einsum("ij,ij->i", h, e1)
     roundoff = 64 * np.finfo(float).eps
     nondegenerate = area > roundoff
-    ok = nondegenerate & (np.abs(det) > roundoff * area * np.linalg.norm(d, axis=1))
+    # Bound cancellation using the six determinant products, before they cancel.
+    # The triangle area alone underestimates roundoff for thin coplanar triangles.
+    absolute_d, absolute_e1, absolute_e2 = np.abs(d), np.abs(e1), np.abs(e2)
+    cross_bound = (
+        absolute_d[:, [1, 2, 0]] * absolute_e2[:, [2, 0, 1]]
+        + absolute_d[:, [2, 0, 1]] * absolute_e2[:, [1, 2, 0]]
+    )
+    det_bound = np.einsum("ij,ij->i", absolute_e1, cross_bound)
+    ok = nondegenerate & (np.abs(det) > roundoff * det_bound)
     inv = np.divide(1.0, det, out=np.zeros_like(det), where=ok)
     u = np.einsum("ij,ij->i", s, h) * inv
     q = np.cross(s, e1)

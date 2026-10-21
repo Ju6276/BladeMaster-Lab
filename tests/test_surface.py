@@ -390,3 +390,20 @@ def test_unassigned_surface_node_follows_one_side_not_the_gap():
     shift = np.abs(nodes[:, 0] - s.reference[:, 0])
     ok = np.isfinite(shift)
     np.testing.assert_allclose(shift[ok], 0.03, atol=1e-12)
+
+
+def test_tent_supports_match_brute_force():
+    from blademaster_warp.surface import tent_supports
+
+    rng = np.random.default_rng(3)
+    particles = rng.uniform(-0.02, 0.02, (700, 3))
+    # Nodes inside, on the edge of and far outside the particle cloud.
+    nodes = np.r_[rng.uniform(-0.03, 0.03, (300, 3)), [[0.5, 0.0, 0.0]]]
+    for radius in (0.004, 0.008):
+        support = tent_supports(nodes, particles, radius, chunk=64)
+        assert len(support) == len(nodes)
+        for node, (ids, w) in zip(nodes, support):
+            expected = np.maximum(1 - np.abs(particles - node) / radius, 0).prod(axis=1)
+            want = np.flatnonzero(expected > 1.0e-12)
+            np.testing.assert_array_equal(ids, want)
+            np.testing.assert_allclose(w, expected[want], rtol=0, atol=1.0e-15)

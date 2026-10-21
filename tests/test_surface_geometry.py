@@ -168,6 +168,23 @@ def test_empty_vertex_fans_keep_an_indexable_mapping():
     assert np.empty((0, 3))[source].shape == (0, 3)
 
 
+@pytest.mark.parametrize("scale", [1e-6, 1e-3, 1.0, 1e3])
+def test_coincident_edge_of_a_thin_triangle_is_not_a_strict_crossing(scale):
+    triangle = np.array(
+        [
+            [-0.007505946855860832, 0.009371249999999998, 0.01312125],
+            [-0.0075307278802591105, 0.005628749999999998, 0.01687125],
+            [-0.007526283949645582, 0.005621249999999998, 0.01687125],
+        ]
+    )
+    for translation in (np.zeros(3), np.array([13.0, -2.0, 4.0])):
+        transformed = (triangle + translation) * scale
+        a, b = transformed[2:3], transformed[1:2]
+        for face in (transformed, transformed[::-1]):
+            assert segment_triangle_pairs(a, b, face[None]).item()
+            assert not segment_triangle_pairs(a, b, face[None], strict=True).item()
+
+
 def test_recorded_partial_crack_crossing_is_not_a_seam_contact():
     # Disjoint edge (1156,1157) and face (1189,1161,1158), frame 63 of the same
     # recording, in world and reference metres. Both intersections are interior.

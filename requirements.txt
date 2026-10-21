@@ -8,6 +8,7 @@ pytest==9.1.1
 mujoco==3.3.7
 imageio==2.37.2
 imageio-ffmpeg==0.6.0
+matplotlib==3.11.2
 # Read-only surface / whole-arm replay; system ffmpeg is also required.
 vtk==9.6.0
 # SpaceMouse client only:

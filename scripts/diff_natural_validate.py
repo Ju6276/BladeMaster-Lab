@@ -140,21 +140,26 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
         for name in values:
             np.testing.assert_allclose(getattr(result.terminal, name).numpy(),
                                        getattr(terminal, name).numpy(), rtol=1e-10, atol=1e-10)
-        if gradient is None:
+        has_gradient_reference = gradient is not None
+        if not has_gradient_reference:
             gradient = result.parameter_gradients[q].copy()
             gradient_x = result.initial_gradient.x.numpy().copy()
             parameter_gradients = {name: result.parameter_gradients[array].copy()
                                    for name, array in parameters.items()}
-        error_q = float(np.max(np.abs(result.parameter_gradients[q] - gradient)))
-        error_x = float(np.max(np.abs(result.initial_gradient.x.numpy() - gradient_x)))
-        np.testing.assert_allclose(result.parameter_gradients[q], gradient, rtol=1e-8, atol=1e-10)
-        np.testing.assert_allclose(result.initial_gradient.x.numpy(), gradient_x, rtol=1e-8, atol=1e-8)
-        material_error = {}
-        for name, array in parameters.items():
-            actual, expected = result.parameter_gradients[array], parameter_gradients[name]
-            np.testing.assert_allclose(actual, expected, rtol=1e-8, atol=1e-10)
-            material_error[name] = float(np.max(np.abs(actual - expected)))
+        error_q, error_x, gradient_reference = None, None, None
+        material_error = {name: None for name in parameters}
+        if has_gradient_reference:
+            gradient_reference = 'full_tape' if adjoint == 'full' else f'checkpoint:{segment_steps[0]}'
+            error_q = float(np.max(np.abs(result.parameter_gradients[q] - gradient)))
+            error_x = float(np.max(np.abs(result.initial_gradient.x.numpy() - gradient_x)))
+            np.testing.assert_allclose(result.parameter_gradients[q], gradient, rtol=1e-8, atol=1e-10)
+            np.testing.assert_allclose(result.initial_gradient.x.numpy(), gradient_x, rtol=1e-8, atol=1e-8)
+            for name, array in parameters.items():
+                actual, expected = result.parameter_gradients[array], parameter_gradients[name]
+                np.testing.assert_allclose(actual, expected, rtol=1e-8, atol=1e-10)
+                material_error[name] = float(np.max(np.abs(actual - expected)))
         checkpoint.append(dict(segment_steps=length, controls_max_abs=error_q, initial_x_max_abs=error_x,
+                               gradient_reference=gradient_reference,
                                material_max_abs=material_error,
                                recompute_max_abs=timings['recompute_max_abs']))
     finite_difference = []

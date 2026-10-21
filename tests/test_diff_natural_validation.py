@@ -27,6 +27,9 @@ def test_checkpoint_only_validation_matches_full_tape():
                         controls_to_check=('knife_x_mm', 'knife_depth_scale', 'knife_lateral_scale'))
                for mode in ('full', 'checkpoint')]
     first, second = results
+    assert second['checkpoint'][0]['controls_max_abs'] is None
+    assert second['checkpoint'][1]['gradient_reference'] == 'checkpoint:2'
+    assert second['checkpoint'][1]['controls_max_abs'] < 1e-10
     assert first['newly_labelled_particles'] > 0
     np.testing.assert_allclose(first['gradient_controls'], second['gradient_controls'], rtol=1e-9, atol=1e-10)
     for name in first['gradient_materials']:

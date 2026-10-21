@@ -52,9 +52,9 @@ def capture_initial(cfg, steps):
                        prefix * cfg.dt, cfg.dt, rows)
 
 
-def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='lagged',
+def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='projected',
              *, initial_window=None, return_arrays=False, adjoint='full',
-             controls_to_check=('knife_x_mm', 'knife_depth_scale')):
+             controls_to_check=('knife_x_mm', 'knife_depth_scale'), integration='midpoint', phase=0.):
     directions = dict(knife_x_mm=np.array([1., 0., 0.]),
                       knife_depth_scale=np.array([0., 1., 0.]),
                       knife_lateral_scale=np.array([0., 0., 1.]))
@@ -63,20 +63,30 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     if not controls_to_check or any(name not in directions for name in controls_to_check):
         raise ValueError('Select knife_x_mm, knife_depth_scale or knife_lateral_scale')
     window = capture_initial(cfg, steps) if initial_window is None else initial_window
+    if not np.isfinite(phase) or not 0 <= phase < 1:
+        raise ValueError('Time-grid phase must be in [0, 1)')
+    total_duration = steps * cfg.dt
+    edges = np.arange(steps + 1, dtype=float) * cfg.dt
+    if phase:
+        edges = np.concatenate(([0.], (np.arange(steps) + phase) * cfg.dt, [total_duration]))
+    durations = np.diff(edges) if phase else np.full(steps, cfg.dt)
+    instructions = [CutInstruction(duration=float(dt)) for dt in durations]
+    steps = len(durations)
     origin, values, saved, rows = window.origin, window.values, window.history, window.rows
     controls = np.array([0., 1., 1.])
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
     contact_type = GeometryEventContact if geometry == 'event' else NaturalCutContact
-    c = contact_type(m, release=release, friction_update=friction_update)
+    kwargs = dict(integration=integration) if geometry == 'event' else {}
+    c = contact_type(m, release=release, friction_update=friction_update, **kwargs)
     initial = m.state(**values)
     history = c.history(**saved, codes=window.codes, pair_keys=window.pair_keys)
     q = m.array(controls, float)
 
     def knife(step):
-        return differentiable_tool(m, q, origin, window.start_time + step * cfg.dt)
+        return differentiable_tool(m, q, origin, window.start_time + edges[step])
 
     def objective(step, state, h, force, loss):
-        m.launch(reaction_loss, 1, inputs=[force, cfg.dt], outputs=[loss], device=m.device)
+        m.launch(reaction_loss, 1, inputs=[force, float(durations[step])], outputs=[loss], device=m.device)
         if step == steps - 1:
             m.launch(terminal_loss, m.n, inputs=[state.v, state.Fp], outputs=[loss], device=m.device)
 
@@ -89,7 +99,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
         error = {name: 0. for name in (*values, 'force', 'rigid_history', 'pair_history', 'damage')}
         discrete = dict(side_particles=0, pair_keys=0)
         for step in range(steps):
-            state, h, force = c.step(state, h, knife(step))
+            state, h, force = c.step(state, h, knife(step), instructions[step])
             objective(step, state, h, force, loss)
             codes.append(h.codes.numpy())
             pairs.append(h.pair_keys.copy())
@@ -118,7 +128,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                                    rigid_modes=np.asarray(rigid_modes), geometry=geometry_events,
                                    force=np.asarray(forces), damage_work=damage_work), error, discrete
 
-    compare = cfg.dt == window.reference_dt and steps == len(rows)
+    compare = phase == 0 and cfg.dt == window.reference_dt and steps == len(rows)
     with wp.Tape() if adjoint == 'full' else nullcontext() as tape:
         loss, terminal, terminal_history, events, forward_error, discrete_error = rollout(compare=compare)
     parameters = dict(young_modulus=m.young, yield_stress=m.yield_stress,
@@ -134,7 +144,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     checkpoint = []
     for length in segment_steps:
         timings = {}
-        result = c.checkpoint_vjp(initial, history, [CutInstruction()] * steps, length,
+        result = c.checkpoint_vjp(initial, history, instructions, length,
                                   knife, objective, parameters=(q,), timings=timings)
         np.testing.assert_allclose(result.loss.numpy(), loss.numpy(), rtol=1e-11, atol=1e-12)
         for name in values:
@@ -209,14 +219,15 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     threshold = cfg.cutting_energy * m.volume**(2 / 3) * (1 - cfg.sharpness) / cfg.sharpness
     work_from_damage = threshold * np.sum(terminal_history.damage.numpy() - history.damage.numpy())
     result = dict(config=asdict(cfg), release=release, geometry=geometry, friction_update=friction_update,
+                integration=integration if geometry == 'event' else 'symplectic',
                 adjoint=adjoint,
                 particles=m.n, prefix_steps=round(window.start_time / cfg.dt),
-                start_time_s=window.start_time, steps=steps, duration_s=steps * cfg.dt,
+                start_time_s=window.start_time, steps=steps, duration_s=total_duration, time_grid_phase=phase,
                 newly_labelled_particles=int(new_labels), peak_pairs=max(map(len, events['pairs'])),
                 loss=float(loss.numpy()[0]), gradient_controls=gradient.tolist(),
                 gradient_materials={name: value.tolist() for name, value in parameter_gradients.items()},
                 damage_work_j=events['damage_work'], damage_work_balance_error_j=abs(events['damage_work']-work_from_damage),
-                knife_impulse_ns=(cfg.dt * np.sum(events['force'], axis=0)).tolist(),
+                knife_impulse_ns=np.sum(durations[:, None] * events['force'], axis=0).tolist(),
                 vs_original_max_abs=forward_error if compare else None,
                 vs_original_discrete=discrete_error if compare else None,
                 checkpoint=checkpoint, finite_difference=finite_difference)
@@ -225,7 +236,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     event_times = np.full(m.n, np.nan)
     for step, entries in enumerate(events['geometry']):
         for particle, time in entries.items():
-            event_times[particle] = window.start_time + step * cfg.dt + time
+            event_times[particle] = window.start_time + edges[step] + time
     arrays = {name: getattr(terminal, name).numpy() for name in values}
     arrays.update(codes=terminal_history.codes.numpy(), damage=terminal_history.damage.numpy(),
                   pair_keys=terminal_history.pair_keys.copy(), force=events['force'], event_times=event_times)
@@ -245,9 +256,12 @@ def main():
                         choices=['knife_x_mm', 'knife_depth_scale', 'knife_lateral_scale'])
     parser.add_argument('--release', choices=['boundary', 'integrated'], default='integrated')
     parser.add_argument('--geometry', choices=['boundary', 'event'], default='boundary')
-    parser.add_argument('--friction-update', choices=['lagged', 'projected'], default='lagged')
+    parser.add_argument('--friction-update', choices=['lagged', 'projected'], default='projected')
+    parser.add_argument('--integration', choices=['symplectic', 'midpoint'], default='midpoint')
     parser.add_argument('--epsilons', type=float, nargs='+', default=[.05, .005, .0005, .00005])
     args = parser.parse_args()
+    if args.geometry == 'event' and args.integration == 'midpoint' and args.friction_update != 'projected':
+        parser.error('Midpoint integration requires --friction-update projected')
     if (not np.isfinite([*args.spacings, *args.epsilons]).all()
             or min(*args.spacings, *args.epsilons, args.steps, *args.segment_steps) <= 0
             or max(args.epsilons) >= 1):
@@ -266,7 +280,7 @@ def main():
                 cfg = replace(cfg, dt=dt, flip_reference_dt=dt)
                 row = evaluate(cfg, args.steps, args.release, args.epsilons, args.segment_steps,
                                args.geometry, args.friction_update, adjoint=args.adjoint,
-                               controls_to_check=args.parameters)
+                               controls_to_check=args.parameters, integration=args.integration)
                 row.update(shape=shape, material=material)
                 report['cases'].append(row)
                 (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')

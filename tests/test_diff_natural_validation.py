@@ -1,6 +1,7 @@
 """Full and checkpoint-only experiment drivers must return the same derivatives."""
 
 import numpy as np
+import pytest
 
 from blademaster_warp.differentiable_material import MaterialTrajectory
 from blademaster_warp.differentiable_natural import NaturalCutContact
@@ -8,7 +9,8 @@ from blademaster_warp.solver import Config
 from scripts.diff_natural_validate import WindowState, evaluate
 
 
-def test_checkpoint_only_validation_matches_full_tape():
+@pytest.mark.parametrize('phase', [0., .25, .5])
+def test_checkpoint_only_validation_matches_full_tape(phase):
     cfg = Config(size=(.012, .012, .012), grid_spacing=.006, dt=.0002,
                  external_tool=True, blade_bevel_height=.005,
                  young_modulus=20000, yield_stress=200,
@@ -23,7 +25,7 @@ def test_checkpoint_only_validation_matches_full_tape():
     window = WindowState(origin, values, saved, np.zeros(model.n, np.int64), np.empty(0, np.int64),
                          0., cfg.dt, [])
     results = [evaluate(cfg, 6, 'integrated', [1e-7], [2, 3], 'event', 'projected',
-                        initial_window=window, adjoint=mode,
+                        initial_window=window, adjoint=mode, phase=phase,
                         controls_to_check=('knife_x_mm', 'knife_depth_scale', 'knife_lateral_scale'))
                for mode in ('full', 'checkpoint')]
     first, second = results

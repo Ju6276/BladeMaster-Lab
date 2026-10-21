@@ -19,7 +19,7 @@ def probe(parameters: wp.array(dtype=float), dt: float, damping: float, projecte
                            wp.vec3(0.0, 0.0, 1.0), 3.0e-5,
                            wp.vec3(parameters[3], parameters[4], 0.0), dt,
                            0.1 * ratio * ratio, parameters[5], parameters[6],
-                           0.05 * ratio * ratio, damping, -1, projected)
+                           0.05 * ratio * ratio, damping, -1, projected, 0)
     impulse[0] = j
     history[0] = h
 

@@ -60,12 +60,18 @@ def main():
     parser.add_argument('--geometry', choices=['boundary', 'event'], default='event')
     parser.add_argument('--release', choices=['boundary', 'integrated'], default='integrated')
     parser.add_argument('--friction-update', choices=['lagged', 'projected'], default='projected')
+    parser.add_argument('--integration', choices=['symplectic', 'midpoint'], default='midpoint')
+    parser.add_argument('--phases', type=float, nargs='+', default=[0.])
     args = parser.parse_args()
+    if args.geometry == 'event' and args.integration == 'midpoint' and args.friction_update != 'projected':
+        parser.error('Midpoint integration requires --friction-update projected')
     numbers = [*args.spacings, args.duration, *args.dt_divisors, *args.epsilons, *args.segment_steps]
     if args.flip_reference_dt is not None:
         numbers.append(args.flip_reference_dt)
     if not np.isfinite(numbers).all() or min(numbers) <= 0 or max(args.epsilons) >= 1:
         parser.error('Sizes, times, steps and perturbations must be positive and finite; perturbations must be <1')
+    if not np.isfinite(args.phases).all() or min(args.phases) < 0 or max(args.phases) >= 1:
+        parser.error('Time-grid phases must be in [0, 1)')
     args.output.mkdir(parents=True, exist_ok=True)
     report = dict(provenance=git_revision(), command=sys.argv, cases=[])
     for shape in args.shapes:
@@ -80,28 +86,29 @@ def main():
                 if steps < 32 or abs(steps * dt - args.duration) > 1e-12:
                     parser.error('Duration must contain at least 32 base steps and divide exactly by the base step')
                 window = capture_initial(base, steps)
-                case = dict(shape=shape, material=material, spacing_m=spacing,
-                            pic_rate_s_inv=(1 - base.flip_fraction) / base.flip_reference_dt,
-                            start_time_s=window.start_time, duration_s=args.duration, levels=[], adjacent=[])
-                report['cases'].append(case)
-                previous = None
-                for divisor in sorted(set(args.dt_divisors)):
-                    cfg = replace(base, dt=base.dt / divisor,
-                                  board_normal_scale=base.board_normal_scale / divisor**2)
-                    row, arrays = evaluate(cfg, steps * divisor, args.release, args.epsilons,
-                                           args.segment_steps, args.geometry, args.friction_update,
-                                           initial_window=window, return_arrays=True, adjoint=args.adjoint,
-                                           controls_to_check=args.parameters)
-                    name = f'{shape}_{material}_h{spacing:g}_dt{divisor}'
-                    row.update(name=name, divisor=divisor)
-                    np.savez_compressed(args.output / f'{name}.npz', **arrays)
-                    case['levels'].append(row)
-                    if previous is not None:
-                        case['adjacent'].append(compare_levels(previous, (row, arrays)))
-                    previous = row, arrays
-                    (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
-                    print(json.dumps(dict(case=name, loss=row['loss'], gradient=row['gradient_controls'],
-                                          adjacent=case['adjacent'][-1] if case['adjacent'] else None)), flush=True)
+                for phase in sorted(set(args.phases)):
+                    case = dict(shape=shape, material=material, spacing_m=spacing, time_grid_phase=phase,
+                                pic_rate_s_inv=(1 - base.flip_fraction) / base.flip_reference_dt,
+                                start_time_s=window.start_time, duration_s=args.duration, levels=[], adjacent=[])
+                    report['cases'].append(case)
+                    previous = None
+                    for divisor in sorted(set(args.dt_divisors)):
+                        cfg = replace(base, dt=base.dt / divisor,
+                                      board_normal_scale=base.board_normal_scale / divisor**2)
+                        row, arrays = evaluate(cfg, steps * divisor, args.release, args.epsilons,
+                                               args.segment_steps, args.geometry, args.friction_update,
+                                               initial_window=window, return_arrays=True, adjoint=args.adjoint,
+                                               controls_to_check=args.parameters, integration=args.integration, phase=phase)
+                        name = f'{shape}_{material}_h{spacing:g}_dt{divisor}_phase{phase:g}'
+                        row.update(name=name, divisor=divisor)
+                        np.savez_compressed(args.output / f'{name}.npz', **arrays)
+                        case['levels'].append(row)
+                        if previous is not None:
+                            case['adjacent'].append(compare_levels(previous, (row, arrays)))
+                        previous = row, arrays
+                        (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+                        print(json.dumps(dict(case=name, loss=row['loss'], gradient=row['gradient_controls'],
+                                              adjacent=case['adjacent'][-1] if case['adjacent'] else None)), flush=True)
 
 
 if __name__ == '__main__':

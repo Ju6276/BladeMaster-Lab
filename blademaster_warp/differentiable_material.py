@@ -253,6 +253,24 @@ def gather_particles(
 
 
 @wp.kernel
+def gather_stage(
+    x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3), stage_v: wp.array(dtype=wp.vec3),
+    slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
+    old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
+    duration: wp.array(dtype=float), pic_rate: float,
+    next_x: wp.array(dtype=wp.vec3), next_v: wp.array(dtype=wp.vec3),
+):
+    p = wp.tid()
+    pic, dv = wp.vec3(0.0), wp.vec3(0.0)
+    for a in range(8):
+        slot = slots[p, a]
+        pic += weights[p, a] * old_v[slot]
+        dv += weights[p, a] * (new_v[slot] - old_v[slot])
+    next_x[p] = x[p] + duration[0] * pic
+    next_v[p] = v[p] + dv + duration[0] * pic_rate * (pic - stage_v[p])
+
+
+@wp.kernel
 def timed_body_impulse(gravity: wp.vec3, mass: float, duration: wp.array(dtype=float),
                        impulse: wp.array(dtype=wp.vec3)):
     impulse[wp.tid()] = mass * duration[0] * gravity
@@ -425,7 +443,7 @@ class MaterialTrajectory(ElasticTrajectory):
         return result
 
     def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None,
-             grid_transform=None, duration=None):
+             grid_transform=None, duration=None, stage_base=None):
         cfg = self.config
         duration = self.duration if duration is None else duration
         grid = self.uncut if topology is None else topology
@@ -466,7 +484,14 @@ class MaterialTrajectory(ElasticTrajectory):
                   outputs=[old_v, new_v], device=self.device)
         if grid_transform is not None:
             new_v = grid_transform(grid, grid_mass, new_v)
-        if self.ordered_transfers:
+        if stage_base is not None:
+            self.launch(gather_stage, self.n,
+                        inputs=[stage_base.x, stage_base.v, state.v, grid.slots, self.weights,
+                                old_v, new_v, duration,
+                                (1 - cfg.flip_fraction) / (cfg.flip_reference_dt or cfg.dt)],
+                        outputs=[result.x, result.v], device=self.device)
+            coupled = coupled_momentum
+        elif self.ordered_transfers:
             self.launch(gather_particles, self.n,
                       inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v,
                               duration, cfg.flip_fraction, cfg.flip_reference_dt or cfg.dt],
@@ -479,12 +504,14 @@ class MaterialTrajectory(ElasticTrajectory):
                       inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v,
                               duration, cfg.flip_fraction, cfg.flip_reference_dt or cfg.dt, self.mass],
                       outputs=[result.x, result.v, remapped], device=self.device)
-        coupled = self.couple(grid, remapped)
+        if stage_base is None:
+            coupled = self.couple(grid, remapped)
+        base = state if stage_base is None else stage_base
         self.launch(timed_deformation, self.n,
-                  inputs=[state.F, grid.slots, self.gradients, grid_mass, coupled, duration],
+                  inputs=[base.F, grid.slots, self.gradients, grid_mass, coupled, duration],
                   outputs=[result.F], device=self.device)
         self.launch(project_plastic, self.n,
-                  inputs=[result.F, state.Fp, self.young, self.yield_stress, cfg.poisson_ratio, fixed_yielded],
+                  inputs=[result.F, base.Fp, self.young, self.yield_stress, cfg.poisson_ratio, fixed_yielded],
                   outputs=[result.Fp, result.yielded, result.stress], device=self.device)
         return result
 

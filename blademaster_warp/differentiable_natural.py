@@ -29,6 +29,11 @@ def select_pairs(
 class CutInstruction:
     cutting: bool = True
     cut_index: int = 0
+    duration: float | None = None
+
+    def __post_init__(self):
+        if self.duration is not None and (not np.isfinite(self.duration) or self.duration <= 0):
+            raise ValueError("Cut-step duration must be positive and finite")
 
 
 class NaturalCutContact(FixedCutContact):
@@ -110,10 +115,12 @@ class NaturalCutContact(FixedCutContact):
         self._check_cut_index(instruction.cut_index, history.cut_index)
         if instruction.cut_index != history.cut_index:
             history = replace(history, damage=m.zeros(m.n, float), cut_index=int(instruction.cut_index))
-        keys = self.contact_keys(state, history.codes)
+        dt = cfg.dt if instruction.duration is None else instruction.duration
+        duration = m.duration if instruction.duration is None else m.array([dt], float, False)
+        keys = self.contact_keys(state, history.codes, dt)
         branch = self.freeze(history.codes.numpy(), keys, history.pair_keys,
                              history.damage.numpy() >= 1.0, cutting=instruction.cutting)
-        result, updated, reaction = super().step(state, history, tool, branch)
+        result, updated, reaction = super().step(state, history, tool, branch, duration=duration)
         updated.codes = wp.clone(history.codes, requires_grad=False)
         released = m.zeros(1, int, False)
         dirty = m.zeros(1, int, False)
@@ -121,7 +128,7 @@ class NaturalCutContact(FixedCutContact):
         m.launch(contact.assign, m.n,
                  inputs=[result.x, result.v, updated.codes, tool.position, tool.velocity, tool.rotation,
                          tool.omega, cfg.blade_half_size, cfg.grid_spacing, cfg.grid_spacing / 4,
-                         cfg.board_half_extent, cfg.dt, 3 ** instruction.cut_index,
+                         cfg.board_half_extent, dt, 3 ** instruction.cut_index,
                          int(instruction.cutting), updated.damage, released, 0, int(cfg.label_board_layer)],
                  outputs=[dirty], device=m.device)
         updated.pair_keys = keys

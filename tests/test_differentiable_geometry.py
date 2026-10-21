@@ -11,13 +11,14 @@ from blademaster_warp.solver import Config
 from scripts.diff_cut_validate import reaction_loss, terminal_loss
 
 
-def fixture(angle=0., omega=0., spacing=.006, shape='block', young=20000, seed=7, friction_update='lagged'):
+def fixture(angle=0., omega=0., spacing=.006, shape='block', young=20000, seed=7, friction_update='lagged',
+            integration='symplectic'):
     cfg = Config(size=(.012, .012, .012), grid_spacing=spacing, dt=.0002,
                  sampling_seed=seed, shape=shape, young_modulus=young, yield_stress=.01 * young,
                  external_tool=True, blade_grid_constraint=False, blade_bevel_height=.005,
                  contact_reference_dt=.0002, flip_reference_dt=.0002)
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
-    c = GeometryEventContact(m, friction_update=friction_update)
+    c = GeometryEventContact(m, friction_update=friction_update, integration=integration)
     x = m.reference + [0, 0, .03]
     velocity = np.random.default_rng(3).normal(scale=.03, size=x.shape)
     initial, history = m.state(x=x, v=velocity), c.history()
@@ -29,13 +30,15 @@ def fixture(angle=0., omega=0., spacing=.006, shape='block', young=20000, seed=7
 
 @pytest.mark.parametrize('angle,omega', [(0., 0.), (.2, .5)])
 @pytest.mark.parametrize('parameter', ['position', 'velocity', 'x'])
-@pytest.mark.parametrize('friction_update', ['lagged', 'projected'])
+@pytest.mark.parametrize('friction_update,integration', [('lagged', 'symplectic'),
+                                                        ('projected', 'symplectic'),
+                                                        ('projected', 'midpoint')])
 @pytest.mark.parametrize('spacing,shape,young,seed', [(.006, 'block', 20000, 7), (.004, 'block', 400000, 7),
                                                      (.006, 'cylinder', 20000, 7), (.006, 'block', 20000, 0)])
 def test_event_time_and_state_derivatives(angle, omega, parameter, spacing, shape, young, seed,
-                                         friction_update, monkeypatch):
+                                         friction_update, integration, monkeypatch):
     monkeypatch.setattr(wp.config, 'verify_autograd_array_access', True)
-    m, c, initial, history, tool = fixture(angle, omega, spacing, shape, young, seed, friction_update)
+    m, c, initial, history, tool = fixture(angle, omega, spacing, shape, young, seed, friction_update, integration)
 
     def evaluate():
         state, h, force = c.step(initial, history, tool)
@@ -74,8 +77,9 @@ def test_event_time_and_state_derivatives(angle, omega, parameter, spacing, shap
         np.testing.assert_allclose(time_ad, (times[1] - times[0]) / (2 * epsilon), rtol=2e-5, atol=1e-8)
 
 
-def test_geometry_event_checkpoint():
-    m, c, initial, history, tool = fixture(.2, .5)
+@pytest.mark.parametrize('integration', ['symplectic', 'midpoint'])
+def test_geometry_event_checkpoint(integration):
+    m, c, initial, history, tool = fixture(.2, .5, friction_update='projected', integration=integration)
     steps = 3
 
     def knife(step):
@@ -103,13 +107,15 @@ def test_geometry_event_checkpoint():
     assert max(timings['recompute_max_abs'].values()) == 0
 
 
-def test_free_fall_event_time_matches_quadratic_flow():
-    m, c, initial, history, tool = fixture()
+@pytest.mark.parametrize('integration', ['symplectic', 'midpoint'])
+def test_free_fall_event_time_matches_quadratic_flow(integration):
+    m, c, initial, history, tool = fixture(friction_update='projected', integration=integration)
     x = initial.x.numpy() + [.02, 0, 0]
     initial = m.state(x=x, v=np.tile([0, 0, .02], (m.n, 1)))
     particle = int(np.argmax(x[:, 2]))
     gap = tool.position.numpy()[0, 2] - m.config.blade_half_size[2] - x[particle, 2]
-    b, a = -1.02, 9.81
+    b = -1.02
+    a = 9.81 if integration == 'symplectic' else 4.905
     expected = 2 * gap / (-b + np.sqrt(b * b - 4 * a * gap))
     with wp.Tape() as tape:
         _, updated, _ = c.step(initial, history, tool)

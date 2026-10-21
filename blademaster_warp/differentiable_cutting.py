@@ -16,14 +16,16 @@ from . import differentiable_constraint as grid_constraint
 @wp.func
 def contact_mode(gap: float, relative: wp.vec3, normal: wp.vec3, history: wp.vec3,
                  mass: float, dt: float, sn: float, mus: float, gk: float, gc: float,
-                 project_history: int):
-    predicted = gap + dt * wp.min(wp.dot(relative, normal), 0.0)
+                 project_history: int, stage: int):
+    predicted = gap
+    if stage == 0:
+        predicted += dt * wp.min(wp.dot(relative, normal), 0.0)
     if predicted >= 0.0:
         return 0
     jn = sn * mass / dt * (-predicted)
     vt = relative - wp.dot(relative, normal) * normal
     ht = history - wp.dot(history, normal) * normal
-    if project_history != 0:
+    if project_history != 0 and stage == 0:
         ht = ht + dt * vt
     k = gk * mass / (dt * dt)
     damping = 2.0 * gc * wp.sqrt(mass * k)
@@ -38,15 +40,15 @@ def contact_mode(gap: float, relative: wp.vec3, normal: wp.vec3, history: wp.vec
 @wp.func
 def branch_penalty(gap: float, relative: wp.vec3, normal: wp.vec3, mass: float, history: wp.vec3,
                    dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, mode: int,
-                   project_history: int):
+                   project_history: int, stage: int):
     if mode < 0:
-        if project_history == 0:
+        if project_history == 0 and stage == 0:
             return penalty_impulse(gap, relative, normal, mass, history, dt, sn, mus, mud, gk, gc)
-        mode = contact_mode(gap, relative, normal, history, mass, dt, sn, mus, gk, gc, project_history)
+        mode = contact_mode(gap, relative, normal, history, mass, dt, sn, mus, gk, gc, project_history, stage)
     if mode == 0:
         return wp.vec3(0.0), wp.vec3(0.0)
     closing = float(0.0)
-    if mode >= 10:
+    if mode >= 10 and stage == 0:
         closing = wp.dot(relative, normal)
     jn = -sn * mass / dt * (gap + dt * closing)
     vt = relative - wp.dot(relative, normal) * normal
@@ -54,7 +56,7 @@ def branch_penalty(gap: float, relative: wp.vec3, normal: wp.vec3, mass: float, 
     k = gk * mass / (dt * dt)
     damping = 2.0 * gc * wp.sqrt(mass * k)
     force_history = ht
-    if project_history != 0:
+    if project_history != 0 and stage == 0:
         force_history = ht + dt * vt
     trial = (-k * force_history - damping * vt) * dt
     if mode % 10 == 1:
@@ -97,6 +99,7 @@ def rigid_step(
     threshold_factor: float,
     integrate_release: int,
     project_history: int,
+    stage: int,
     cutting: int,
     cut_hold: int,
     cut_advance: int,
@@ -125,10 +128,10 @@ def rigid_step(
         board_gap = 1.0e30
     board, board_history = branch_penalty(
         board_gap, v[p], wp.vec3(0.0, 0.0, 1.0), mass, history[0, p],
-        dt, board_sn, friction[0], friction[1], gk, gc, fixed_modes[0, p], project_history,
+        dt, board_sn, friction[0], friction[1], gk, gc, fixed_modes[0, p], project_history, stage,
     )
     modes[0, p] = contact_mode(board_gap, v[p], wp.vec3(0.0, 0.0, 1.0), history[0, p],
-                               mass, dt, board_sn, friction[0], gk, gc, project_history)
+                               mass, dt, board_sn, friction[0], gk, gc, project_history, stage)
     q = rotation[0]
     local = wp.quat_rotate_inv(q, xp - position[0])
     closest, normal, distance = blade_query(local, half, bevel)
@@ -146,10 +149,10 @@ def rigid_step(
     relative = v[p] - velocity[0] - wp.cross(omega[0], lever)
     blade, blade_history = branch_penalty(
         distance - blade_offset, relative, n, mass, history[1, p],
-        dt, sn, friction[0], friction[1], gk, gc, fixed_modes[1, p], project_history,
+        dt, sn, friction[0], friction[1], gk, gc, fixed_modes[1, p], project_history, stage,
     )
     modes[1, p] = contact_mode(distance - blade_offset, relative, n, history[1, p],
-                               mass, dt, sn, friction[0], gk, gc, project_history)
+                               mass, dt, sn, friction[0], gk, gc, project_history, stage)
     feature = int(0)
     for axis in range(3):
         digit = int(0)
@@ -220,6 +223,7 @@ def pair_step(
     gk: float,
     gc: float,
     project_history: int,
+    stage: int,
     next_history: wp.array(dtype=wp.vec3),
     impulse: wp.array(dtype=wp.vec3),
     modes: wp.array(dtype=int),
@@ -238,10 +242,10 @@ def pair_step(
         old = history[previous[index]]
     applied, updated = branch_penalty(distance - diameter, v[p] - v[q], normal,
                                      mass / 2.0, old, dt, sn, friction[0], friction[1], gk, gc,
-                                     fixed_modes[index], project_history)
+                                     fixed_modes[index], project_history, stage)
     next_history[index] = updated
     modes[index] = contact_mode(distance - diameter, v[p] - v[q], normal, old,
-                               mass / 2.0, dt, sn, friction[0], gk, gc, project_history)
+                               mass / 2.0, dt, sn, friction[0], gk, gc, project_history, stage)
     wp.atomic_add(impulse, p, applied)
     wp.atomic_add(impulse, q, -applied)
 
@@ -334,9 +338,12 @@ class FixedCutContact(PrescribedContact):
                           m.array(rigid_modes, int, False), m.array(pair_modes, int, False),
                           None if yielded is None else m.array(yielded, int, False), grid_batches)
 
-    def step(self, state, history, tool, frozen, *, duration=None, edge_departed=None):
+    def step(self, state, history, tool, frozen, *, duration=None, edge_departed=None,
+             stage_base=None, stage_history=None):
         m, cfg = self.model, self.model.config
         duration = m.duration if duration is None else duration
+        damage = history.damage if stage_history is None else stage_history.damage
+        stage = int(stage_base is not None)
         edge_departed = self._no_edge_departure if edge_departed is None else edge_departed
         sn, gk = cfg.contact_scales()
         radius = cfg.grid_spacing / 4
@@ -352,7 +359,7 @@ class FixedCutContact(PrescribedContact):
         updated.trial_damage = m.zeros(m.n, float)
         updated.damage_work = m.zeros(m.n, float)
         m.launch(rigid_step, m.n,
-                  inputs=[state.x, state.v, history.rigid, history.damage, frozen.released, edge_departed,
+                  inputs=[state.x, state.v, history.rigid, damage, frozen.released, edge_departed,
                           frozen.rigid_modes,
                           tool.position, tool.velocity, tool.rotation, tool.omega, self.friction,
                           cfg.blade_half_size, cfg.blade_bevel_height, radius, blade_offset,
@@ -360,6 +367,7 @@ class FixedCutContact(PrescribedContact):
                           gk, cfg.tangent_damping, cfg.cut_band_cells * cfg.grid_spacing,
                           self.fracture_energy, threshold_factor, int(self.integrate_release),
                           int(self.friction_update == 'projected'),
+                          stage,
                           int(frozen.cutting), int(cfg.cut_hold), int(cfg.cut_work == "advance")],
                   outputs=[updated.rigid, updated.damage, updated.trial_damage, updated.damage_work, rigid, reaction,
                            updated.rigid_modes], device=m.device)
@@ -368,7 +376,7 @@ class FixedCutContact(PrescribedContact):
                       inputs=[state.x, state.v, frozen.pairs, frozen.previous, frozen.pair_modes,
                               history.pairs, self.friction,
                               2 * radius, m.mass, duration, cfg.dt, sn, gk, cfg.tangent_damping,
-                              int(self.friction_update == 'projected')],
+                              int(self.friction_update == 'projected'), stage],
                       outputs=[updated.pairs, pairs, updated.pair_modes], device=m.device)
         m.launch(add_impulses, m.n, inputs=[rigid, pairs], outputs=[impulse], device=m.device)
         constraint_result = None
@@ -381,7 +389,8 @@ class FixedCutContact(PrescribedContact):
             return constraint_result.velocity
 
         result = m.step(state, impulse=impulse, topology=frozen.topology, fixed_yielded=frozen.yielded,
-                        grid_transform=constrain if cfg.blade_grid_constraint else None, duration=duration)
+                        grid_transform=constrain if cfg.blade_grid_constraint else None,
+                        duration=duration, stage_base=stage_base)
         updated.side = history.side
         if constraint_result is not None:
             updated.side = constraint_result.side

@@ -93,6 +93,16 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 `Solver(precision="float64")` 与 `MaterialTrajectory(precision="float64")` 分别运行原正向流程和可微流程。`precision.py` 将同一份 Warp 函数的浮点类型及常量提升到双精度；分支和公式保持相同。原求解器继续使用动态多场注册与场交换，可微流程使用固定分支的稀疏映射；同精度对照检验两套推进结果。
 
+## 事件分段的中点积分
+
+`GeometryEventContact` 默认采用 `integration="midpoint"`：对参考网格上的半离散动力学执行显式中点 RK2。第一阶段推进半段，第二阶段用中点的速度、应力、刀位和接触力推进整段。粒子位置率为插值网格速度，变形率为参考梯度作用于当前速度，速度率包含材料/接触加速度及固定单位时间的 PIC 残差阻尼。塑性 Fp 在预测点和终点分别从段初 Fp 返回映射。各阶段、分段时长及返回映射均进入同一 Warp Tape。
+
+接触阶段使用该时刻的间隙计算法向罚力；切向历史按阶段切向速度积分，并在阶段终点根据新的法向力和接触方向投影到库仑界限。粒子对使用相对速度及两粒子的有效质量。刀力积分采用中点力乘实际分段时长。`integration="symplectic"` 调用原 MUSL 步进；M4 固定分支和原 `Solver` 使用此步进。
+
+中点 RK2 的系数对照 [PETSc TSRK2B](https://petsc.org/release/manualpages/TS/TSRK2B/)；摩擦历史的库仑回算对照 [LAMMPS linear_history](https://docs.lammps.org/pair_granular.html)。MPM 的传递与时间积分误差分析见 [Berzins 2021](https://www.scipedia.com/wd/images/e/e1/Draft_Content_867464886p1127.pdf)。这里在 Warp 中实现这些阶段和返回映射。
+
+`diff_natural_refine --phases 0 .25 .5` 固定同一初态和结束时刻，改变第一步长度，从而比较时间网格起点对状态及梯度的影响。检查点保存每步时长并按相同区间重算。
+
 ## 应力与塑性伴随核对
 
 应力和 Hencky 返回映射使用本仓库的解析 VJP，其余连续算子由 Warp Tape 生成反向。旋转导数的分母取正奇异值之和；Hencky 谱导数在相对奇异值差 ≤1e-4 时使用重复伸长的有限极限近似，避免相近数相减。`tests/test_constitutive_adjoint.py` 独立用 NumPy SVD、返回映射和第一 Piola 应力检查 24 组旋转、重复/近重复伸长及非对称 Fp，并以两档差分核对 F、Fp、μ、λ、屈服半径的 VJP（rtol=2e-6、atol=1e-7）。
@@ -136,6 +146,7 @@ PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定�
 | 粒子位置更新 | 未写明 | 用插值网格速度推进（de Vaucorbeil 2020 TLMPM 式 13），速度用 PIC/FLIP |
 | 传递耗散 | PIC/FLIP 混合 | 默认每步固定比例；步长对照可用 `flip_reference_dt` 固定单位时间的残差阻尼，避免细化步长时同时改变耗散率 |
 | 刀身穿透处理 | 粒子罚接触 | 外部 `hold` 模式补充网格刀面法向约束，见上节 |
+| 事件间时间积分 | MUSL 单步推进、预测步末接触间隙 | M5 默认显式中点 RK2，在阶段实际间隙上取罚力，并在终点对切向历史返回映射，以改善事件分段的状态和梯度收敛 |
 | 接触刚度 | 每步常数 \(s_n\) | 默认按参考步长固定物理刚度，见上节 |
 | 摩擦历史积分 | 用当前历史计算试力，粘住时累加位移，滑动时回算历史 | 默认 `lagged` 相同；M5 可选 `projected` 先累加位移再投影到库仑界限，使相等静动摩擦系数下的分支历史连续，见上节 |
 | 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |

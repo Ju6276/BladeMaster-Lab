@@ -149,21 +149,30 @@ def assign_event(x: wp.array(dtype=wp.vec3), position: wp.array(dtype=wp.vec3),
 
 @wp.kernel
 def accumulate_segment(force: wp.array(dtype=wp.vec3), work: wp.array(dtype=float),
-                       duration: wp.array(dtype=float), total_dt: float,
+                       duration: wp.array(dtype=float), total_dt: wp.array(dtype=float),
                        average_force: wp.array(dtype=wp.vec3), total_work: wp.array(dtype=float)):
     p = wp.tid()
     wp.atomic_add(total_work, p, work[p])
     if p == 0:
-        wp.atomic_add(average_force, 0, duration[0] / total_dt * force[0])
+        wp.atomic_add(average_force, 0, duration[0] / total_dt[0] * force[0])
 
 
 class GeometryEventContact(NaturalCutContact):
-    """Bracketed cut-region entry, with the original TLMPM flow between events.
+    """Bracketed cut-region entry with midpoint or symplectic TLMPM flow.
 
     The prescribed knife has constant linear/angular velocity within a macro
     step. Bracketed secant iterations solve the selected guard on the actual
     pre-event material flow; all times and flow evaluations participate in AD.
     """
+
+    def __init__(self, trajectory, *, release="integrated", friction_update="projected",
+                 integration="midpoint"):
+        super().__init__(trajectory, release=release, friction_update=friction_update)
+        if integration not in ("symplectic", "midpoint"):
+            raise ValueError("Geometry integration must be symplectic or midpoint")
+        if integration == "midpoint" and friction_update != "projected":
+            raise ValueError("Midpoint integration requires projected friction histories")
+        self.integration = integration
 
     def pose(self, tool, elapsed):
         m = self.model
@@ -200,6 +209,9 @@ class GeometryEventContact(NaturalCutContact):
         return value
 
     def advance_segment(self, state, history, tool, duration, cutting):
+        if self.integration == "midpoint":
+            from .differentiable_midpoint import advance_midpoint
+            return advance_midpoint(self, state, history, tool, duration, cutting)
         keys = self.contact_keys(state, history.codes, float(duration.numpy()[0]))
         branch = self.freeze(history.codes.numpy(), keys, history.pair_keys,
                              history.damage.numpy() >= 1, cutting=cutting)
@@ -258,7 +270,8 @@ class GeometryEventContact(NaturalCutContact):
             history = replace(history, damage=m.zeros(m.n, float), cut_index=int(instruction.cut_index),
                               edge_departed=None)
         elapsed = m.array([0.], float, False)
-        end = m.duration
+        end = (m.duration if instruction.duration is None
+               else m.array([instruction.duration], float, False))
         end_tool = self.pose(tool, end)
         reaction, work = m.zeros(1, wp.vec3), m.zeros(m.n, float)
         events = []
@@ -273,7 +286,7 @@ class GeometryEventContact(NaturalCutContact):
             particle, fraction, kind, plane = selected
             if fraction > 1:
                 m.launch(accumulate_segment, m.n,
-                         inputs=[trial_force, trial_h.damage_work, remaining, cfg.dt],
+                         inputs=[trial_force, trial_h.damage_work, remaining, end],
                          outputs=[reaction, work], device=m.device)
                 trial_h.damage_work = work
                 trial_h.geometry_events = tuple(events)
@@ -294,7 +307,7 @@ class GeometryEventContact(NaturalCutContact):
                     raise RuntimeError('Geometric event ordering did not converge')
                 duration = self.interval(time, elapsed)
                 m.launch(accumulate_segment, m.n,
-                         inputs=[force, h.damage_work, duration, cfg.dt],
+                         inputs=[force, h.damage_work, duration, end],
                          outputs=[reaction, work], device=m.device)
                 state, history, elapsed = before, h, time
                 start_tool = event_tool
@@ -313,7 +326,7 @@ class GeometryEventContact(NaturalCutContact):
                      outputs=[codes, departed], device=m.device)
             history = replace(history, codes=codes, edge_departed=departed)
             events.append((particle, elapsed))
-            if float(elapsed.numpy()[0]) >= cfg.dt:
+            if float(elapsed.numpy()[0]) >= float(end.numpy()[0]):
                 history.damage_work = work
                 history.geometry_events = tuple(events)
                 return state, history, reaction

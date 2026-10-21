@@ -79,14 +79,15 @@ class NaturalCutContact(FixedCutContact):
                 or index < previous or index > self.max_cut_index):
             raise ValueError(f"Cut indices must be monotonic integers within [0, {self.max_cut_index}]")
 
-    def contact_keys(self, state, codes):
+    def contact_keys(self, state, codes, dt=None):
         m, cfg = self.model, self.model.config
+        dt = cfg.dt if dt is None else dt
         x, v = state.x.numpy(), state.v.numpy()
         if not np.isfinite(x).all() or not np.isfinite(v).all():
             raise FloatingPointError("Nonfinite particle positions or velocities")
         # ||vp-vq|| <= 2 max||v|| bounds the original predictive contact reach.
         speed = np.max(np.linalg.norm(v.astype(np.float64), axis=1))
-        reach = cfg.grid_spacing / 2 + 2 * cfg.dt * speed
+        reach = cfg.grid_spacing / 2 + 2 * dt * speed
         reach = float(np.nextafter(np.asarray(reach, dtype=x.dtype), np.asarray(np.inf, dtype=x.dtype)))
         candidates = cKDTree(x).query_pairs(reach, output_type="ndarray")
         if not len(candidates):
@@ -94,7 +95,7 @@ class NaturalCutContact(FixedCutContact):
         flags = m.zeros(len(candidates), int, False)
         m.launch(select_pairs, len(candidates),
                  inputs=[m.array(candidates, int, False), state.x, state.v, self.reference, codes,
-                         cfg.grid_spacing / 4, cfg.grid_spacing, cfg.dt],
+                         cfg.grid_spacing / 4, cfg.grid_spacing, dt],
                  outputs=[flags], device=m.device)
         flags = flags.numpy()
         if np.any(flags < 0):

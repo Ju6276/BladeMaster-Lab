@@ -11,6 +11,7 @@ import warp as wp
 
 from blademaster_warp.coupling import ExternalToolPort
 from blademaster_warp.differentiable_material import MaterialTrajectory
+from blademaster_warp.differentiable_geometry import GeometryEventContact
 from blademaster_warp.differentiable_natural import CutInstruction, NaturalCutContact
 from blademaster_warp.presets import banana_dt, tangent_history_dt
 from blademaster_warp.provenance import git_revision
@@ -31,12 +32,13 @@ def first_side_prefix(cfg):
     raise RuntimeError('No geometric side assignment in the first 0.2 seconds')
 
 
-def evaluate(cfg, steps, release, epsilons, segment_steps):
+def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary'):
     prefix = first_side_prefix(cfg)
     controls = np.array([0., 1., 1.])
     origin, values, saved, rows, _ = capture_window(cfg, prefix, steps, controls, precision='float64')
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
-    c = NaturalCutContact(m, release=release)
+    contact_type = GeometryEventContact if geometry == 'event' else NaturalCutContact
+    c = contact_type(m, release=release)
     initial = m.state(**values)
     history = c.history(**saved, codes=rows[0]['codes'], pair_keys=rows[0]['previous'])
     q = m.array(controls, float)
@@ -53,6 +55,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps):
         state, h = initial, history
         loss = m.zeros(1, float)
         codes, pairs, released, rigid_modes = [], [], [], []
+        geometry_events = []
         error = {name: 0. for name in (*values, 'force', 'rigid_history', 'pair_history', 'damage')}
         discrete = dict(side_particles=0, pair_keys=0)
         for step in range(steps):
@@ -62,6 +65,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps):
             pairs.append(h.pair_keys.copy())
             released.append(h.damage.numpy() >= 1)
             rigid_modes.append(h.rigid_modes.numpy())
+            geometry_events.append({p: float(t.numpy()[0]) for p, t in h.geometry_events})
             if compare:
                 row = rows[step]
                 for name in values:
@@ -79,7 +83,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps):
                     error['pair_history'] = max(error['pair_history'], float(np.max(
                         np.abs(h.pairs.numpy() - row['pairs']))))
         return loss, state, h, dict(codes=np.asarray(codes), pairs=pairs, released=np.asarray(released),
-                                   rigid_modes=np.asarray(rigid_modes)), error, discrete
+                                   rigid_modes=np.asarray(rigid_modes), geometry=geometry_events), error, discrete
 
     with wp.Tape() as tape:
         loss, terminal, terminal_history, events, forward_error, discrete_error = rollout(compare=True)
@@ -99,6 +103,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps):
         checkpoint.append(dict(segment_steps=length, controls_max_abs=error_q, initial_x_max_abs=error_x,
                                recompute_max_abs=timings['recompute_max_abs']))
     finite_difference = []
+    baseline_loss = float(loss.numpy()[0])
     for parameter, direction in (('knife_x_mm', np.array([1., 0., 0.])),
                                  ('knife_depth_scale', np.array([0., 1., 0.]))):
         ad = float(gradient @ direction)
@@ -108,15 +113,32 @@ def evaluate(cfg, steps, release, epsilons, segment_steps):
                 q.assign(controls + sign * epsilon * direction)
                 shifted_loss, _, _, shifted, _, _ = rollout()
                 losses.append(float(shifted_loss.numpy()[0]))
+                mode_changes = np.argwhere(shifted['rigid_modes'] != events['rigid_modes'])
                 changes.append(dict(
                     side_particle_steps=int(np.count_nonzero(shifted['codes'] != events['codes'])),
                     final_side_particles=int(np.count_nonzero(shifted['codes'][-1] != events['codes'][-1])),
                     pair_keys=sum(len(np.setxor1d(a, b)) for a, b in zip(shifted['pairs'], events['pairs'])),
                     release_particle_steps=int(np.count_nonzero(shifted['released'] != events['released'])),
                     rigid_modes=int(np.count_nonzero(shifted['rigid_modes'] != events['rigid_modes'])),
+                    rigid_mode_channels=dict(zip(('board', 'blade', 'feature', 'hold', 'work'),
+                        np.count_nonzero(shifted['rigid_modes'] != events['rigid_modes'], axis=(0, 2)).tolist())),
+                    first_rigid_mode_change=None if not len(mode_changes) else dict(
+                        step=int(mode_changes[0, 0]), channel=int(mode_changes[0, 1]),
+                        particle=int(mode_changes[0, 2]),
+                        baseline=int(events['rigid_modes'][tuple(mode_changes[0])]),
+                        perturbed=int(shifted['rigid_modes'][tuple(mode_changes[0])])),
+                    geometry_event_ids=sum(len(a.keys() ^ b.keys())
+                                           for a, b in zip(shifted['geometry'], events['geometry'])),
+                    geometry_order_steps=sum(list(a) != list(b)
+                                             for a, b in zip(shifted['geometry'], events['geometry'])),
+                    geometry_event_time_max_abs_s=max((abs(a[p] - b[p])
+                        for a, b in zip(shifted['geometry'], events['geometry']) for p in a.keys() & b.keys()),
+                        default=0.),
                 ))
             fd = (losses[1] - losses[0]) / (2 * epsilon)
             finite_difference.append(dict(parameter=parameter, epsilon=epsilon, ad=ad, fd=fd,
+                                           left_fd=(baseline_loss - losses[0]) / epsilon,
+                                           right_fd=(losses[1] - baseline_loss) / epsilon,
                                            relative_error=abs(ad - fd) / max(abs(ad), abs(fd), 1e-12),
                                            event_changes=changes))
     if not np.isfinite([float(loss.numpy()[0]), *gradient]).all():
@@ -124,7 +146,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps):
     new_labels = np.count_nonzero(events['codes'][-1] != history.codes.numpy())
     if not new_labels:
         raise RuntimeError('Selected window contains no new side assignments')
-    return dict(config=asdict(cfg), release=release, particles=m.n, prefix_steps=prefix,
+    return dict(config=asdict(cfg), release=release, geometry=geometry, particles=m.n, prefix_steps=prefix,
                 start_time_s=prefix * cfg.dt, steps=steps, duration_s=steps * cfg.dt,
                 newly_labelled_particles=int(new_labels), peak_pairs=max(map(len, events['pairs'])),
                 loss=float(loss.numpy()[0]), gradient_controls=gradient.tolist(),
@@ -141,6 +163,7 @@ def main():
     parser.add_argument('--steps', type=int, default=64)
     parser.add_argument('--segment-steps', type=int, nargs='+', default=[16, 32])
     parser.add_argument('--release', choices=['boundary', 'integrated'], default='integrated')
+    parser.add_argument('--geometry', choices=['boundary', 'event'], default='boundary')
     parser.add_argument('--epsilons', type=float, nargs='+', default=[.05, .005, .0005, .00005])
     args = parser.parse_args()
     if (not np.isfinite([*args.spacings, *args.epsilons]).all()
@@ -159,7 +182,7 @@ def main():
                     cfg = replace(cfg, size=(.024, .018, .018))
                 dt = tangent_history_dt(cfg, banana_dt(cfg, spacing))
                 cfg = replace(cfg, dt=dt, flip_reference_dt=dt)
-                row = evaluate(cfg, args.steps, args.release, args.epsilons, args.segment_steps)
+                row = evaluate(cfg, args.steps, args.release, args.epsilons, args.segment_steps, args.geometry)
                 row.update(shape=shape, material=material)
                 report['cases'].append(row)
                 (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')

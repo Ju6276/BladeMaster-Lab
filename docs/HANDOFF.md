@@ -147,7 +147,7 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 | M2 | 多步状态与分段重算 VJP | 两网格、32/128/512 步的梯度、耗时和显存扫描完成 |
 | M3 | 刀与砧板接触、摩擦、推压轨迹优化对照 | 接触分段重算及 8/16 控制量扩展；八控制量 AD/FD/CMA-ES 成功 5/2/5（各五组），长轨迹见 RESULTS |
 | M4 | 固定切割分支、多场、塑性和刀路梯度 | 已完成：12 个窗口的正向与梯度、活跃网格约束、完整检查点及 67200 步切割/退刀/推块通过 |
-| M5 | 损伤达阈值和切开事件的梯度 | 局部释放窗口的固定耗散率步长对照通过；自然分侧、接触对及历史已接入，几何分侧的事件时间到后续状态导数待做 |
+| M5 | 损伤达阈值和切开事件的梯度 | 释放窗口步长对照通过；几何分侧的步内时长已接入后续状态，28 项事件测试通过；自然窗口的接触切换继续验收 |
 
 当前实现：`differentiable.py`、`differentiable_contact.py`、`differentiable_material.py`、`differentiable_cutting.py`、`differentiable_constraint.py`、`differentiable_events.py`。`precision.py` 从同一份 Warp 函数定义生成双精度核。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
 
@@ -165,9 +165,9 @@ M4 数值验收提交 `fe6a422`，dirty=false。保留塑性投影应力、固�
 
 M5 已接入损伤释放后的状态导数。`differentiable_events` 定位平面穿越和损伤阈值的步内时刻；`EventCutContact` 根据剩余断裂功积分刃口冲量，事件时刻通过冲量进入 x/v/F/Fp、应力和刀力。自然事件扫描入口为 `scripts.diff_cut_events`，释放梯度与步长对照为 `scripts.diff_release_validate`。
 
-`NaturalCutContact` 从当前状态和刀路生成下一步侧码、接触对及历史，完整 Tape 和检查点共用该流程。`scripts.diff_natural_validate` 检查首次分侧窗口的正向一致性及自然扰动；`--release boundary` 对照原求解器，`--release integrated` 使用已实现的释放积分。几何分侧仍在整步边界切换，E1 继续接入事件时间对后续状态的影响。
+`NaturalCutContact` 从当前状态和刀路生成下一步侧码、接触对及历史，完整 Tape 和检查点共用该流程。`scripts.diff_natural_validate` 检查首次分侧窗口的正向一致性及自然扰动；`--release boundary` 对照原求解器，`--release integrated` 使用已实现的释放积分。`--geometry event` 切换到 `GeometryEventContact`：在实际材料推进中求分侧时刻，按该时刻切分状态推进与多场交换。报告记录左右差分、接触模式通道、事件时刻与顺序。
 
-提交 `acead71`：全量 **707 passed、8 skipped、18 subtests passed**。8 个自然分侧窗口（两网格三材料参数及方块/圆柱）正向一致，检查点重算差为 0；80 组差分中 49 组偏差 >2%、8 组符号相反，跨事件验收失败。下一步处理步内几何分侧积分与接触切换灵敏度，保留全部失败扰动组合，见 RESULTS。
+步末分侧对照 `acead71`：8 个自然窗口（两网格三材料参数及方块/圆柱）正向一致，检查点重算差为 0；80 组差分中 49 组偏差 >2%、8 组符号相反，跨事件验收失败。步内分侧保留这些扰动组合，并继续定位接触切换，见 RESULTS。
 
 M5 首批提交 `26c9fe5`，全量 **672 passed、8 skipped、18 subtests passed**。`runs/m5_26c9fe5_events_{6,4}mm` 共 **24** 例自然切割扫描：默认 G_c=700 时最大损伤 **0.13835/0.19641**，释放 **0/0** 个；G_c=70 时释放 **4/5** 个。刀偏移 +0.05 mm 时，分侧时刻改变 **263/1817** 个；偏移 −2 mm 时切块为 **674/778、2330/2562**。完整数字与命令见 RESULTS。
 
@@ -179,7 +179,7 @@ M5 首批提交 `26c9fe5`，全量 **672 passed、8 skipped、18 subtests passed
 
 损伤记忆分两层：同一个切割编号的 D 持续累积；换到新的 `cut_index` 时重置本刀 D 与释放标记，旧切口侧码和塑性 Fp 保留。`EventCutContact` 的 D 逐步参与求导并写入检查点。
 
-剩余实验在 DIFFERENTIABLE 的 E1–E7：几何分侧、接触切换、从初态展开的完整轨迹、多刀记忆、整体能量、网格/场景泛化、完整切割优化。E1/E2 的事件后状态导数方案待定稿；M5 释放窗口固定初态、侧码和空粒子对集合，最新两档微扰的释放步号与刚体接触模式变化数均为 0。损伤计功核对、完整系统能量核对及优化成功率分别记录。
+剩余实验在 DIFFERENTIABLE 的 E1–E7：几何分侧、接触切换、从初态展开的完整轨迹、多刀记忆、整体能量、网格/场景泛化、完整切割优化。E1 已实现求根和前后分段；E2 继续处理接触切换及历史重置。M5 释放窗口固定初态、侧码和空粒子对集合，最新两档微扰的释放步号与刚体接触模式变化数均为 0。损伤计功核对、完整系统能量核对及优化成功率分别记录。
 
 完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。
 

@@ -252,6 +252,7 @@ class CutHistory:
     codes: wp.array | None = None
     pair_keys: np.ndarray | None = None
     cut_index: int = 0
+    geometry_events: tuple = ()
 
 
 @dataclass

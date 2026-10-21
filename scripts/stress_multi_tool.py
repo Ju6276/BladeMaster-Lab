@@ -426,7 +426,7 @@ def contact_stress(seed=17, device="cpu", tool_count=3, motion="fixed"):
     )
 
 
-def trajectory_stress(seed=17, device="cuda:0", steps=120, tool_count=3):
+def trajectory_stress(seed=17, device="cuda:0", steps=120, tool_count=3, precision="float32"):
     """Full shared-material trajectories compared after physical tool relabeling."""
     from blademaster_warp.topology import components
 
@@ -444,14 +444,15 @@ def trajectory_stress(seed=17, device="cuda:0", steps=120, tool_count=3):
     rotations = np.array([rotation_increment(v) for v in rng.uniform(-0.005, 0.005, (tool_count, 3))])
     baseline = None
     errors, repeat_errors = {}, {}
-    tolerances = trajectory_tolerances(cfg)
+    roundoff_scale = np.finfo(precision).eps / np.finfo(np.float32).eps
+    tolerances = {key: value * roundoff_scale for key, value in trajectory_tolerances(cfg).items()}
     max_balance = 0.0
     shared = 0
     orders = list(permutations(range(tool_count)))
     for trial, permutation in enumerate([orders[0], *orders]):
         order = np.asarray(permutation)
         inverse = np.argsort(order)
-        s = Solver(cfg, device=device)
+        s = Solver(cfg, device=device, precision=precision)
         s.tool_pos.assign(poses[order])
         s.tool_vel.assign(velocities[order])
         s.tool_rot.assign(rotations[order])
@@ -475,8 +476,8 @@ def trajectory_stress(seed=17, device="cuda:0", steps=120, tool_count=3):
             )
             residual = float(np.max(abs(delta - external)))
             max_balance = max(max_balance, residual)
-            # External impulse balance within 50 ppm of one step's gravity impulse.
-            balance_atol = 5e-5 * 9.81 * total_mass * cfg.dt
+            # The float32 roundoff budget is 50 ppm of one step's gravity impulse.
+            balance_atol = 5e-5 * roundoff_scale * 9.81 * total_mass * cfg.dt
             np.testing.assert_allclose(delta, external, atol=balance_atol, rtol=0)
             previous = state.copy()
             state["sides"] = canonical_codes(state["sides"], order, 2)
@@ -529,6 +530,7 @@ def trajectory_stress(seed=17, device="cuda:0", steps=120, tool_count=3):
                     )
     return dict(
         config=asdict(cfg),
+        precision=precision,
         particles=s.n,
         steps=steps,
         strokes=2,
@@ -552,6 +554,7 @@ def main(argv=None):
     seeds.add_argument("--seeds", type=int, nargs="+")
     parser.add_argument("--tools", type=int, choices=(2, 3), default=3)
     parser.add_argument("--steps", type=int, default=120)
+    parser.add_argument("--precision", choices=("float32", "float64"), default="float32")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     reports = []
@@ -565,7 +568,7 @@ def main(argv=None):
             capacity=capacity_stress(seed, args.device, args.tools),
         )
         if wp.get_device(args.device).is_cuda:
-            report["trajectories"] = trajectory_stress(seed, args.device, args.steps, args.tools)
+            report["trajectories"] = trajectory_stress(seed, args.device, args.steps, args.tools, args.precision)
         report["status"] = "passed"
         reports.append(report)
     report = reports[0] if args.seeds is None else dict(status="passed", runs=reports)

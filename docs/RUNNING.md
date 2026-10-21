@@ -123,7 +123,7 @@ Fig. 4 形式的 Franka 中片抬升：两次径向切割，转平刀具，插�
 | `scripts/surface_deformed.py` | 已知变形下的表面嵌入误差与自交 |
 | `scripts/surface_observations.py` | 保留完整刀路，对比不同材料观测间隔；默认 CUDA，可逐帧检查几何 |
 | `scripts/stress_teleop.py` | 六轴输入、暂停、停止、重启和断线重连回放；`--seeds 0 17 913 --near-capacity --restart-cycles 2` 检查多种种子和切割历史容量 |
-| `scripts/stress_multi_tool.py` | 同一材料上的多刀接触、旋转交叉、换序、独立损伤、动量及 int64 编号容量检查；`--seeds 0 17 913` 批量运行 |
+| `scripts/stress_multi_tool.py` | 同一材料上的多刀接触、旋转交叉、换序、独立损伤、动量及 int64 编号容量检查；`--seeds 0 17 913` 批量运行，`--device cuda:0 --precision float64` 用双精度和按机器精度收紧的容差核对整段轨迹的编号置换 |
 | `scripts/fig5_compare.py` | Fig. 5 两刀三块、退刀后独立推动；构建固定版本的 CRESSim-MPM 独立对照 |
 | `scripts/live_latency.py` | 状态帧确认的命令到 HTTP 帧的延迟，`--output` 保存统计；异常时关闭输入流，`--stop` 在正常或异常退出时结束会话 |
 

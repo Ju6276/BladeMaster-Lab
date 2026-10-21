@@ -128,6 +128,6 @@ def test_permutation_maps_each_strokes_ternary_digits():
 def test_three_knives_full_trajectory_and_cut_history_permutation():
     from scripts.stress_multi_tool import trajectory_stress
 
-    report = trajectory_stress(seed=17, steps=120, tool_count=3)
+    report = trajectory_stress(seed=17, steps=120, tool_count=3, precision="float64")
     assert report["shared_damaged_particles"] > 0
     assert report["strokes"] == 2 and report["permutations"] == 6

@@ -159,6 +159,8 @@ M4 数值验收提交 `fe6a422`，dirty=false。保留塑性投影应力、固�
 
 最终报告：`runs/m4_fe6a422_windows` 的 12/12 窗口通过正向、刀路、材料及摩擦导数；刀路每例至少两档 ≤2%，最差第二档误差 **0.00950%**。`runs/m4_fe6a422_full` 为 1.05 s、67200 步、两块 **726/726**；刀路三档误差 **0.0232/0.00308/0.00137%**，原求解器与可微求解器的双精度最大 x/Fp/刀力差为 **6.21e-15 m / 2.53e-13 / 6.37e-12 N**。分段全部状态重算差为 **0**，CUDA 数组内存池峰值 **4711.3 MiB**。视频 `~/Desktop/BladeMaster_videos/M4_differentiable_banana_fe6a422.mp4` 来自可微求解器，含切透、退刀、推块和再次退刀，211 帧、20 fps。
 
+同镜头视频对照为 `05a9327`、`runs/m4_05a9327_compare`。两套求解器在同刀路、材质和步长下的最大粒子位置距离 **4.37e-15 m**，回弹、碰撞与刀面带起左块的运动一致。正常速度及 0.1 倍速视频在 `~/Desktop/BladeMaster_videos/M4_original_vs_differentiable[_1x]_05a9327.mp4`；生成方式见 DIFFERENTIABLE。M4 横推速度为 **0.16 m/s**，旧 Franka 三刀任务为 **0.02 m/s**。
+
 完整轨迹入口按网格 CFL 和切向接触历史稳定条件取步长，当前香蕉为 **15.625 μs**，参考接触刚度保持相同。62.5 μs 长轨迹梯度验收失败（放大至 1e18）；步长对照在 `runs/m4_a6ede54_{default,half,quarter}_dt`。原求解器 float32 的 Fp 重复极差达到 **1.475e-5**，记录为 `runs/m4_a6ede54_precision_repeat`；最终正向使用同精度 float64 对照。
 
 下一步为 M5。完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。固定事件后，现有反力路径对 G_c 的梯度为零；几何侧码、切割阈值与切开时刻的事件导数在 M5 处理。

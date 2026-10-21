@@ -487,7 +487,17 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory \
 
 刀路方向导数 AD **−0.5909453**，三档 FD 相对误差 **0.023243/0.003080/0.001372%**，全部通过。三个独立进程的控制量梯度最大绝对差 **7.11e-15**；32 步分段中 x/v/F/Fp/应力/接触历史/损伤重算差全部为 **0**。CUDA 数组内存池峰值 **4711.3 MiB**。视频 `differentiable_cutting.mp4` 使用可微求解器的粒子状态，含切透、退刀、推块及再次退刀，**211 帧 / 20 fps**。香蕉轨迹的网格约束求解次数为 0；活跃约束由 `test_active_grid_constraint_in_complete_checkpoint` 覆盖完整推进与反向。
 
+### 原求解器与可微求解器的视频对照
+
+2026-10-21，提交 `05a9327`，RTX 4090，dirty=false。命令 `PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory --duration 1.05 --frame-stride 320 --ordered-transfers --precision float64 --reference-precision float64 --comparison-video --output runs/m4_05a9327_compare`。两侧分别读取原/可微求解器独立推进的 x/v/F，共用刀路、材质、时间步和相机；67200 步最大位置分量差 **4.07e-15 m**、粒子位置距离 **4.37e-15 m**、速度分量差 **6.02e-13 m/s**、刀力分量差 **9.24e-12 N**。回弹、碰撞与退刀时的切块抬升在两边一致。
+
+0.630 s 有 **14** 对块间接触；0.765 s 有 **8** 对，0.775 s 右块质心 x 速度 **0.2523 m/s**。0.85–1.05 s 无块间接触，左块质心从 **11.636 mm** 升至 **33.663 mm**；末端 z 速度 **0.11999 m/s**，刀上升速度 **0.12 m/s**，反力 **0.21153 N** 接近该块重量 **0.21153 N**。当前材料黏度和 Maxwell 分量均为 0；M4 横推速度 **0.16 m/s**，Franka 三刀任务为 **0.02 m/s**。
+
+`solver_comparison.mp4` 为 **0.1 倍速、211 帧**；命令增加 `--render-only --playback-speed 1` 生成 `solver_comparison_1x.mp4`（**22 帧、20 fps**）。正常速度的六次循环版通过 `ffmpeg -stream_loop 5 -i solver_comparison_1x.mp4 -c copy -movflags +faststart solver_comparison_1x_loop.mp4` 生成。两版视频在 Mac 的 `~/Desktop/BladeMaster_videos/M4_original_vs_differentiable[_1x]_05a9327.mp4`。
+
 ## 测试
+
+2026-10-21，提交 `05a9327`：提交前全量 **662 passed、8 skipped、18 subtests passed**，135.46 s。新增原求解器状态记录、同镜头并排视频与播放速度选项；两档视频已检查下刀、块间接触、横推及退刀帧。
 
 2026-10-21，提交 `624dafe`：提交前全量 **662 passed、8 skipped、18 subtests passed**，227.52 s。新增活跃刀面网格约束与粒子推进的集成测试：完整 Tape 和 2 步分段的刀位梯度一致（rtol **1e-9**），两档有限差分通过 **2%** 目标，约束速度残差 ≤ **1e-6 m/s**。8 项跳过为 CRESSim 上游构建未配置。
 

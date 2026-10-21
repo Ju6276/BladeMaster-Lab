@@ -92,7 +92,17 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory \
 
 0–0.24 s 下刀，0.24–0.48 s 退刀，0.48–0.75 s 移位和下降，0.75–0.85 s 横向推块，0.85–1.05 s 再退刀。三项控制量是初始 x 偏移、z 向行程比例和 x 向推移比例。`--duration .48` 运行切透与退刀；`--render-only` 从保存的可微粒子状态渲染视频。
 
-`trajectory.npz` 保存可微求解器的 x/F、粒子块号和刀反力；`branches.npz` 保存分支序列。原求解器提供侧码、释放标记、接触集合和约束求解批数。反向按分段重算，报告逐状态重算误差、梯度和 CUDA 内存池峰值。
+`trajectory.npz` 保存可微求解器的 x/v/F、粒子块号和刀反力；`reference_x/reference_v/reference_F/reference_force` 保存原求解器独立推进的对应量，`pair_count` 保存采样时的接触对数。`branches.npz` 保存分支序列。原求解器提供侧码、释放标记、接触集合和约束求解批数。反向按分段重算，报告逐状态重算误差、梯度和 CUDA 内存池峰值。
+
+用 `--comparison-video` 替换 `--video`，左右并排显示原求解器与可微求解器；两侧共用材质、刀路、步长和相机。默认播放速度为 0.1 倍，正常速度重绘命令如下。表面更新仍读取全部记录帧，播放速度只改变视频采样。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory \
+  --render-only --comparison-video --playback-speed 1 \
+  --output runs/diff_<commit>_trajectory
+```
+
+输出为 `solver_comparison.mp4`（0.1 倍速）和 `solver_comparison_1x.mp4`（正常速度）。M4 的横推为 16 mm / 0.1 s，即 0.16 m/s；原 Franka 三刀入口的 `SequenceSettings.push_speed_m_s` 为 0.02 m/s，两套任务使用不同刀路。
 
 固定法向的单粒子粘着接触中，以 `(v_t, h_t/dt)` 为状态，切向更新矩阵为 `[[1-2γc√γk, -γk], [1, 1]]`。当前 γc=0.1，稳定条件为 γk<0.04；保持参考接触刚度时对应 dt<22.36 μs。62.5/31.25/15.625 μs 的单步谱半径分别为 1.09576/1.01105/0.99578。MPM 传递和粘滑切换进入完整轨迹的梯度检查。
 

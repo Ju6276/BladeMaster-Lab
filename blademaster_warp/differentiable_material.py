@@ -192,6 +192,62 @@ class FixedTopology:
     sources: wp.array
     coefficients: wp.array
     count: int
+    particle_offsets: wp.array
+    particles: wp.array
+    corners: wp.array
+
+
+@wp.kernel
+def ordered_p2g(
+    offsets: wp.array(dtype=int), particles: wp.array(dtype=int), corners: wp.array(dtype=int),
+    weights: wp.array2d(dtype=float), gradients: wp.array2d(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3), stress: wp.array(dtype=wp.mat33), impulses: wp.array(dtype=wp.vec3),
+    mass: float, volume: float, dt: float, grid_mass: wp.array(dtype=float),
+    momentum: wp.array(dtype=wp.vec3), grid_impulse: wp.array(dtype=wp.vec3),
+):
+    slot = wp.tid()
+    total_mass = float(0.0)
+    total_momentum = wp.vec3(0.0)
+    total_impulse = wp.vec3(0.0)
+    for edge in range(offsets[slot], offsets[slot + 1]):
+        p, a = particles[edge], corners[edge]
+        w = weights[p, a]
+        total_mass += mass * w
+        total_momentum += mass * w * v[p]
+        total_impulse += w * impulses[p] - dt * volume * stress[p] * gradients[p, a]
+    grid_mass[slot] = total_mass
+    momentum[slot] = total_momentum
+    grid_impulse[slot] = total_impulse
+
+
+@wp.kernel
+def gather_particles(
+    x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3), slots: wp.array2d(dtype=int),
+    weights: wp.array2d(dtype=float), old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
+    dt: float, flip: float, next_x: wp.array(dtype=wp.vec3), next_v: wp.array(dtype=wp.vec3),
+):
+    p = wp.tid()
+    pic, dv = wp.vec3(0.0), wp.vec3(0.0)
+    for a in range(8):
+        slot = slots[p, a]
+        pic += weights[p, a] * new_v[slot]
+        dv += weights[p, a] * (new_v[slot] - old_v[slot])
+    next_x[p] = x[p] + dt * pic
+    next_v[p] = (1.0 - flip) * pic + flip * (v[p] + dv)
+
+
+@wp.kernel
+def ordered_remap(
+    offsets: wp.array(dtype=int), particles: wp.array(dtype=int), corners: wp.array(dtype=int),
+    weights: wp.array2d(dtype=float), v: wp.array(dtype=wp.vec3), mass: float,
+    momentum: wp.array(dtype=wp.vec3),
+):
+    slot = wp.tid()
+    value = wp.vec3(0.0)
+    for edge in range(offsets[slot], offsets[slot + 1]):
+        p, a = particles[edge], corners[edge]
+        value += mass * weights[p, a] * v[p]
+    momentum[slot] = value
 
 
 @wp.kernel
@@ -216,9 +272,10 @@ class MaterialTrajectory(ElasticTrajectory):
     required for both F and Fp. Each step retains its own plastic state.
     """
 
-    def __init__(self, config, device="cuda:0", requires_grad=True):
+    def __init__(self, config, device="cuda:0", requires_grad=True, *, ordered_transfers=False):
         super().__init__(replace(config, yield_stress=0.0), device, requires_grad)
         self.config = config
+        self.ordered_transfers = ordered_transfers
         self.yield_stress = self.array([config.yield_stress], float)
         self.nodes = self.slots.numpy()
         self.uncut = self.topology(np.zeros(self.n, dtype=np.int64))
@@ -260,10 +317,14 @@ class MaterialTrajectory(ElasticTrajectory):
             sources.append(a)
             coefficients.append(diagonal)
             offsets.append(len(sources))
+        order = np.argsort(slots.ravel(), kind="stable")
+        particle_offsets = np.searchsorted(slots.ravel()[order], np.arange(len(keys) + 1))
         return FixedTopology(
             self.array(slots.reshape(self.n, 8), int, False),
             self.array(keys, wp.int64, False), self.array(offsets, int, False),
             self.array(sources, int, False), self.array(coefficients, float, False), len(keys),
+            self.array(particle_offsets, int, False), self.array(order // 8, int, False),
+            self.array(order % 8, int, False),
         )
 
     def couple(self, grid, source):
@@ -297,18 +358,32 @@ class MaterialTrajectory(ElasticTrajectory):
             impulse = self.zeros(self.n, wp.vec3, False)
             wp.launch(body_impulse, self.n, inputs=[wp.vec3(*gravity), self.mass, cfg.dt],
                       outputs=[impulse], device=self.device)
-        wp.launch(m.p2g, (self.n, 8),
-                  inputs=[state.v, stress, impulse, grid.slots, self.weights, self.gradients,
-                          self.mass, self.volume, cfg.dt],
-                  outputs=[grid_mass, momentum, grid_impulse], device=self.device)
+        if self.ordered_transfers:
+            wp.launch(ordered_p2g, grid.count,
+                      inputs=[grid.particle_offsets, grid.particles, grid.corners, self.weights, self.gradients,
+                              state.v, stress, impulse, self.mass, self.volume, cfg.dt],
+                      outputs=[grid_mass, momentum, grid_impulse], device=self.device)
+        else:
+            wp.launch(m.p2g, (self.n, 8),
+                      inputs=[state.v, stress, impulse, grid.slots, self.weights, self.gradients,
+                              self.mass, self.volume, cfg.dt],
+                      outputs=[grid_mass, momentum, grid_impulse], device=self.device)
         coupled_momentum = self.couple(grid, momentum)
         coupled_impulse = self.couple(grid, grid_impulse)
         wp.launch(m.grid_vel, grid.count, inputs=[grid_mass, coupled_momentum, coupled_impulse],
                   outputs=[old_v, new_v], device=self.device)
-        wp.launch(gather_remap, self.n,
-                  inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v,
-                          cfg.dt, cfg.flip_fraction, self.mass],
-                  outputs=[result.x, result.v, remapped], device=self.device)
+        if self.ordered_transfers:
+            wp.launch(gather_particles, self.n,
+                      inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v, cfg.dt, cfg.flip_fraction],
+                      outputs=[result.x, result.v], device=self.device)
+            wp.launch(ordered_remap, grid.count,
+                      inputs=[grid.particle_offsets, grid.particles, grid.corners, self.weights, result.v, self.mass],
+                      outputs=[remapped], device=self.device)
+        else:
+            wp.launch(gather_remap, self.n,
+                      inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v,
+                              cfg.dt, cfg.flip_fraction, self.mass],
+                      outputs=[result.x, result.v, remapped], device=self.device)
         coupled = self.couple(grid, remapped)
         wp.launch(update_deformation, self.n,
                   inputs=[state.F, grid.slots, self.gradients, grid_mass, coupled, cfg.dt],

@@ -45,8 +45,8 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 | `scripts.diff_validate` | 可微弹性、检查点和刀/砧板接触的正向与梯度核对 |
 | `scripts.diff_horizon`、`scripts.diff_contact_horizon` | 弹性/含摩擦轨迹的完整保存与分段重算：梯度、耗时、显存 |
 | `scripts.diff_contact_scan`、`scripts.diff_optimize` | 接触切换导数、AD/FD/CMA-ES 推压刀路优化 |
-| `scripts.diff_cut_validate` | 香蕉切割窗口的塑性、多场与接触重放，材料、摩擦和刀路梯度核对 |
-| `scripts.diff_cut_trajectory` | 完整香蕉下刀、退刀、推块的可微重放与分段反向；可选双精度和固定顺序传递 |
+| `scripts.diff_cut_validate` | 香蕉切割窗口的塑性、多场及接触梯度；可选双精度原求解器正向对照 |
+| `scripts.diff_cut_trajectory` | 完整下刀、退刀、推块的分段反向与视频；按网格和摩擦历史稳定条件选步长 |
 | `scripts.probe_substep`、`scripts.live_latency` | 材料子步分阶段计时、输入到 HTTP 状态帧延迟 |
 | `scripts.stress_teleop`、`scripts.stress_multi_tool`、`scripts.check_cut_release` | 会话与多刀压力测试、切透退刀检查 |
 | `scripts.surface_accuracy`、`scripts.surface_deformed`、`scripts.surface_observations` | 表面精度、自交与观测间隔检查 |

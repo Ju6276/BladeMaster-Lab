@@ -1,4 +1,4 @@
-# 交接说明（2026-10-21，提交 b03cfe2 之后）
+# 交接说明（2026-10-21，M4 验收完成）
 
 给接手的代码代理（Codex 等）。先读本文件，再读 `AGENTS.md`。
 
@@ -47,7 +47,7 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 ## 2. 仓库与文档
 
 - GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，工作分支 `sync-20261020`。Mac 上另有一个 remote `tams` 指向 4060 的仓库，不要用它 push。
-- `runs/` 不进 git，只在 GPU 机器上。任务视频在 Mac 的 `~/Desktop/BladeMaster_videos/`。
+- `runs/` 不进 git；完整记录保留在 GPU 机器，本机保留主要报告、快照和视频。任务视频在 Mac 的 `~/Desktop/BladeMaster_videos/`。
 
 | 文件 | 内容 |
 |---|---|
@@ -146,18 +146,22 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 | M1 | 单步弹性、应力伴随、解析与有限差分核对 | 已实现，4090 测试 |
 | M2 | 多步状态与分段重算 VJP | 两网格、32/128/512 步的梯度、耗时和显存扫描完成 |
 | M3 | 刀与砧板接触、摩擦、推压轨迹优化对照 | 接触分段重算及 8/16 控制量扩展；八控制量 AD/FD/CMA-ES 成功 5/2/5（各五组），长轨迹见 RESULTS |
-| M4 | 固定切割分支、多场、塑性和刀路梯度 | 材料、多场和粒子对接触已实现；香蕉切割窗口与完整轨迹验收进行中 |
+| M4 | 固定切割分支、多场、塑性和刀路梯度 | 已完成：12 个窗口的正向与梯度、活跃网格约束、完整检查点及 67200 步切割/退刀/推块通过 |
 | M5 | 损伤达阈值和切开事件的梯度 | 待做 |
 
-当前实现：`differentiable.py`、`differentiable_contact.py`、`differentiable_material.py`、`differentiable_cutting.py`。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
+当前实现：`differentiable.py`、`differentiable_contact.py`、`differentiable_material.py`、`differentiable_cutting.py`、`differentiable_constraint.py`。`precision.py` 从同一份 Warp 函数定义生成双精度核。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
 
 M1–M3 算例是 24×18×18 mm 弹性方块的侧向推压。M4 已加入原求解器实际下刀产生的香蕉切割窗口，多场、Fp、刀/板/粒子对的接触进入梯度链，侧码与释放标记来自该次正向运行。目标由实际刀路决定切口。
 
 4090 可微实验工作树：`~/Projects/BladeMaster-Warp-diff-20261021`，环境复用主仓库的 `.venv`。基础报告在 `runs/diff_clean/report.json`；`32f0378` 的报告在 `runs/diff_32f0378_{horizon,contact,optimize}/report.json`。接触分段重算与扩展推压提交为 `023d30d`，报告在 `runs/diff_023d30d_{contact_horizon,optimize_q8,optimize_q16,optimize_q16_full_ad}/report.json`。数值见 RESULTS 的“可微 TLMPM”。
 
-M4 材料提交为 `06fb595`，切割接触为 `26fff83`，差分细扫为 `f5f1e30`。报告为 `runs/diff_26fff83_cut{,_single,_natural}/report.json` 和 `runs/diff_8a_refine/report.json`，均为 dirty=false。两网格三材料的 12 个窗口正向最大位置差 0.0149 μm；软/塑性材料刀路细扫 7/8 例达到两档误差 ≤2%，6 mm 后段塑性窗口仍失败；另有刀力/Fp 各一例超过目标，见 RESULTS。全量 637 passed、8 skipped。
+M4 数值验收提交 `fe6a422`，dirty=false。保留塑性投影应力、固定传递顺序、双精度原求解器对照、网格约束与完整检查点均已接入。`624dafe` 增加活跃网格约束接入粒子推进的完整 Tape/分段重算/差分检查；提交前全量 **662 passed、8 skipped、18 subtests passed**（227.52 s）。8 项跳过为 CRESSim 上游构建未配置。
 
-下一步完成 M4 验收：刀路方向导数的差分步长/重复性扫描、临界接触与刀刃几何分支核对、网格刀面约束和更长的切割轨迹。窗口命令为 `scripts.diff_cut_validate`，设置见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。固定事件后，现有反力路径对 G_c 的梯度为零；几何侧码、切割阈值与切开时刻的事件导数在 M5 处理。
+最终报告：`runs/m4_fe6a422_windows` 的 12/12 窗口通过正向、刀路、材料及摩擦导数；刀路每例至少两档 ≤2%，最差第二档误差 **0.00950%**。`runs/m4_fe6a422_full` 为 1.05 s、67200 步、两块 **726/726**；刀路三档误差 **0.0232/0.00308/0.00137%**，原求解器与可微求解器的双精度最大 x/Fp/刀力差为 **6.21e-15 m / 2.53e-13 / 6.37e-12 N**。分段全部状态重算差为 **0**，CUDA 数组内存池峰值 **4711.3 MiB**。视频 `~/Desktop/BladeMaster_videos/M4_differentiable_banana_fe6a422.mp4` 来自可微求解器，含切透、退刀、推块和再次退刀，211 帧、20 fps。
+
+完整轨迹入口按网格 CFL 和切向接触历史稳定条件取步长，当前香蕉为 **15.625 μs**，参考接触刚度保持相同。62.5 μs 长轨迹梯度验收失败（放大至 1e18）；步长对照在 `runs/m4_a6ede54_{default,half,quarter}_dt`。原求解器 float32 的 Fp 重复极差达到 **1.475e-5**，记录为 `runs/m4_a6ede54_precision_repeat`；最终正向使用同精度 float64 对照。
+
+下一步为 M5。完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。固定事件后，现有反力路径对 G_c 的梯度为零；几何侧码、切割阈值与切开时刻的事件导数在 M5 处理。
 
 ## 6. 参考资料
 

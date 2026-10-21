@@ -439,9 +439,63 @@ Fig. 1 三刀，含 Franka、表面和录制（2026-10-20，提交 `8fad2c5`，R
 2026-10-21，提交 `f5f1e30`，dirty=false。命令 `PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_validate --spacings 0.006 0.004 --materials soft plastic --prefixes 1200 2400 --steps 12 --parameters controls --control-epsilons .001 .0003 .0001 .00005 .00003 --repeats 3 --output runs/diff_8a_refine`。
 
 - 刀路细扫 **7/8** 例在至少两档步长下误差 ≤2%。失败为 **6 mm、plastic、2400 步后**：五档误差 **119.36/3.53/20.46/3.91/8.28%**；固定同一初态和分支，三次 AD 的最大相对 L2 变化为 **0.000856%**，最大损失极差 **3.54e-7**。该窗口差分的两个方向均未改变活跃刀面特征、cut-hold 或计功带标记，差异原因继续核对。
-- 细扫中最大 Fp 正向误差 **1.135e-5**（4 mm、plastic、2400 步后），超过 1e-5 目标。M4 下一步：核对后段塑性窗口的差分收敛与正向误差，接入网格刀面约束和长切割轨迹。
+- 细扫中最大 Fp 正向误差 **1.135e-5**（4 mm、plastic、2400 步后），超过 1e-5 目标。
+
+### 网格约束、完整检查点与精度核对
+
+2026-10-21，提交 `de61363`，RTX 4090，dirty=false。命令 `PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_validate --grid-constraint --control-epsilons .0003 .0002 .0001 --output runs/m4_de61363_windows_f32`。12 个窗口的 float32 正向最大差：x **0.0112 μm**、v **0.0341 mm/s**、F **8.345e-7**、Fp **1.538e-5**、刀力 **2.178e-5 N**。Fp 超过 1e-5 目标；其余状态及刀力通过原目标。刀路三档中至少两档 ≤2% 的窗口为 **10/12**。
+
+2026-10-21，提交 `a6ede54`，dirty=false。命令 `PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_validate --grid-constraint --ordered-transfers --precision float64 --control-epsilons .0001 .00003 .00001 --output runs/m4_a6ede54_windows_f64`。两网格三材料 **12/12** 窗口通过方向导数检查，三档最大相对误差：刀路 **0.5694%**、E **0.001311%**、活跃屈服应力 **0.000121%**、摩擦 **0.006371%**。8 个未屈服窗口的屈服梯度为 0，FD 最大绝对值 **5.56e-14**。
+
+2026-10-21，提交 `a6ede54`，dirty=false。命令 `PYTHONPATH=. .venv/bin/python runs/m4_a6ede54_precision_repeat/replay.py`，输入为 `m4_de61363_windows_f32/captures` 中保存的同一初态。原求解器重复 6 次，4 mm/plastic/2400 窗口的 Fp 最大极差 **1.475e-5**，与保存轨迹最大差 **1.342e-5**；可微 float32 与保存轨迹最大差 **1.531e-5**。6 mm/plastic 的原求解器极差 **5.96e-6**；6 mm/soft 的 Fp 极差为 **0**。
+
+### 完整可微香蕉轨迹
+
+2026-10-21，提交 `de61363`，dirty=false。命令 `PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory --duration .48 --frame-stride 80 --backward --epsilons .0001 .00003 .00001 --ordered-transfers --precision float64 --video --output runs/m4_de61363_cut_6mm`。6 mm、1452 粒子，切透与退刀 **7680 步**、两块 **726/726**。刀路方向导数 AD **−0.1282190**，三档 FD 相对误差 **0.17382/0.04465/0.04568%**。32 步分段的 x/v/F/Fp/应力/接触历史/损伤重算最大差均为 **0**。独立原求解器 float32 与可微 float64 的整段最大 x/刀力差 **12.48 μm / 0.01988 N**。视频 `differentiable_cutting.mp4` 为可微求解器状态，97 帧、20 fps。
+
+2026-10-21，提交 `a6ede54`，dirty=false。完整轨迹命令 `PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory --duration 1.05 --dt <dt> --frame-stride 320 --backward --epsilons .0001 .00003 .00001 --ordered-transfers --precision float64 --output runs/m4_a6ede54_<档位>_dt`。62.5 μs 对照使用 `--frame-stride 160 --epsilons .00001`。
+
+| dt | 步数 | 刀路 AD | FD 最大相对误差 | 原求解器/可微求解器最大位置差 | CUDA 内存池峰值 |
+|---|---:|---:|---:|---:|---:|
+| 62.5 μs（default） | 16800 | −1.397e18 | **100%：失败** | 954.1 μm | 1254.7 MiB |
+| 31.25 μs（half） | 33600 | −0.4073895 | **0.04851%** | 21.47 μm | 2415.6 MiB |
+| 15.625 μs（quarter） | 67200 | −0.6307439 | **0.08627%** | 69.78 μm | 4718.5 MiB |
+
+31.25 μs 三档误差 **0.04851/0.000210/0.01365%**；最多 **24** 个粒子接触对。15.625 μs 三档误差 **0.08627/0.003527/0.001124%**，最多 **20** 对；视频 **211 帧 / 20 fps**。切后均为两块 **726/726**。三档全部检查点状态重算误差为 **0**，原求解器错误计数为 **0**。固定法向粘着接触的单步谱半径在 62.5/31.25/15.625 μs 下为 **1.09576/1.01105/0.99578**；完整轨迹的梯度放大对时间步敏感。三档独立进程并发运行。
+
+2026-10-21，提交 `c697950`。完整轨迹入口默认用 `tangent_history_dt` 约束时间步；香蕉从 62.5 μs 细分到 **15.625 μs**，接触刚度保持相同。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_tangent_history_step.py -q`：**6 passed**。四种切向阻尼 0.1/0.5/1/2，接触核展开 32 步的正向及 VJP 与解析矩阵幂一致（rtol **1e-11**）。
+
+### M4 最终验收
+
+2026-10-21，提交 `fe6a422`，RTX 4090，dirty=false。命令 `PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_validate --grid-constraint --ordered-transfers --precision float64 --reference-precision float64 --control-epsilons .0001 .00003 .00001 --output runs/m4_fe6a422_windows`。6/4 mm × banana/soft/plastic × 1200/2400 步前缀，**12/12** 窗口通过原正向目标；最大差 x **2.09e-17 m**、v **1.03e-13 m/s**、F **2.11e-15**、Fp **2.07e-14**、刀力 **5.28e-14 N**。
+
+12/12 窗口刀路导数至少两档误差 ≤2%，最差第二档为 **0.00950%**。4 mm/plastic/2400 的三档误差 **2.58226/0.009496/0.000745%**，最粗档失败。材料和摩擦三档最大误差：E **0.001298%**、活跃屈服 **0.0000408%**、摩擦 **0.000584%**；8 个未屈服窗口的屈服 AD 为 0，差分最大绝对值 **5.56e-14**。
+
+2026-10-21，提交 `fe6a422`，dirty=false。完整轨迹命令：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory \
+  --duration 1.05 --frame-stride 320 --ordered-transfers \
+  --precision float64 --reference-precision float64 --video \
+  --output runs/m4_fe6a422_full
+PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory \
+  --reuse --backward --epsilons .0001 .00003 .00001 \
+  --output runs/m4_fe6a422_full
+```
+
+本次三档差分分别在 `runs/m4_fe6a422_fd_{0,1,2}` 并发运行，共用完整轨迹的分支文件；各自命令与提交记录保存在报告，汇总为 `runs/m4_fe6a422_full/report.json`。1.05 s、**67200 步**、dt **15.625 μs**、1452 粒子，切后两块 **726/726**、最多 **20** 个粒子接触对。原求解器与可微求解器均为 float64，整段最大差 x **6.21e-15 m**、v **5.85e-13 m/s**、F **2.46e-13**、Fp **2.53e-13**、应力 **8.27e-7 Pa**、刀力 **6.37e-12 N**；原求解器错误计数 **0**。
+
+刀路方向导数 AD **−0.5909453**，三档 FD 相对误差 **0.023243/0.003080/0.001372%**，全部通过。三个独立进程的控制量梯度最大绝对差 **7.11e-15**；32 步分段中 x/v/F/Fp/应力/接触历史/损伤重算差全部为 **0**。CUDA 数组内存池峰值 **4711.3 MiB**。视频 `differentiable_cutting.mp4` 使用可微求解器的粒子状态，含切透、退刀、推块及再次退刀，**211 帧 / 20 fps**。香蕉轨迹的网格约束求解次数为 0；活跃约束由 `test_active_grid_constraint_in_complete_checkpoint` 覆盖完整推进与反向。
 
 ## 测试
+
+2026-10-21，提交 `624dafe`：提交前全量 **662 passed、8 skipped、18 subtests passed**，227.52 s。新增活跃刀面网格约束与粒子推进的集成测试：完整 Tape 和 2 步分段的刀位梯度一致（rtol **1e-9**），两档有限差分通过 **2%** 目标，约束速度残差 ≤ **1e-6 m/s**。8 项跳过为 CRESSim 上游构建未配置。
+
+2026-10-21，提交 `fe6a422`：全量 **661 passed、8 skipped、18 subtests passed**，142.64 s。同精度双精度多场塑性对照采用 **1e-10** 绝对容差；原求解器双精度外部耦合的 CUDA Graph 与直接启动结果一致。删除未被求解流程调用的 `separate_embedded` 及其单独测试。
+
+2026-10-21，提交 `c697950`：全量 **657 passed、8 skipped、18 subtests passed**，151.00 s。新增 6 项为接触历史稳定步长、刚度保持和四种阻尼的解析正反向核对。
+
+2026-10-21，提交 `a6ede54`：全量 **651 passed、8 skipped、18 subtests passed**，180.64 s。新增检查覆盖网格刀面约束的正向与 x/刀位/网格速度梯度，双精度本构对 NumPy SVD，固定顺序传递，以及含塑性应力、接触对变化和摩擦历史的完整状态检查点。
 
 2026-10-21，提交 `f5f1e30`：提交前全量 **637 passed、8 skipped、18 subtests passed**，134.27 s。新增 28 项覆盖 Hencky 投影及重复伸长、E/屈服/F/Fp/速度梯度、多场交换、粒子对历史与动量守恒、刀路/摩擦梯度、切割计功和释放。8 项跳过仍为 CRESSim 上游构建未配置。
 

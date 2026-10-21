@@ -24,21 +24,22 @@ def hencky_branch(f: wp.mat33, limit: float, branch: int):
     return U * wp.diag(t) * wp.transpose(V)
 
 
-@wp.func_grad(hencky_branch)
-def hencky_branch_grad(f: wp.mat33, limit: float, branch: int, adj: wp.mat33):
+@wp.func
+def hencky_vjp(f: wp.mat33, limit: float, branch: int, adj: wp.mat33):
     U, s, V = wp.svd3(f)
     e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
     mean = (e[0] + e[1] + e[2]) / 3.0
     dev = e - wp.vec3(mean)
     norm = wp.length(dev)
     if branch == 0 or (branch < 0 and norm <= limit):
-        wp.adjoint[f] += adj
+        return adj, 0.0
     else:
         a = limit / norm
         projected = e - (1.0 - a) * dev
         t = wp.vec3(wp.exp(projected[0]), wp.exp(projected[1]), wp.exp(projected[2]))
         local = wp.transpose(U) * adj * V
         result = wp.mat33(0.0)
+        limit_gradient = float(0.0)
         for i in range(3):
             for j in range(3):
                 delta = float(0.0)
@@ -54,8 +55,81 @@ def hencky_branch_grad(f: wp.mat33, limit: float, branch: int, adj: wp.mat33):
                     skew = (t[i] + t[j]) / (s[i] + s[j])
                     result[i, j] = 0.5 * (symmetric * (local[i, j] + local[j, i])
                                           + skew * (local[i, j] - local[j, i]))
-            wp.adjoint[limit] += local[i, i] * t[i] * dev[i] / norm
-        wp.adjoint[f] += U * result * wp.transpose(V)
+            limit_gradient += local[i, i] * t[i] * dev[i] / norm
+        return U * result * wp.transpose(V), limit_gradient
+
+
+@wp.func_grad(hencky_branch)
+def hencky_branch_grad(f: wp.mat33, limit: float, branch: int, adj: wp.mat33):
+    df, dl = hencky_vjp(f, limit, branch, adj)
+    wp.adjoint[f] += df
+    wp.adjoint[limit] += dl
+
+
+@wp.func
+def constitutive_response(F: wp.mat33, Fp: wp.mat33, mu: float, lam: float,
+                          limit: float, branch: int):
+    U, s, V = wp.svd3(F * wp.inverse(Fp))
+    e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
+    dev = e - wp.vec3((e[0] + e[1] + e[2]) / 3.0)
+    norm = wp.length(dev)
+    next_Fp = Fp
+    if branch == 1 or (branch < 0 and norm > limit):
+        ep = e - (1.0 - limit / norm) * dev
+        s = wp.vec3(wp.exp(ep[0]), wp.exp(ep[1]), wp.exp(ep[2]))
+        projected = U * wp.diag(s) * wp.transpose(V)
+        next_Fp = wp.inverse(projected) * F
+    stress = m.corotated_stress(U, s, V, wp.inverse(next_Fp), mu, lam)
+    return next_Fp, stress
+
+
+@wp.func_grad(constitutive_response)
+def constitutive_response_grad(F: wp.mat33, Fp: wp.mat33, mu: float, lam: float,
+                               limit: float, branch: int, adj_Fp: wp.mat33, adj_stress: wp.mat33):
+    old_inverse = wp.inverse(Fp)
+    f = F * old_inverse
+    U, s, V = wp.svd3(f)
+    e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
+    dev = e - wp.vec3((e[0] + e[1] + e[2]) / 3.0)
+    active = branch == 1 or (branch < 0 and wp.length(dev) > limit)
+    projected = f
+    next_Fp = Fp
+    if active:
+        projected = hencky_branch(f, limit, 1)
+        next_Fp = wp.inverse(projected) * F
+    inverse = wp.inverse(next_Fp)
+    inverse_t = wp.transpose(inverse)
+    elastic = elastic_stress(projected, mu, lam)
+    adj_elastic = adj_stress * inverse
+    adj_plastic = adj_Fp - inverse_t * wp.transpose(adj_stress) * elastic * inverse_t
+    # Polar rotation derivative is regular at equal positive singular values.
+    Q, sigma, R = wp.svd3(projected)
+    local = wp.transpose(Q) * adj_elastic * R
+    skew = wp.mat33(0.0)
+    for i in range(3):
+        for j in range(3):
+            if i != j:
+                skew[i, j] = (local[i, j] - local[j, i]) / (sigma[i] + sigma[j])
+    projected_inverse_t = wp.transpose(wp.inverse(projected))
+    J = wp.determinant(projected)
+    contraction = wp.ddot(adj_elastic, projected_inverse_t)
+    adj_projected = (
+        2.0 * mu * (adj_elastic - Q * skew * wp.transpose(R))
+        + lam * (2.0 * J - 1.0) * J * contraction * projected_inverse_t
+        - lam * (J - 1.0) * J * projected_inverse_t * wp.transpose(adj_elastic) * projected_inverse_t
+    )
+    wp.adjoint[mu] += 2.0 * wp.ddot(adj_elastic, projected - Q * wp.transpose(R))
+    wp.adjoint[lam] += (J - 1.0) * J * contraction
+    if active:
+        wp.adjoint[F] += projected_inverse_t * adj_plastic
+        adj_projected -= projected_inverse_t * adj_plastic * wp.transpose(F) * projected_inverse_t
+        adj_f, adj_limit = hencky_vjp(f, limit, 1, adj_projected)
+        wp.adjoint[limit] += adj_limit
+        wp.adjoint[F] += adj_f * wp.transpose(old_inverse)
+        wp.adjoint[Fp] -= wp.transpose(old_inverse) * wp.transpose(F) * adj_f * wp.transpose(old_inverse)
+    else:
+        wp.adjoint[F] += adj_projected * wp.transpose(old_inverse)
+        wp.adjoint[Fp] += adj_plastic - wp.transpose(old_inverse) * wp.transpose(F) * adj_projected * wp.transpose(old_inverse)
 
 
 @wp.func
@@ -88,26 +162,26 @@ def project_plastic(
     fixed_yielded: wp.array(dtype=int),
     next_Fp: wp.array(dtype=wp.mat33),
     yielded: wp.array(dtype=int),
+    next_stress: wp.array(dtype=wp.mat33),
 ):
     p = wp.tid()
-    result = Fp[p]
-    yielded[p] = 0
-    if yield_stress[0] > 0.0:
-        f = F[p] * wp.inverse(Fp[p])
-        mu = young[0] / (2.0 * (1.0 + poisson))
-        limit = yield_stress[0] / (2.0 * mu) * wp.sqrt(2.0 / 3.0)
-        projected = hencky_branch(f, limit, fixed_yielded[p])
-        # The elastic branch returns f exactly and must leave Fp unchanged.
-        if wp.ddot(projected - f, projected - f) > 0.0:
-            result = wp.inverse(projected) * F[p]
-            yielded[p] = 1
-    next_Fp[p] = result
+    mu = young[0] / (2.0 * (1.0 + poisson))
+    lam = young[0] * poisson / ((1.0 + poisson) * (1.0 - 2.0 * poisson))
+    limit = yield_stress[0] / (2.0 * mu) * wp.sqrt(2.0 / 3.0)
+    branch = fixed_yielded[p]
+    if yield_stress[0] <= 0.0:
+        branch = 0
+    plastic, stress = constitutive_response(F[p], Fp[p], mu, lam, limit, branch)
+    next_Fp[p] = plastic
+    next_stress[p] = stress
+    yielded[p] = int(wp.ddot(plastic - Fp[p], plastic - Fp[p]) > 0.0)
 
 
 @dataclass
 class PlasticState(State):
     Fp: wp.array
     yielded: wp.array | None = None
+    stress: wp.array | None = None
 
 
 @dataclass
@@ -149,12 +223,13 @@ class MaterialTrajectory(ElasticTrajectory):
         self.nodes = self.slots.numpy()
         self.uncut = self.topology(np.zeros(self.n, dtype=np.int64))
 
-    def state(self, x=None, v=None, F=None, Fp=None):
+    def state(self, x=None, v=None, F=None, Fp=None, stress=None):
         base = super().state(x, v, F)
         Fp = np.tile(np.eye(3), (self.n, 1, 1)) if Fp is None else np.asarray(Fp)
         if Fp.shape != (self.n, 3, 3) or not np.isfinite(Fp).all() or np.any(np.linalg.det(Fp) <= 0):
             raise ValueError("Plastic state must be finite with positive determinants and matching shape")
-        return PlasticState(base.x, base.v, base.F, self.array(Fp, wp.mat33))
+        return PlasticState(base.x, base.v, base.F, self.array(Fp, wp.mat33),
+                            stress=None if stress is None else self.array(stress, wp.mat33))
 
     def topology(self, codes):
         codes = np.asarray(codes, dtype=np.int64)
@@ -201,7 +276,7 @@ class MaterialTrajectory(ElasticTrajectory):
     def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None):
         cfg = self.config
         grid = self.uncut if topology is None else topology
-        stress = self.zeros(self.n, wp.mat33)
+        stress = state.stress
         grid_mass = self.zeros(grid.count, float, False)
         momentum = self.zeros(grid.count, wp.vec3)
         grid_impulse = self.zeros(grid.count, wp.vec3)
@@ -210,12 +285,14 @@ class MaterialTrajectory(ElasticTrajectory):
         remapped = self.zeros(grid.count, wp.vec3)
         result = PlasticState(self.zeros(self.n, wp.vec3), self.zeros(self.n, wp.vec3),
                               self.zeros(self.n, wp.mat33), self.zeros(self.n, wp.mat33),
-                              self.zeros(self.n, int, False))
+                              self.zeros(self.n, int, False), self.zeros(self.n, wp.mat33))
         if fixed_yielded is None:
             fixed_yielded = self.zeros(self.n, int, False)
             fixed_yielded.fill_(-1)
-        wp.launch(compute_stress, self.n, inputs=[state.F, state.Fp, self.young, cfg.poisson_ratio],
-                  outputs=[stress], device=self.device)
+        if stress is None:
+            stress = self.zeros(self.n, wp.mat33)
+            wp.launch(compute_stress, self.n, inputs=[state.F, state.Fp, self.young, cfg.poisson_ratio],
+                      outputs=[stress], device=self.device)
         if impulse is None:
             impulse = self.zeros(self.n, wp.vec3, False)
             wp.launch(body_impulse, self.n, inputs=[wp.vec3(*gravity), self.mass, cfg.dt],
@@ -238,7 +315,7 @@ class MaterialTrajectory(ElasticTrajectory):
                   outputs=[result.F], device=self.device)
         wp.launch(project_plastic, self.n,
                   inputs=[result.F, state.Fp, self.young, self.yield_stress, cfg.poisson_ratio, fixed_yielded],
-                  outputs=[result.Fp, result.yielded], device=self.device)
+                  outputs=[result.Fp, result.yielded, result.stress], device=self.device)
         return result
 
     def checkpoint_vjp(self, *args, **kwargs):

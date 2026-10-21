@@ -78,12 +78,14 @@ def rigid_step(
     gk: float,
     gc: float,
     band_width: float,
-    threshold: float,
+    fracture_energy: wp.array(dtype=float),
+    threshold_factor: float,
     cutting: int,
     cut_hold: int,
     cut_advance: int,
     next_history: wp.array2d(dtype=wp.vec3),
     next_damage: wp.array(dtype=float),
+    trial_damage: wp.array(dtype=float),
     impulse: wp.array(dtype=wp.vec3),
     reaction: wp.array(dtype=wp.vec3),
     modes: wp.array2d(dtype=int),
@@ -135,6 +137,7 @@ def rigid_step(
     modes[2, p] = feature
     modes[4, p] = 0
     updated_damage = damage[p]
+    trial = damage[p]
     if cutting != 0 and wp.length_sq(blade) > 0.0:
         edge_lever = wp.quat_rotate(q, wp.vec3(0.0, 0.0, -half[2]))
         edge = position[0] + edge_lever
@@ -153,13 +156,16 @@ def rigid_step(
                 blade = blade - push * down
                 modes[4, p] = 2
             elif advance > 0.0:
-                updated_damage = wp.min(1.0, damage[p] + push * advance / threshold)
+                threshold = fracture_energy[0] * threshold_factor
+                trial = damage[p] + push * advance / threshold
+                updated_damage = wp.min(1.0, trial)
                 modes[4, p] = 3
                 if updated_damage >= 1.0:
                     modes[4, p] = 4
     next_history[0, p] = board_history
     next_history[1, p] = blade_history
     next_damage[p] = updated_damage
+    trial_damage[p] = trial
     impulse[p] = wp.vec3(0.0, 0.0, -9.81 * mass * dt) + board + blade
     wp.atomic_add(reaction, 0, -blade / dt)
 
@@ -217,6 +223,7 @@ class CutHistory:
     side: wp.array | None = None
     grid_batches: int = 0
     grid_residual: float = 0.0
+    trial_damage: wp.array | None = None
 
 
 @dataclass
@@ -249,6 +256,7 @@ class FixedCutContact(PrescribedContact):
         super().__init__(trajectory, allow_grid_constraint=True)
         cfg = trajectory.config
         self.friction = trajectory.array([cfg.friction_static, cfg.friction_dynamic], float)
+        self.fracture_energy = trajectory.array([cfg.cutting_energy], float)
         self._topologies = {}
 
     def history(self, rigid=None, pairs=None, damage=None, side=None):
@@ -281,7 +289,7 @@ class FixedCutContact(PrescribedContact):
         sn, gk = cfg.contact_scales()
         radius = cfg.grid_spacing / 4
         blade_offset = max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0])
-        threshold = cfg.cutting_energy * m.volume ** (2 / 3) * (1 - cfg.sharpness) / cfg.sharpness
+        threshold_factor = m.volume ** (2 / 3) * (1 - cfg.sharpness) / cfg.sharpness
         updated = CutHistory(m.zeros((2, m.n), wp.vec3), m.zeros(frozen.pairs.shape[0], wp.vec3),
                              m.zeros(m.n, float), m.zeros((5, m.n), int, False),
                              m.zeros(frozen.pairs.shape[0], int, False))
@@ -289,14 +297,17 @@ class FixedCutContact(PrescribedContact):
         pairs = m.zeros(m.n, wp.vec3)
         impulse = m.zeros(m.n, wp.vec3)
         reaction = m.zeros(1, wp.vec3)
+        updated.trial_damage = m.zeros(m.n, float)
         m.launch(rigid_step, m.n,
                   inputs=[state.x, state.v, history.rigid, history.damage, frozen.released, frozen.rigid_modes,
                           tool.position, tool.velocity, tool.rotation, tool.omega, self.friction,
                           wp.vec3(*cfg.blade_half_size), cfg.blade_bevel_height, radius, blade_offset,
                           wp.vec2(*cfg.board_half_extent), m.mass, cfg.dt, sn, cfg.board_normal_scale or sn,
-                          gk, cfg.tangent_damping, cfg.cut_band_cells * cfg.grid_spacing, threshold,
+                          gk, cfg.tangent_damping, cfg.cut_band_cells * cfg.grid_spacing,
+                          self.fracture_energy, threshold_factor,
                           int(frozen.cutting), int(cfg.cut_hold), int(cfg.cut_work == "advance")],
-                  outputs=[updated.rigid, updated.damage, rigid, reaction, updated.rigid_modes], device=m.device)
+                  outputs=[updated.rigid, updated.damage, updated.trial_damage, rigid, reaction,
+                           updated.rigid_modes], device=m.device)
         if frozen.pairs.shape[0]:
             m.launch(pair_step, frozen.pairs.shape[0],
                       inputs=[state.x, state.v, frozen.pairs, frozen.previous, frozen.pair_modes,
@@ -339,7 +350,8 @@ class FixedCutContact(PrescribedContact):
         steps = len(frozen)
         if not m.requires_grad or steps < 1 or segment_steps < 1:
             raise ValueError("Cut checkpoint VJP requires gradients and positive step counts")
-        parameters = tuple(dict.fromkeys((*parameters, m.young, m.yield_stress, self.friction)))
+        parameters = tuple(dict.fromkeys((*parameters, m.young, m.yield_stress,
+                                         self.friction, self.fracture_energy)))
 
         def arrays(state, contact_history):
             result = dict(x=state.x, v=state.v, F=state.F, Fp=state.Fp,

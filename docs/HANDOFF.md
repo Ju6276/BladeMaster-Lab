@@ -1,4 +1,4 @@
-# 交接说明（2026-10-21，M4 验收完成）
+# 交接说明（2026-10-21，M4 完成，M5 进行中）
 
 给接手的代码代理（Codex 等）。先读本文件，再读 `AGENTS.md`。
 
@@ -147,7 +147,7 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 | M2 | 多步状态与分段重算 VJP | 两网格、32/128/512 步的梯度、耗时和显存扫描完成 |
 | M3 | 刀与砧板接触、摩擦、推压轨迹优化对照 | 接触分段重算及 8/16 控制量扩展；八控制量 AD/FD/CMA-ES 成功 5/2/5（各五组），长轨迹见 RESULTS |
 | M4 | 固定切割分支、多场、塑性和刀路梯度 | 已完成：12 个窗口的正向与梯度、活跃网格约束、完整检查点及 67200 步切割/退刀/推块通过 |
-| M5 | 损伤达阈值和切开事件的梯度 | 待做 |
+| M5 | 损伤达阈值和切开事件的梯度 | 已接入步内事件定位、G_c 导数和分段重算；推进自然事件扫描及事件后状态导数 |
 
 当前实现：`differentiable.py`、`differentiable_contact.py`、`differentiable_material.py`、`differentiable_cutting.py`、`differentiable_constraint.py`。`precision.py` 从同一份 Warp 函数定义生成双精度核。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
 
@@ -163,7 +163,9 @@ M4 数值验收提交 `fe6a422`，dirty=false。保留塑性投影应力、固�
 
 完整轨迹入口按网格 CFL 和切向接触历史稳定条件取步长，当前香蕉为 **15.625 μs**，参考接触刚度保持相同。62.5 μs 长轨迹梯度验收失败（放大至 1e18）；步长对照在 `runs/m4_a6ede54_{default,half,quarter}_dt`。原求解器 float32 的 Fp 重复极差达到 **1.475e-5**，记录为 `runs/m4_a6ede54_precision_repeat`；最终正向使用同精度 float64 对照。
 
-下一步为 M5。完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。固定事件后，现有反力路径对 G_c 的梯度为零；几何侧码、切割阈值与切开时刻的事件导数在 M5 处理。
+M5 已启动。`differentiable_events` 定位固定法向平面穿越和损伤阈值的步内时刻，`FixedCutContact.fracture_energy` 接入 G_c 的 Tape/分段重算导数；10 项新检查覆盖刀位、粒子位移、初始损伤与 G_c。自然事件扫描入口为 `scripts.diff_cut_events`，原推进仍在子步边界切换；下一步将事件时刻导数传入后续粒子状态。
+
+完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。固定事件后，现有反力路径对 G_c 的梯度为零。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件，M5 分别测量。
 
 ## 6. 参考资料
 

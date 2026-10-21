@@ -17,6 +17,7 @@
 - `differentiable_material.MaterialTrajectory`：逐步保存 Fp 和投影后应力，Hencky 投影专用伴随，固定侧码的相容场交换；E、屈服应力与初始状态方向导数检查。
 - `differentiable_cutting.FixedCutContact`：固定侧码、损伤释放标记和粒子对 ID，逐步保存刀、板和粒子对的摩擦历史；支持记录的法向闭合、粘滑及屈服分支。
 - `differentiable_constraint.solve`：保留原网格刀面约束的 48 次迭代批次、残差和投影公式，各迭代写入独立数组；支持固定正向记录的求解批数。
+- `differentiable_events`：固定法向平面的步内穿越时刻/刀刃位置，以及损伤阈值的线性穿越时刻。`FixedCutContact.fracture_energy` 支持 G_c 求导和分段重算，`CutHistory.trial_damage` 保存截断前损伤。
 - `FixedCutContact.checkpoint_vjp`：保存 x、v、F、Fp、应力、刀/板/粒子对摩擦历史和损伤；支持接触对数量变化及逐步反力损失。
 - `--ordered-transfers` 固定粒子到网格的累加顺序；`--precision float64 --reference-precision float64` 从同一份 Warp 函数定义生成双精度核，分别运行可微与原求解器的推进流程。默认计算精度为 float32。
 
@@ -39,7 +40,7 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_validate \
 | M3a 接触与摩擦 | 外部刀和砧板接触；独立摩擦历史 | 两个网格，接触建立/脱离、粘滑切换的单侧差分；推压轨迹记录分支变化 | 已完成切换扫描 |
 | M3b 轨迹优化 | 优化工具推压轨迹，使材料达到目标形状 | AD + Adam、FD + 同配置 Adam、CMA-ES，同预算五次初始化 | 4/8/16 控制量、两网格和时域、另一初始刀位的对照完成；长任务完整/分段 AD 在 20 s 内均未达 0.05 mm |
 | M4 固定切割分支 | 固定侧码、相容场交换、接触集合；接入塑性与刀路梯度 | 多场正向一致；E、屈服、摩擦和刀路的方向导数；换材料与刀路 | 已完成：12 个窗口、网格约束、完整状态检查点及 67200 步切割/退刀/推块通过 |
-| M5 切开事件 | 处理损伤阈值、接触集合和拓扑变化的梯度 | 阈值扰动扫描；事件时间导数或平滑方案对照；完整切割轨迹优化 | 待做 |
+| M5 切开事件 | 处理损伤阈值、接触集合和拓扑变化的梯度 | 阈值扰动扫描；事件时间导数或平滑方案对照；完整切割轨迹优化 | 进行中：事件定位与 G_c 求导；下一步接入事件后的状态导数 |
 
 M1–M3 小算例使用 float32，M4 的最终正向和梯度验收使用 float64。正向最大误差目标：位置 1 μm、速度 0.1 mm/s、F/Fp 为 1e-5、刀力 1e-4 N。弹性 E 梯度对至少两档有限差分误差 ≤ 1%，接触梯度 ≤ 2%；接近零的导数同时报告绝对误差。检查点 E 梯度误差 ≤ 0.1%，初始状态 VJP 逐数组比较。
 
@@ -107,6 +108,20 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory \
 固定法向的单粒子粘着接触中，以 `(v_t, h_t/dt)` 为状态，切向更新矩阵为 `[[1-2γc√γk, -γk], [1, 1]]`。当前 γc=0.1，稳定条件为 γk<0.04；保持参考接触刚度时对应 dt<22.36 μs。62.5/31.25/15.625 μs 的单步谱半径分别为 1.09576/1.01105/0.99578。MPM 传递和粘滑切换进入完整轨迹的梯度检查。
 
 提交 `c697950` 起，完整轨迹入口从网格 CFL 步长开始，调用 `presets.tangent_history_dt` 逐次减半直到满足粘着历史的稳定条件；当前香蕉默认得到 15.625 μs。`--dt` 显式指定步长用于对照。参考接触刚度和材料参数保持相同。
+
+## M5：事件定位与扰动扫描
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_events \
+  --spacing .006 --duration .24 --output runs/m5_<commit>_events_6mm
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_events.py -q
+```
+
+扫描复用 M4 前 0.24 s 下刀轨迹，逐次只改变 x 偏移、z 行程或 G_c。每个子步由原求解器自然更新侧码和释放标记；报告首次分侧/释放时刻、最终分块、反力冲量、刀做功及损伤计功。`*.npz` 保存逐粒子的事件步号、侧码、损伤和终态。
+
+外部指定刀路下，`contact.assign` 的几何分侧由刀刃位置触发；`contact.resist_cut` 在累计损伤达到 1 后撤除刃前推力。两类事件分别测量。`differentiable_events` 对线性步内模型求穿越分数 `(level-before)/(after-before)`，损伤使用截断前的 `trial_damage`。平面法向在该子步内固定；输出穿越时刻及该时刻的刀刃位置。
+
+原推进仍在子步边界切换分支。下一项实现是让事件时刻导数进入事件后的粒子状态，并用自然切换的有限差分核对终态与刀力梯度；之后处理接触集合变化和完整切割轨迹优化。
 
 ## 下一步
 

@@ -1,4 +1,4 @@
-"""Prescribed cutting along recorded side codes, release events and pair sets."""
+"""Prescribed cutting with recorded topology and optional within-step damage release."""
 
 from dataclasses import dataclass
 from time import perf_counter
@@ -9,6 +9,7 @@ import warp as wp
 from .contact import blade_query, penalty_impulse
 from .differentiable_contact import PrescribedContact
 from .differentiable_material import FixedTopology, PlasticState
+from .differentiable_events import crossing_fraction
 from . import differentiable_constraint as grid_constraint
 
 
@@ -80,17 +81,22 @@ def rigid_step(
     band_width: float,
     fracture_energy: wp.array(dtype=float),
     threshold_factor: float,
+    integrate_release: int,
     cutting: int,
     cut_hold: int,
     cut_advance: int,
     next_history: wp.array2d(dtype=wp.vec3),
     next_damage: wp.array(dtype=float),
     trial_damage: wp.array(dtype=float),
+    damage_work: wp.array(dtype=float),
     impulse: wp.array(dtype=wp.vec3),
     reaction: wp.array(dtype=wp.vec3),
     modes: wp.array2d(dtype=int),
 ):
     p = wp.tid()
+    is_released = released[p]
+    if integrate_release != 0:
+        is_released = int(damage[p] >= 1.0)
     xp = x[p]
     board_gap = xp[2] - radius
     if board_half[0] > 0.0 and wp.abs(xp[0]) > board_half[0]:
@@ -108,7 +114,7 @@ def rigid_step(
     closest, normal, distance = blade_query(local, half, bevel)
     front = -half[2] - local[2]
     modes[3, p] = 0
-    if (cutting != 0 and cut_hold != 0 and released[p] == 0
+    if (cutting != 0 and cut_hold != 0 and is_released == 0
             and wp.abs(local[0]) <= half[0] + blade_offset
             and wp.abs(local[1]) <= half[1] and front >= 0.0):
         closest = wp.vec3(local[0], local[1], -half[2])
@@ -138,6 +144,7 @@ def rigid_step(
     modes[4, p] = 0
     updated_damage = damage[p]
     trial = damage[p]
+    work = float(0.0)
     if cutting != 0 and wp.length_sq(blade) > 0.0:
         edge_lever = wp.quat_rotate(q, wp.vec3(0.0, 0.0, -half[2]))
         edge = position[0] + edge_lever
@@ -152,20 +159,26 @@ def rigid_step(
                 and wp.abs(local_edge[0]) <= band_width and wp.abs(local_edge[1]) <= half[1]):
             push = wp.max(wp.dot(blade, down), 0.0)
             modes[4, p] = 1
-            if released[p] != 0:
+            if is_released != 0:
                 blade = blade - push * down
                 modes[4, p] = 2
             elif advance > 0.0:
                 threshold = fracture_energy[0] * threshold_factor
-                trial = damage[p] + push * advance / threshold
+                work = push * advance
+                trial = damage[p] + work / threshold
                 updated_damage = wp.min(1.0, trial)
                 modes[4, p] = 3
                 if updated_damage >= 1.0:
                     modes[4, p] = 4
+                    if integrate_release != 0:
+                        fraction = crossing_fraction(damage[p], trial, 1.0)
+                        blade = blade - (1.0 - fraction) * push * down
+                        work = (1.0 - damage[p]) * threshold
     next_history[0, p] = board_history
     next_history[1, p] = blade_history
     next_damage[p] = updated_damage
     trial_damage[p] = trial
+    damage_work[p] = work
     impulse[p] = wp.vec3(0.0, 0.0, -9.81 * mass * dt) + board + blade
     wp.atomic_add(reaction, 0, -blade / dt)
 
@@ -224,6 +237,7 @@ class CutHistory:
     grid_batches: int = 0
     grid_residual: float = 0.0
     trial_damage: wp.array | None = None
+    damage_work: wp.array | None = None
 
 
 @dataclass
@@ -257,6 +271,7 @@ class FixedCutContact(PrescribedContact):
         cfg = trajectory.config
         self.friction = trajectory.array([cfg.friction_static, cfg.friction_dynamic], float)
         self.fracture_energy = trajectory.array([cfg.cutting_energy], float)
+        self.integrate_release = False
         self._topologies = {}
 
     def history(self, rigid=None, pairs=None, damage=None, side=None):
@@ -298,15 +313,16 @@ class FixedCutContact(PrescribedContact):
         impulse = m.zeros(m.n, wp.vec3)
         reaction = m.zeros(1, wp.vec3)
         updated.trial_damage = m.zeros(m.n, float)
+        updated.damage_work = m.zeros(m.n, float)
         m.launch(rigid_step, m.n,
                   inputs=[state.x, state.v, history.rigid, history.damage, frozen.released, frozen.rigid_modes,
                           tool.position, tool.velocity, tool.rotation, tool.omega, self.friction,
                           wp.vec3(*cfg.blade_half_size), cfg.blade_bevel_height, radius, blade_offset,
                           wp.vec2(*cfg.board_half_extent), m.mass, cfg.dt, sn, cfg.board_normal_scale or sn,
                           gk, cfg.tangent_damping, cfg.cut_band_cells * cfg.grid_spacing,
-                          self.fracture_energy, threshold_factor,
+                          self.fracture_energy, threshold_factor, int(self.integrate_release),
                           int(frozen.cutting), int(cfg.cut_hold), int(cfg.cut_work == "advance")],
-                  outputs=[updated.rigid, updated.damage, updated.trial_damage, rigid, reaction,
+                  outputs=[updated.rigid, updated.damage, updated.trial_damage, updated.damage_work, rigid, reaction,
                            updated.rigid_modes], device=m.device)
         if frozen.pairs.shape[0]:
             m.launch(pair_step, frozen.pairs.shape[0],
@@ -423,6 +439,21 @@ class FixedCutContact(PrescribedContact):
         history_gradient = CutHistory(gradient['rigid'], gradient['pairs'], gradient['damage'])
         return CutGradient(terminal, terminal_history, loss, state_gradient, history_gradient, parameter_gradients)
 
+
+
+class EventCutContact(FixedCutContact):
+    """Integrate the edge impulse up to damage release with step-constant force and advance.
+
+    For threshold Q [J], edge force f [N] and positive advance u [m/s],
+    the intact duration is min(dt, (1-D)*Q/(f*u)). Side codes and pair IDs
+    are supplied by the caller; release flags follow the evolving damage.
+    """
+
+    def __init__(self, trajectory):
+        if trajectory.config.cut_hold:
+            raise ValueError('Event release requires cut_hold=False: the contact normal must persist across release')
+        super().__init__(trajectory)
+        self.integrate_release = True
 
 
 @dataclass

@@ -18,6 +18,7 @@
 - `differentiable_cutting.FixedCutContact`：固定侧码、损伤释放标记和粒子对 ID，逐步保存刀、板和粒子对的摩擦历史；支持记录的法向闭合、粘滑及屈服分支。
 - `differentiable_constraint.solve`：保留原网格刀面约束的 48 次迭代批次、残差和投影公式，各迭代写入独立数组；支持固定正向记录的求解批数。
 - `differentiable_events`：固定法向平面的步内穿越时刻/刀刃位置，以及损伤阈值的线性穿越时刻。`FixedCutContact.fracture_energy` 支持 G_c 求导和分段重算，`CutHistory.trial_damage` 保存截断前损伤。
+- `differentiable_cutting.EventCutContact`：按剩余断裂功积分释放步的刃口冲量，释放标记由逐步损伤决定；事件时刻进入粒子状态和刀力的梯度。侧码与粒子对 ID 由调用者提供，使用 `cut_hold=False`。
 - `FixedCutContact.checkpoint_vjp`：保存 x、v、F、Fp、应力、刀/板/粒子对摩擦历史和损伤；支持接触对数量变化及逐步反力损失。
 - `--ordered-transfers` 固定粒子到网格的累加顺序；`--precision float64 --reference-precision float64` 从同一份 Warp 函数定义生成双精度核，分别运行可微与原求解器的推进流程。默认计算精度为 float32。
 
@@ -121,11 +122,20 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_events.py -q
 
 外部指定刀路下，`contact.assign` 的几何分侧由刀刃位置触发；`contact.resist_cut` 在累计损伤达到 1 后撤除刃前推力。两类事件分别测量。`differentiable_events` 对线性步内模型求穿越分数 `(level-before)/(after-before)`，损伤使用截断前的 `trial_damage`。平面法向在该子步内固定；输出穿越时刻及该时刻的刀刃位置。
 
-原推进仍在子步边界切换分支。下一项实现是让事件时刻导数进入事件后的粒子状态，并用自然切换的有限差分核对终态与刀力梯度；之后处理接触集合变化和完整切割轨迹优化。
+`EventCutContact` 在子步内按剩余断裂功求刃口推力的作用时长，同时改变正向冲量和反向导数，公式见 METHOD。释放后粒子的 x/v/F/Fp、应力和摩擦历史继续参与时间展开及分段反向。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_release_validate \
+  --spacings .006 .004 --energies 7 70 --dt-divisors 1 2 4 \
+  --output runs/m5_<commit>_release
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_release.py -q
+```
+
+释放窗口从原求解器首个损伤事件之前的共同状态起步，保持 2 ms 物理时长，比较三档步长。G_c=7/70 J/m² 用于激活损伤释放；默认香蕉仍为 700 J/m²。每次扰动重新判断损伤释放、刚体接触、粘滑和屈服分支；报告事件步号及刚体接触模式变化。侧码和粒子对集合在窗口内保持不变，原求解器重放逐步核对这两个条件。目标包含平均刀力和末端 v/Fp；比较完整 Tape、16 步分段反向以及五档自然有限差分，同时核对损伤功、终态及事件时刻的步长收敛。
 
 ## 下一步
 
-1. M5 动力学：用释放前后不同接触力的短轨迹，接入事件时刻对后续 x/v 和刀力的影响；核对完整 Tape、分段反向和自然事件差分。
+1. M5 动力学：验收损伤释放窗口的自然事件梯度和步长收敛，再延长到连续多个释放事件。
 2. M5 拓扑：处理几何侧码和接触集合变化，比较事件求导与连续损伤/连接过渡方案。改变正向物理的方案独立提交，记录力、损伤、切口和能量差异。
 3. 在改变切口位置、切块大小的香蕉刀路上核对梯度，再做完整切割轨迹优化。
 
@@ -136,6 +146,7 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_events.py -q
 - [Newton soft body](https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_soft_body.py)：Warp Tape、逐步状态和软体接触优化。
 - [Warp fluid checkpoint](https://github.com/NVIDIA/warp/blob/main/warp/examples/optim/example_fluid_checkpoint.py)：分段重算与 VJP 传递。
 - [DiffTaichi MPM](https://github.com/taichi-dev/difftaichi/blob/master/examples/diffmpm.py)：MPM 时间展开和反向组织。
+- [DiffTaichi mass-spring TOI](https://github.com/taichi-dev/difftaichi/blob/master/examples/mass_spring.py)：事件前后分别按作用时长积分。`EventCutContact` 将这一思路用于剩余断裂功决定的刃口冲量，采用步内恒力、恒推进速度的一阶积分。
 - [PlasticineLab MPM](https://github.com/hzaskywalker/PlasticineLab/blob/master/plb/engine/mpm_simulator.py)：参考其 Hencky 塑性投影及自定义 SVD 反向的组织；本项目对完整投影写专用伴随，重复伸长使用有限极限。
 - [Warp 可微文档](https://nvidia.github.io/warp/stable/user_guide/differentiability.html)：数组访问检查、自定义伴随和有限差分检查。
 - [接触梯度与碰撞时刻修正](https://arxiv.org/abs/2305.00092)、[Saltation Matrices](https://arxiv.org/abs/2306.06862)：事件发生时刻与事件前后状态变化的导数。

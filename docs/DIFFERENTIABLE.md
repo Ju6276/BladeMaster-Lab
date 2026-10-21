@@ -141,6 +141,8 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_release.py -q
 
 提交 `1377995` 的 `--transfers fixed-rate --dt-divisors 1 2 4 8 --epsilons 1e-7 1e-8` 共 16 例通过窗口检查：最细相邻两档刀路/G_c 导数相对差 ≤0.856%/0.261%，位置距离差 ≤0.616 μm，事件时间差 ≤1.307 μs，释放粒子集合一致。两档自然差分最大误差为 0.000294%，扰动时释放步号和刚体接触模式变化均为 0；分段重算全部状态差为 0。固定每步 5% PIC 对应的耗散率随步长减半而加倍，固定速率的公式与单位见 METHOD；报告与命令见 RESULTS。
 
+`diff_natural_validate` 和 `diff_natural_refine` 的 `--adjoint checkpoint --segment-steps 32 128` 使用分段反向：独立前向核对末态和损失，不保留完整 Tape；两种分段长度核对刀路、材料和初态导数。默认 `--adjoint full` 同时比较完整 Tape。`--parameters knife_x_mm knife_depth_scale knife_lateral_scale` 选择三项刀路控制量的差分扫描。
+
 ## 剩余工作与计划实验（2026-10-21）
 
 自然正向入口 `NaturalCutContact` 已接入逐步侧码生成、预测接触对搜索及摩擦历史传递；调用者提供初态和刀路。`CutInstruction` 控制切割开关和刀次，完整 Tape 与分段重算共用同一流程。事件变化窗口的核对命令：
@@ -154,7 +156,7 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
 
 `--shapes block cylinder` 更换初始几何；`--release integrated` 接入损伤释放步内积分。`--geometry event` 按实际材料推进求解分侧时刻，切换多场后积分余下时长；默认 `boundary` 保留原步末分侧。报告包含正向误差、检查点误差、左右差分、接触模式各通道、几何事件时刻与顺序变化。
 
-分段时长的 5 项测试覆盖塑性、接触历史、损伤功、活跃网格约束及固定刚度/耗散率。几何事件的 28 项测试覆盖解析自由落体、6/4 mm、20/400 kPa、方块/圆柱、直刀/斜刀/转动刀；从完整材料自然生成两侧不相容场，核对事件时刻、全部粒子状态、E 与刀位的 VJP 和分段重算。自然香蕉窗口的较大刀路扰动仍在接触切换处失败，E1/E2 继续验收。
+分段时长测试覆盖塑性、接触历史、损伤功、活跃网格约束及固定刚度/耗散率。几何事件的 55 项测试覆盖解析自由落体、6/4 mm、20/400 kPa、方块/圆柱、直刀/斜刀/转动刀；从完整材料自然生成两侧不相容场，核对事件时刻、全部粒子状态、E 与刀位的 VJP 和分段重算。自然香蕉窗口的较大刀路扰动仍在接触切换处失败，E1/E2 继续验收。
 
 `--friction-update projected` 将摩擦历史先累加本步位移，再投影到库仑界限。原 `lagged` 顺序在相等静动摩擦系数的粘滑边界产生 `τv_t` 历史跳变；新顺序的力和历史连续。8 项摩擦测试及 24 项转动刀/几何事件组合检查通过，公式与 LAMMPS 对照见 METHOD。自然窗口保留原七档扰动，分别记录梯度、接触集合和粘滑切换。
 

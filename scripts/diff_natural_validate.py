@@ -1,6 +1,7 @@
 """Compare natural cutting rollouts and differentiate across a side-assignment window."""
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
@@ -52,7 +53,15 @@ def capture_initial(cfg, steps):
 
 
 def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='lagged',
-             *, initial_window=None, return_arrays=False):
+             *, initial_window=None, return_arrays=False, adjoint='full',
+             controls_to_check=('knife_x_mm', 'knife_depth_scale')):
+    directions = dict(knife_x_mm=np.array([1., 0., 0.]),
+                      knife_depth_scale=np.array([0., 1., 0.]),
+                      knife_lateral_scale=np.array([0., 0., 1.]))
+    if adjoint not in ('full', 'checkpoint') or (adjoint == 'checkpoint' and not segment_steps):
+        raise ValueError('Use full Tape or checkpoint adjoints with at least one segment length')
+    if not controls_to_check or any(name not in directions for name in controls_to_check):
+        raise ValueError('Select knife_x_mm, knife_depth_scale or knife_lateral_scale')
     window = capture_initial(cfg, steps) if initial_window is None else initial_window
     origin, values, saved, rows = window.origin, window.values, window.history, window.rows
     controls = np.array([0., 1., 1.])
@@ -110,21 +119,32 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                                    force=np.asarray(forces), damage_work=damage_work), error, discrete
 
     compare = cfg.dt == window.reference_dt and steps == len(rows)
-    with wp.Tape() as tape:
+    with wp.Tape() if adjoint == 'full' else nullcontext() as tape:
         loss, terminal, terminal_history, events, forward_error, discrete_error = rollout(compare=compare)
-    tape.backward(loss)
-    gradient = q.grad.numpy().copy()
-    gradient_x = initial.x.grad.numpy().copy()
     parameters = dict(young_modulus=m.young, yield_stress=m.yield_stress,
                       friction=c.friction, fracture_energy=c.fracture_energy)
-    parameter_gradients = {name: array.grad.numpy().copy() for name, array in parameters.items()}
-    tape.zero()
+    gradient, gradient_x, parameter_gradients = None, None, None
+    if tape is not None:
+        tape.backward(loss)
+        gradient = q.grad.numpy().copy()
+        gradient_x = initial.x.grad.numpy().copy()
+        parameter_gradients = {name: array.grad.numpy().copy() for name, array in parameters.items()}
+        tape.zero()
     del tape
     checkpoint = []
     for length in segment_steps:
         timings = {}
         result = c.checkpoint_vjp(initial, history, [CutInstruction()] * steps, length,
                                   knife, objective, parameters=(q,), timings=timings)
+        np.testing.assert_allclose(result.loss.numpy(), loss.numpy(), rtol=1e-11, atol=1e-12)
+        for name in values:
+            np.testing.assert_allclose(getattr(result.terminal, name).numpy(),
+                                       getattr(terminal, name).numpy(), rtol=1e-10, atol=1e-10)
+        if gradient is None:
+            gradient = result.parameter_gradients[q].copy()
+            gradient_x = result.initial_gradient.x.numpy().copy()
+            parameter_gradients = {name: result.parameter_gradients[array].copy()
+                                   for name, array in parameters.items()}
         error_q = float(np.max(np.abs(result.parameter_gradients[q] - gradient)))
         error_x = float(np.max(np.abs(result.initial_gradient.x.numpy() - gradient_x)))
         np.testing.assert_allclose(result.parameter_gradients[q], gradient, rtol=1e-8, atol=1e-10)
@@ -139,8 +159,8 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                                recompute_max_abs=timings['recompute_max_abs']))
     finite_difference = []
     baseline_loss = float(loss.numpy()[0])
-    for parameter, direction in (('knife_x_mm', np.array([1., 0., 0.])),
-                                 ('knife_depth_scale', np.array([0., 1., 0.]))):
+    for parameter in controls_to_check:
+        direction = directions[parameter]
         ad = float(gradient @ direction)
         for epsilon in epsilons:
             losses, changes = [], []
@@ -184,6 +204,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     threshold = cfg.cutting_energy * m.volume**(2 / 3) * (1 - cfg.sharpness) / cfg.sharpness
     work_from_damage = threshold * np.sum(terminal_history.damage.numpy() - history.damage.numpy())
     result = dict(config=asdict(cfg), release=release, geometry=geometry, friction_update=friction_update,
+                adjoint=adjoint,
                 particles=m.n, prefix_steps=round(window.start_time / cfg.dt),
                 start_time_s=window.start_time, steps=steps, duration_s=steps * cfg.dt,
                 newly_labelled_particles=int(new_labels), peak_pairs=max(map(len, events['pairs'])),
@@ -214,6 +235,9 @@ def main():
     parser.add_argument('--shapes', choices=['banana', 'block', 'cylinder'], nargs='+', default=['banana'])
     parser.add_argument('--steps', type=int, default=64)
     parser.add_argument('--segment-steps', type=int, nargs='+', default=[16, 32])
+    parser.add_argument('--adjoint', choices=['full', 'checkpoint'], default='full')
+    parser.add_argument('--parameters', nargs='+', default=['knife_x_mm', 'knife_depth_scale'],
+                        choices=['knife_x_mm', 'knife_depth_scale', 'knife_lateral_scale'])
     parser.add_argument('--release', choices=['boundary', 'integrated'], default='integrated')
     parser.add_argument('--geometry', choices=['boundary', 'event'], default='boundary')
     parser.add_argument('--friction-update', choices=['lagged', 'projected'], default='lagged')
@@ -236,7 +260,8 @@ def main():
                 dt = tangent_history_dt(cfg, banana_dt(cfg, spacing))
                 cfg = replace(cfg, dt=dt, flip_reference_dt=dt)
                 row = evaluate(cfg, args.steps, args.release, args.epsilons, args.segment_steps,
-                               args.geometry, args.friction_update)
+                               args.geometry, args.friction_update, adjoint=args.adjoint,
+                               controls_to_check=args.parameters)
                 row.update(shape=shape, material=material)
                 report['cases'].append(row)
                 (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')

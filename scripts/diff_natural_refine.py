@@ -53,6 +53,9 @@ def main():
     parser.add_argument('--dt-divisors', type=int, nargs='+', default=[1, 2, 4, 8])
     parser.add_argument('--epsilons', type=float, nargs='+', default=[5e-7, 5e-8])
     parser.add_argument('--segment-steps', type=int, nargs='+', default=[16, 32])
+    parser.add_argument('--adjoint', choices=['full', 'checkpoint'], default='full')
+    parser.add_argument('--parameters', nargs='+', default=['knife_x_mm', 'knife_depth_scale'],
+                        choices=['knife_x_mm', 'knife_depth_scale', 'knife_lateral_scale'])
     parser.add_argument('--flip-reference-dt', type=float)
     parser.add_argument('--geometry', choices=['boundary', 'event'], default='event')
     parser.add_argument('--release', choices=['boundary', 'integrated'], default='integrated')
@@ -87,7 +90,8 @@ def main():
                                   board_normal_scale=base.board_normal_scale / divisor**2)
                     row, arrays = evaluate(cfg, steps * divisor, args.release, args.epsilons,
                                            args.segment_steps, args.geometry, args.friction_update,
-                                           initial_window=window, return_arrays=True)
+                                           initial_window=window, return_arrays=True, adjoint=args.adjoint,
+                                           controls_to_check=args.parameters)
                     name = f'{shape}_{material}_h{spacing:g}_dt{divisor}'
                     row.update(name=name, divisor=divisor)
                     np.savez_compressed(args.output / f'{name}.npz', **arrays)

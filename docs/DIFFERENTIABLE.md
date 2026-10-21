@@ -14,6 +14,7 @@
 - `differentiable_contact.PrescribedContact`：刀与砧板的预测罚接触、粘着/滑动摩擦，逐步保存切向历史；复用 `contact.blade_query`、`contact.penalty_impulse`。
 - `PrescribedContact.checkpoint_vjp`：分段边界保存粒子状态和两组切向历史，返回初始状态、历史、工具参数和 E 的梯度；支持逐步损失和末端损失。
 - 接触刀具采用外部位姿、零移动性；材料为纯弹性单场。塑性、切割码、粒子自接触和网格刀面约束在后续阶段接入。
+- `differentiable_material.MaterialTrajectory`：逐步保存 Fp，Hencky 投影专用伴随，固定侧码的相容场交换；E、屈服应力与初始状态方向导数检查。
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable.py -q
@@ -70,6 +71,7 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_optimize --output runs/diff_<commi
 - [Newton soft body](https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_soft_body.py)：Warp Tape、逐步状态和软体接触优化。
 - [Warp fluid checkpoint](https://github.com/NVIDIA/warp/blob/main/warp/examples/optim/example_fluid_checkpoint.py)：分段重算与 VJP 传递。
 - [DiffTaichi MPM](https://github.com/taichi-dev/difftaichi/blob/master/examples/diffmpm.py)：MPM 时间展开和反向组织。
+- [PlasticineLab MPM](https://github.com/hzaskywalker/PlasticineLab/blob/master/plb/engine/mpm_simulator.py)：参考其 Hencky 塑性投影及自定义 SVD 反向的组织；本项目对完整投影写专用伴随，重复伸长使用有限极限。
 - [Warp 可微文档](https://nvidia.github.io/warp/stable/user_guide/differentiability.html)：数组访问检查、自定义伴随和有限差分检查。
 
 首版使用普通 kernel launch；梯度核对通过后再测 CUDA Graph 的前反向调度。

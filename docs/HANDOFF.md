@@ -167,7 +167,13 @@ M5 已接入损伤释放后的状态导数。`differentiable_events` 定位平�
 
 M5 首批提交 `26c9fe5`，全量 **672 passed、8 skipped、18 subtests passed**。`runs/m5_26c9fe5_events_{6,4}mm` 共 **24** 例自然切割扫描：默认 G_c=700 时最大损伤 **0.13835/0.19641**，释放 **0/0** 个；G_c=70 时释放 **4/5** 个。刀偏移 +0.05 mm 时，分侧时刻改变 **263/1817** 个；偏移 −2 mm 时切块为 **674/778、2330/2562**。完整数字与命令见 RESULTS。
 
-释放积分提交 `abd6b02`，全量 **680 passed、8 skipped、18 subtests passed**。`runs/m5_abd6b02_release{,_refined,_small_eps}` 覆盖 6/4 mm、G_c=7/70、四档步长的 **16** 种 2 ms 窗口；刀路/G_c 的自然差分和分段反向通过，损伤功平衡误差 ≤**1.77e-19 J**。最细相邻两档的刀路/G_c 导数相对差最高 **22.52%/57.69%**，步长收敛失败。下一步分离 PIC/FLIP 传递耗散与接触切换的影响，再处理几何侧码和接触集合；参考 DiffTaichi TOI、Saltation matrices、APIC 和 DiSECt，链接见 DIFFERENTIABLE。
+释放积分提交 `abd6b02`，全量 **680 passed、8 skipped、18 subtests passed**。`runs/m5_abd6b02_release{,_refined,_small_eps}` 覆盖 6/4 mm、G_c=7/70、四档步长的 **16** 种 2 ms 窗口；刀路/G_c 的自然差分和分段反向通过，损伤功平衡误差 ≤**1.77e-19 J**。固定每步 PIC 比例时，最细相邻两档的刀路/G_c 导数相对差最高 **22.52%/57.69%**，步长收敛失败。
+
+`1377995` 增加 `Config.flip_reference_dt`，按 NairnMPM 的 PIC 残差阻尼解释固定单位时间的耗散率；默认 0 保持每步固定比例。全量 **693 passed、8 skipped、18 subtests passed**。`runs/m5_1377995_fixed_rate` 的同一组 **16** 例释放窗口，最细相邻两档刀路/G_c 导数相对差 ≤**0.856%/0.261%**，位置距离差 ≤**0.616 μm**，释放集合一致；自然差分最大误差 **0.000294%**，全部状态重算差 **0**。下一步处理几何侧码与接触集合变化，并做完整自然切割轨迹的收敛及优化；方法来源与命令见 DIFFERENTIABLE。
+
+同提交的 `runs/m5_1377995_flip` 以纯 FLIP 对照 **8** 例，最细相邻两档刀路/G_c 导数相对差 ≤**0.998%/0.0818%**，位置距离差 ≤**0.239 μm**，释放集合一致。
+
+损伤记忆分两层：同一个切割编号的 D 持续累积；换到新的 `cut_index` 时重置本刀 D 与释放标记，旧切口侧码和塑性 Fp 保留。`EventCutContact` 的 D 逐步参与求导并写入检查点。
 
 完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。
 

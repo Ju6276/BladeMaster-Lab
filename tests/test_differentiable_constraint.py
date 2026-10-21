@@ -8,6 +8,7 @@ from blademaster_warp.differentiable_constraint import solve
 from blademaster_warp.differentiable_cutting import FixedCutContact
 from blademaster_warp.differentiable_material import MaterialTrajectory
 from blademaster_warp.solver import Config, Solver
+from scripts.diff_cut_validate import reaction_loss, terminal_loss
 
 
 def setup(spacing):
@@ -81,3 +82,51 @@ def test_grid_constraint_derivative(parameter, monkeypatch):
             losses.append(float(np.sum(value.velocity.numpy().astype(float) * seed)
                                 + np.sum(value.linear_impulse.numpy().astype(float) * force_seed)))
         np.testing.assert_allclose(ad, (losses[1] - losses[0]) / (2 * eps), rtol=.003, atol=1e-5)
+
+
+def test_active_grid_constraint_in_complete_checkpoint():
+    cfg, _, _, codes, _, x, _ = setup(.006)
+    model = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
+    contact = FixedCutContact(model)
+    initial = model.state(x=x, v=np.tile([-.3, 0, 0], (model.n, 1)))
+    history = contact.history()
+    tool = contact.tool([0, 0, 0])
+    branches = []
+    state, h = initial, history
+    steps = 3
+    for _ in range(steps):
+        branch = contact.freeze(codes, [], [], np.zeros(model.n), cutting=False)
+        state, h, _ = contact.step(state, h, tool, branch)
+        branch.rigid_modes, branch.yielded = h.rigid_modes, state.yielded
+        branch.grid_batches = h.grid_batches
+        assert h.grid_residual <= 1e-6
+        branches.append(branch)
+    assert any(branch.grid_batches > 0 for branch in branches)
+
+    def objective(step, state, h, force, loss):
+        model.launch(reaction_loss, 1, inputs=[force, 1 / steps], outputs=[loss], device=model.device)
+        if step == steps - 1:
+            model.launch(terminal_loss, model.n, inputs=[state.v, state.Fp], outputs=[loss], device=model.device)
+
+    def evaluate(tool):
+        state, h = initial, history
+        loss = model.zeros(1, float)
+        for i, branch in enumerate(branches):
+            state, h, force = contact.step(state, h, tool, branch)
+            objective(i, state, h, force, loss)
+        return loss
+
+    with wp.Tape() as tape:
+        loss = evaluate(tool)
+    tape.backward(loss)
+    expected = tool.position.grad.numpy().copy()
+    tape.zero()
+    result = contact.checkpoint_vjp(initial, history, branches, 2, lambda _: tool,
+                                    objective, parameters=(tool.position,))
+    actual = result.parameter_gradients[tool.position]
+    np.testing.assert_allclose(actual, expected, rtol=1e-9, atol=1e-9)
+    assert abs(actual[0, 0]) > 1e-4
+    for epsilon in (1e-7, 3e-8):
+        lo = float(evaluate(contact.tool([-epsilon, 0, 0])).numpy()[0])
+        hi = float(evaluate(contact.tool([epsilon, 0, 0])).numpy()[0])
+        np.testing.assert_allclose(actual[0, 0], (hi - lo) / (2 * epsilon), rtol=.02, atol=1e-6)

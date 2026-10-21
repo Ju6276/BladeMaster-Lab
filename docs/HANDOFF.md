@@ -54,6 +54,7 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 | `AGENTS.md` | 代码与文档规范（必须遵守） |
 | `README.md` | 怎么运行，模块索引 |
 | `docs/RUNNING.md` | 完整命令、遥操作选项、录制与诊断 |
+| `docs/DIFFERENTIABLE.md` | 当前可微分主线、验收和优化对照 |
 | `TODO.md` | 未完成项（按论文图编号） |
 | `docs/METHOD.md` | 论文公式到代码的对照；与论文的差异表 |
 | `docs/PARAMETERS.md` | 论文给出的实验参数，以及哪些是本地取值 |
@@ -96,7 +97,7 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 - 全部论文任务视频已按网页默认相机渲染，在 Mac 桌面的 `BladeMaster_videos/`。
 - 基线：CRESSim-MPM（固定上游 `09aa5009` 编译）、TopoCut 式单场 MLS-MPM（`mlsmpm.py`，按论文重写）、单场 TLMPM（`--single-field`）。
 
-## 4. 下一步：切割力的网格收敛诊断（优先）
+## 4. 切割力的网格收敛诊断（配合 M4–M5）
 
 ### 现象
 
@@ -136,38 +137,21 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 - 是本地取值（接触距离、\(b_\text{lead}\)）：改成与网格无关的取法，写进 `docs/METHOD.md` 的差异表。
 - 是论文自己的设计（式 10 的 \(R_p\) 随粒子体积缩放、\(h_k = 6\Delta x\)）：这就是论文算法部分的切入点（见 `docs/PAPER_PLAN.md`）。
 
-## 5. 可微分计划（可选方向，在第 4 节之后）
+## 5. 当前主线：可微 TLMPM
 
-目的：对材料参数（E、屈服应力、切割阈值、摩擦）和刀路求梯度，用于标定和轨迹优化。正向仿真、遥操作和渲染都不变。
+具体实现、命令与验收见 [DIFFERENTIABLE.md](DIFFERENTIABLE.md)。先验证梯度，再做轨迹优化；真机标定在其后。第 4 节的切割力检查配合 M4–M5。
 
-### Warp 自动微分的规则（官方文档）
+| 阶段 | 内容 | 当前状态 |
+|---|---|---|
+| M1 | 单步弹性、应力伴随、解析与有限差分核对 | 已实现，4090 测试 |
+| M2 | 多步状态与分段重算 VJP | 已实现短轨迹；长时域资源扫描待做 |
+| M3 | 刀与砧板接触、摩擦、推压轨迹优化对照 | 基础接触已实现；切换扫描与优化对照待做 |
+| M4 | 固定切割分支、多场、塑性和刀路梯度 | 待做 |
+| M5 | 损伤达阈值和切开事件的梯度 | 待做 |
 
-- 要求导的数组用 `requires_grad=True`；把正向包在 `wp.Tape()` 里；最后调用 `tape.backward(loss)`。
-- 反向需要正向时的中间值。**数组被某个 kernel 读过之后不能再被覆盖**，否则梯度会悄悄算错。每一步要单独保存状态，或者做检查点（Warp 不提供，要自己实现；参考 Warp 的 fluid checkpointing 示例）。
-- 支持原地 `+=`、`-=`，不支持原地 `*=`、`/=`。
-- 调试时设 `wp.config.verify_autograd_array_access = True`，它会报出"读后写"的问题。
-- 参考实现：Newton 的 `newton/examples/diffsim/example_diffsim_soft_body.py`（优化 Lamé 参数），以及用 `check_grad()` 和有限差分对比的 `example_diffsim_spring_cage.py`。
+当前实现：`differentiable.py`、`differentiable_contact.py`。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
 
-### 本仓库里要改的地方
-
-- `solver.py`、`coupling.py` 用了 CUDA Graph（`wp.ScopedCapture`、`wp.capture_launch`），状态是两份数组来回交替（接触历史按 `step_count` 的奇偶切换）。求导模式下要关掉 CUDA Graph，改为逐步保存状态或检查点。
-- 原子操作：
-  - `material.py:42`（哈希插入 `atomic_cas`）、`material.py:75/818` 和 `contact.py:801`（链表 `atomic_exch`）只用来建索引，反向时当常数即可。
-  - `contact.py:1029/1091`、`blade_constraint.py:71` 是标志位，不参与求导。
-  - `blade_constraint.py`（持刀时的网格面约束，论文里没有）是迭代求解，用 `atomic_max` 判断残差收敛。要么在求导模式下关掉它（`solver.Config.blade_grid_constraint=False`），要么手写伴随（`Tape.record_func`）。
-- 侧码、切开标志（`cut_released`）、静摩擦/滑动摩擦切换、接触开关都是离散的：在 M4 中把它们当作前向确定的常数。
-
-### 里程碑
-
-| 步骤 | 内容 | 验证 | 估计 |
-|---|---|---|---|
-| M1 | 单步弹性 TLMPM 可微（不切、不接触） | 有限差分；方块在重力下的静下沉量与 E 的解析关系 | 约 1 周 |
-| M2 | 多步，加检查点 | 用已知 E 生成假数据，再用梯度反推出 E | 约 1 周 |
-| M3 | 刀、砧板接触，摩擦 | 有限差分；在穿透量约等于 0 附近测梯度是否稳定 | 1–2 周 |
-| M4 | 固定侧码与接触分支，对连续材料参数求切割力梯度 | 用已知参数生成力曲线，检查 E、屈服应力、摩擦的有限差分与参数辨识 | 1–2 周 |
-| M5 | 损伤达阈值与切开事件的梯度 | 先用阈值扫描确认事件会改变力，再比较事件时间求导、平滑损伤等方案。\(G_c\) 在现有反力路径中只改变离散分支，固定事件后其力梯度为零；标定组合 \(G_c(1-\zeta)/\zeta\) 需要处理这些事件 | 研究阶段，方案待选 |
-
-每一步都在 `tests/` 里加有限差分测试，结果写进 `docs/RESULTS.md`。
+下一步在 4090 跑长轨迹/显存扫描和接触切换扫描，然后比较 AD + Adam、FD + Adam 与 CMA-ES 的推压轨迹优化。固定事件后，现有反力路径对 G_c 的梯度为零；切割阈值的事件导数在 M5 处理。
 
 ## 6. 参考资料
 

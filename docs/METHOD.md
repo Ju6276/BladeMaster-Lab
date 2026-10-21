@@ -55,6 +55,14 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 `Config.maxwell_tau` \(\tau\) > 0 且 `maxwell_fraction` \(\beta\) > 0 时启用（广义标准线性固体）。弹性变形 \(f = F F_p^{-1}\) 分两支：平衡支为共旋弹性，\(\mu_\infty = (1-\beta)\mu\)、\(\lambda + \tfrac23\beta\mu\)；Maxwell 支 \(f_m = f F_v^{-1}\)，Kirchhoff 应力 \(2\beta\mu\,\mathrm{dev}\log V_m\)。两支之和的小应变剪切、体积模量与关闭时相同，长期剪切模量为 \((1-\beta)\mu\)，体积部分不松弛。每步在塑性投影之后把 \(f_m\) 的偏 Hencky 应变乘以 \(e^{-\Delta t/\tau}\)（应变保持不变时是精确解，对任意 \(\Delta t/\tau\) 稳定；\(\tau \ll \Delta t\) 时该支每步归零），\(F_v\) 按等容增量更新。每步增量 \((\Delta t/\tau)\,\varepsilon\) 远小于 \(F_v\) 在 float32 下的分辨率，所以 \(F_v - I\) 存为 float64。屈服仍按瞬时模量的 Hencky 应变判定，加载慢于 \(\tau\) 时流动应力为 \((1-\beta)\sigma_y\)。关闭时调用原来的 kernel。
 
+## 可微弹性与固定接触
+
+`differentiable.ElasticTrajectory` 在未切割单场上复用 P2G、网格速度和共转应力；G2P 与 MUSL 写入下一步状态。每一步保存独立数组，分段 VJP 在反向时重算段内状态。E 使用可求导数组；参考采样、密度、ν 与步长保持固定。
+
+令 \(F=U\Sigma V^T\)、\(R=UV^T\)。极分解旋转对传入矩阵伴随 G 的 VJP 为 \(UBV^T\)，其中 \(B_{ii}=0\)，\(B_{ij}=[(U^TGV)_{ij}-(U^TGV)_{ji}]/(\sigma_i+\sigma_j)\)。对正行列式 F，重复正奇异值处这个分母仍非零。`elastic_stress_grad` 用该 VJP 和行列式、逆矩阵导数计算共转应力的伴随；正向仍调用原 `corotated_stress`。
+
+`differentiable_contact.PrescribedContact` 复用刀距离、预测法向罚函数和带历史的库仑摩擦；外部刀的移动性为零，切向历史逐步保存。梯度沿本次执行的接触和粘滑分支传播。切换扫描与轨迹优化的实验安排见 [DIFFERENTIABLE.md](DIFFERENTIABLE.md)。
+
 ## 与论文的差异
 
 | 项 | 论文 | 这里 |

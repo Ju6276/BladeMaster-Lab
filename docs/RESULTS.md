@@ -562,7 +562,28 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_release_validate \
 
 下一步处理几何侧码、接触集合变化及完整自然切割轨迹的收敛与优化。
 
+## M5 自然分侧、接触集合与跨事件差分（2026-10-21）
+
+提交 `acead71`（dirty=false），RTX 4090、float64。首次分侧附近各 64 步：香蕉几何 6/4 mm × banana/soft/plastic 共 6 例，6 mm 方块/圆柱 soft 共 2 例。每例从同一中间状态开始，各条扰动轨迹重新计算侧码、接触对、摩擦和释放分支。
+
+8 例原/可微正向侧码与接触对差异均为 **0**；最大 x/v/Fp/刀力差为 **2.08e-17 m / 4.13e-14 m/s / 5.46e-14 / 2.43e-14 N**。新增分侧粒子分别为 **68/54/42/35/42/13/48/32**；这些窗口的粒子对数均为 **0**。16/32 步检查点的刀路/初始 x 梯度最大差为 **2.78e-16 / 8.18e-14**，全部状态重算差 **0**。
+
+刀位与下刀深度各五档扰动，共 **80** 组中心差分；其中 **65** 组改变记录的分侧、接触模式或释放事件，**49** 组相对偏差 >**2%**，**8** 组 AD 与差分符号相反。记录事件不变的 **15** 组最大相对误差 **1.17e-7**。6 mm 香蕉的深度扰动 ε=5e-5：AD **0.0191941**、FD **0.00304626**，相对偏差 **84.13%**；6 mm soft 在 ε=5e-7 时分侧不变、接触模式改变，深度导数偏差 **13.15%**。跨事件验收失败；步边界分侧的事件时间导数及接触切换灵敏度继续接入。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/m5_acead71_natural_materials --spacings .006 .004 \
+  --materials banana soft plastic --steps 64 --segment-steps 16 32 \
+  --release boundary --epsilons .05 .005 .0005 .00005 .0000005
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/m5_acead71_natural_shapes --spacings .006 --shapes block cylinder \
+  --materials soft --steps 64 --segment-steps 16 32 \
+  --release boundary --epsilons .05 .005 .0005 .00005 .0000005
+```
+
 ## 测试
+
+2026-10-21，提交 `acead71`：全量 **707 passed、8 skipped、18 subtests passed**，142.84 s。新增 14 项覆盖方块/圆柱和转动刀的自然侧码对照、预测接触集合与原全对搜索、摩擦历史继承/重入清零、刀路改变侧码、同刀暂停/新刀重置、两种释放积分的自然轨迹梯度及分段重算。8 项跳过仍为 CRESSim 上游构建未配置。
 
 2026-10-21，提交 `1377995`：全量 **693 passed、8 skipped、18 subtests passed**，134.49 s。新增 13 项覆盖 PIC 耗散率配置、动量守恒、传递动能耗散、原/可微求解器对照、速度伴随及解析指数衰减的步长细化。8 项跳过为 CRESSim 上游构建未配置。
 

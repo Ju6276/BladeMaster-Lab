@@ -167,6 +167,8 @@ M5 已接入损伤释放后的状态导数。`differentiable_events` 定位平�
 
 `NaturalCutContact` 从当前状态和刀路生成下一步侧码、接触对及历史，完整 Tape 和检查点共用该流程。`scripts.diff_natural_validate` 检查首次分侧窗口的正向一致性及自然扰动；`--release boundary` 对照原求解器，`--release integrated` 使用已实现的释放积分。几何分侧仍在整步边界切换，E1 继续接入事件时间对后续状态的影响。
 
+提交 `acead71`：全量 **707 passed、8 skipped、18 subtests passed**。8 个自然分侧窗口（两网格三材料参数及方块/圆柱）正向一致，检查点重算差为 0；80 组差分中 49 组偏差 >2%、8 组符号相反，跨事件验收失败。下一步处理步内几何分侧积分与接触切换灵敏度，保留全部失败扰动组合，见 RESULTS。
+
 M5 首批提交 `26c9fe5`，全量 **672 passed、8 skipped、18 subtests passed**。`runs/m5_26c9fe5_events_{6,4}mm` 共 **24** 例自然切割扫描：默认 G_c=700 时最大损伤 **0.13835/0.19641**，释放 **0/0** 个；G_c=70 时释放 **4/5** 个。刀偏移 +0.05 mm 时，分侧时刻改变 **263/1817** 个；偏移 −2 mm 时切块为 **674/778、2330/2562**。完整数字与命令见 RESULTS。
 
 释放积分提交 `abd6b02`，全量 **680 passed、8 skipped、18 subtests passed**。`runs/m5_abd6b02_release{,_refined,_small_eps}` 覆盖 6/4 mm、G_c=7/70、四档步长的 **16** 种 2 ms 窗口；刀路/G_c 的自然差分和分段反向通过，损伤功平衡误差 ≤**1.77e-19 J**。固定每步 PIC 比例时，最细相邻两档的刀路/G_c 导数相对差最高 **22.52%/57.69%**，步长收敛失败。

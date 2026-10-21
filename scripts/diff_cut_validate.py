@@ -4,6 +4,7 @@ import argparse
 from dataclasses import asdict, replace
 import json
 from pathlib import Path
+from functools import partial
 import sys
 from time import perf_counter
 
@@ -59,7 +60,7 @@ def numpy_tool(origin, elapsed, controls):
 
 def differentiable_tool(model, controls, origin, elapsed):
     position, velocity = model.zeros(1, wp.vec3), model.zeros(1, wp.vec3)
-    wp.launch(knife_motion, 1, inputs=[controls, wp.vec3(*origin), elapsed],
+    model.launch(knife_motion, 1, inputs=[controls, wp.vec3(*origin), elapsed],
               outputs=[position, velocity], device=model.device)
     return Tool(position, velocity, model.array([[0, 0, 0, 1]], wp.quat, False),
                 model.zeros(1, wp.vec3, False))
@@ -71,9 +72,11 @@ def capture_window(cfg, prefix, steps, controls):
     origin = np.array([0.0004, 0.0, 0.027 + cfg.blade_half_size[2]])
     for i in range(prefix):
         port.advance(numpy_tool(origin, i * cfg.dt, controls), cfg.dt, graph=False)
-    values = {name: getattr(original, name).numpy() for name in ("x", "v", "F", "Fp")}
+    values = {name: getattr(original, name).numpy() for name in ("x", "v", "F", "Fp", "stress")}
     keys, pair_history = pair_snapshot(original)
     history = dict(rigid=original.histories.numpy(), pairs=pair_history, damage=original.damage.numpy())
+    if original.blade_constraint is not None:
+        history["side"] = original.blade_constraint.side.numpy()
     rows = []
     for i in range(steps):
         codes = original.codes.numpy()
@@ -81,7 +84,11 @@ def capture_window(cfg, prefix, steps, controls):
         previous = keys
         reaction = port.advance(numpy_tool(origin, (prefix + i) * cfg.dt, controls), cfg.dt, graph=False)
         keys, pairs = pair_snapshot(original)
-        rows.append(dict(codes=codes, released=released, previous=previous, keys=keys,
+        batches = None
+        if original.blade_constraint is not None:
+            b = original.blade_constraint
+            batches = int(b.batches.numpy()[0]) if b.needs_solve.numpy()[0] else 0
+        rows.append(dict(grid_batches=batches, codes=codes, released=released, previous=previous, keys=keys,
                          force=reaction.force_n.copy(), pairs=pairs,
                          next_codes=original.codes.numpy(),
                          rigid=original.histories.numpy(), damage=original.damage.numpy(),
@@ -92,14 +99,17 @@ def capture_window(cfg, prefix, steps, controls):
     return origin, values, history, rows, errors
 
 
-def evaluate(cfg, origin, prefix, values, history, rows, controls, backward=False, friction=None):
-    model = MaterialTrajectory(cfg, requires_grad=backward)
+def evaluate(cfg, origin, prefix, values, history, rows, controls, backward=False, friction=None,
+             precision="float32", ordered_transfers=False):
+    model = MaterialTrajectory(cfg, requires_grad=backward, precision=precision,
+                               ordered_transfers=ordered_transfers)
     contact = FixedCutContact(model)
     if friction is not None:
         contact.friction.assign(friction)
     frozen = [contact.freeze(row["codes"], row["keys"], row["previous"], row["released"],
                              cutting=row.get("cutting", True), rigid_modes=row.get("rigid_modes"),
-                             pair_modes=row.get("pair_modes"), yielded=row.get("yielded")) for row in rows]
+                             pair_modes=row.get("pair_modes"), yielded=row.get("yielded"),
+                             grid_batches=row.get("grid_batches")) for row in rows]
     q = model.array(controls, float)
     loss = model.zeros(1, float)
     initial = model.state(**values)
@@ -112,9 +122,9 @@ def evaluate(cfg, origin, prefix, values, history, rows, controls, backward=Fals
         for i, branch in enumerate(frozen):
             tool = differentiable_tool(model, q, origin, (prefix + i) * cfg.dt)
             state, h, force = contact.step(state, h, tool, branch)
-            wp.launch(reaction_loss, 1, inputs=[force, 1 / len(rows)], outputs=[loss], device=model.device)
+            model.launch(reaction_loss, 1, inputs=[force, 1 / len(rows)], outputs=[loss], device=model.device)
             trace.append((state, h, force))
-        wp.launch(terminal_loss, model.n, inputs=[state.v, state.Fp], outputs=[loss], device=model.device)
+        model.launch(terminal_loss, model.n, inputs=[state.v, state.Fp], outputs=[loss], device=model.device)
     wp.synchronize_device(model.device)
     forward_s = perf_counter() - started
     gradients = None
@@ -149,23 +159,40 @@ def evaluate(cfg, origin, prefix, values, history, rows, controls, backward=Fals
                                  + 0.1 * np.sum(state.Fp.numpy().astype(float) ** 2, axis=(1, 2))))
     return dict(loss=precise_loss, gradients=gradients, forward_max_abs=maximum,
                 forward_s=forward_s, backward_s=backward_s, particles=model.n,
-                branch_modes=np.concatenate(branch_modes), contact_modes=contact_modes)
+                branch_modes=np.concatenate(branch_modes), contact_modes=contact_modes,
+                grid_batches=[h.grid_batches for _, h, _ in trace],
+                grid_residual=[h.grid_residual for _, h, _ in trace])
 
 
 def run_case(spacing, material, prefix, steps, natural_branches=False,
-             control_epsilons=(0.01, 0.003, 0.001), parameters=None, repeats=1):
-    cfg = configuration(spacing, material)
+             control_epsilons=(0.01, 0.003, 0.001), parameters=None, repeats=1,
+             grid_constraint=False, capture_path=None, precision="float32", ordered_transfers=False):
+    evaluate_case = partial(evaluate, precision=precision, ordered_transfers=ordered_transfers)
+    cfg = replace(configuration(spacing, material), blade_grid_constraint=grid_constraint)
     controls = np.array([0.0, 1.0, 0.4])
     origin, values, history, rows, errors = capture_window(cfg, prefix, steps, controls)
-    recorded = evaluate(cfg, origin, prefix, values, history, rows, controls)
+    recorded = evaluate_case(cfg, origin, prefix, values, history, rows, controls)
     if not natural_branches:
         for row, (rigid_modes, pair_modes, yielded) in zip(rows, recorded["contact_modes"]):
             row.update(rigid_modes=rigid_modes, pair_modes=pair_modes, yielded=yielded)
-    base = evaluate(cfg, origin, prefix, values, history, rows, controls, backward=True)
+    if capture_path is not None:
+        capture_path.parent.mkdir(parents=True, exist_ok=True)
+        saved = {f"initial_{name}": value for name, value in values.items()}
+        saved.update({f"history_{name}": value for name, value in history.items()})
+        saved['metadata'] = json.dumps(dict(config=asdict(cfg), origin=origin.tolist(), prefix=prefix,
+                                            controls=controls.tolist(), steps=steps))
+        for i, row in enumerate(rows):
+            for name, value in row.items():
+                if name == 'state':
+                    saved.update({f"step_{i}_state_{key}": array for key, array in value.items()})
+                elif value is not None:
+                    saved[f"step_{i}_{name}"] = value
+        np.savez_compressed(capture_path, **saved)
+    base = evaluate_case(cfg, origin, prefix, values, history, rows, controls, backward=True)
     repeat_losses = [base["loss"]]
     repeat_gradients = [base["gradients"]]
     for _ in range(repeats - 1):
-        repeated = evaluate(cfg, origin, prefix, values, history, rows, controls, backward=True)
+        repeated = evaluate_case(cfg, origin, prefix, values, history, rows, controls, backward=True)
         repeat_losses.append(repeated["loss"])
         repeat_gradients.append(repeated["gradients"])
     direction = np.array([0.7, 0.3, 0.4])
@@ -192,7 +219,7 @@ def run_case(spacing, material, prefix, steps, natural_branches=False,
                     other_q = controls + sign * epsilon * direction
                 else:
                     other_friction = friction + sign * epsilon
-                result = evaluate(other_cfg, origin, prefix, values, history, rows, other_q,
+                result = evaluate_case(other_cfg, origin, prefix, values, history, rows, other_q,
                                   friction=other_friction)
                 losses.append(result["loss"])
                 changed.append(int(np.count_nonzero(result["branch_modes"] != base["branch_modes"])))
@@ -214,6 +241,7 @@ def run_case(spacing, material, prefix, steps, natural_branches=False,
     del base["branch_modes"]
     del base["contact_modes"]
     return dict(config=asdict(cfg), material=material, prefix_steps=prefix, steps=steps,
+                precision=precision, ordered_transfers=ordered_transfers,
                 controls=controls.tolist(), local_branch_policy="natural" if natural_branches else "recorded",
                 repeat_losses=repeat_losses, repeat_gradients=repeat_gradients,
                 original_errors=errors, initial_coded_particles=int(np.count_nonzero(rows[0]["codes"])),
@@ -233,6 +261,9 @@ def main():
     parser.add_argument("--prefixes", type=int, nargs="+", default=[1200, 2400])
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument("--natural-branches", action="store_true")
+    parser.add_argument("--grid-constraint", action="store_true")
+    parser.add_argument("--ordered-transfers", action="store_true")
+    parser.add_argument("--precision", choices=["float32", "float64"], default="float32")
     parser.add_argument("--control-epsilons", type=float, nargs="+", default=[0.01, 0.003, 0.001])
     parser.add_argument("--parameters", nargs="+", choices=["young_modulus", "yield_stress", "friction", "controls"])
     parser.add_argument("--repeats", type=int, default=1)
@@ -248,7 +279,9 @@ def main():
         for material in args.materials:
             for prefix in args.prefixes:
                 row = run_case(spacing, material, prefix, args.steps, args.natural_branches,
-                               args.control_epsilons, args.parameters, args.repeats)
+                               args.control_epsilons, args.parameters, args.repeats, args.grid_constraint,
+                               args.output / "captures" / f"{spacing}_{material}_{prefix}.npz",
+                               args.precision, args.ordered_transfers)
                 report["cases"].append(row)
                 (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
                 print(json.dumps(dict(spacing=spacing, material=material, prefix=prefix,

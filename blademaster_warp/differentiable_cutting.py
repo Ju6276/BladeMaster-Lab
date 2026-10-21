@@ -1,13 +1,15 @@
 """Prescribed cutting along recorded side codes, release events and pair sets."""
 
 from dataclasses import dataclass
+from time import perf_counter
 
 import numpy as np
 import warp as wp
 
 from .contact import blade_query, penalty_impulse
 from .differentiable_contact import PrescribedContact
-from .differentiable_material import FixedTopology
+from .differentiable_material import FixedTopology, PlasticState
+from . import differentiable_constraint as grid_constraint
 
 
 @wp.func
@@ -212,6 +214,9 @@ class CutHistory:
     damage: wp.array
     rigid_modes: wp.array | None = None
     pair_modes: wp.array | None = None
+    side: wp.array | None = None
+    grid_batches: int = 0
+    grid_residual: float = 0.0
 
 
 @dataclass
@@ -224,6 +229,7 @@ class FrozenStep:
     rigid_modes: wp.array
     pair_modes: wp.array
     yielded: wp.array | None
+    grid_batches: int | None = None
 
 
 def pair_snapshot(solver):
@@ -240,20 +246,21 @@ class FixedCutContact(PrescribedContact):
     """Fixed release flags and pair identities; pose and particle states remain differentiable."""
 
     def __init__(self, trajectory):
-        super().__init__(trajectory)
+        super().__init__(trajectory, allow_grid_constraint=True)
         cfg = trajectory.config
         self.friction = trajectory.array([cfg.friction_static, cfg.friction_dynamic], float)
         self._topologies = {}
 
-    def history(self, rigid=None, pairs=None, damage=None):
+    def history(self, rigid=None, pairs=None, damage=None, side=None):
         m = self.model
         rigid = np.zeros((2, m.n, 3)) if rigid is None else rigid
         pairs = np.zeros((0, 3)) if pairs is None else pairs
         damage = np.zeros(m.n) if damage is None else damage
-        return CutHistory(m.array(rigid, wp.vec3), m.array(pairs, wp.vec3), m.array(damage, float))
+        return CutHistory(m.array(rigid, wp.vec3), m.array(pairs, wp.vec3), m.array(damage, float),
+                          side=m.zeros(m.n, float, False) if side is None else m.array(side, float, False))
 
     def freeze(self, codes, pair_keys, previous_keys, released, cutting=True,
-               rigid_modes=None, pair_modes=None, yielded=None):
+               rigid_modes=None, pair_modes=None, yielded=None, grid_batches=None):
         m = self.model
         codes = np.asarray(codes, dtype=np.int64)
         key = codes.tobytes()
@@ -267,7 +274,7 @@ class FixedCutContact(PrescribedContact):
         return FrozenStep(self._topologies[key], m.array(pairs, int, False),
                           m.array(previous, int, False), m.array(released, int, False), bool(cutting),
                           m.array(rigid_modes, int, False), m.array(pair_modes, int, False),
-                          None if yielded is None else m.array(yielded, int, False))
+                          None if yielded is None else m.array(yielded, int, False), grid_batches)
 
     def step(self, state, history, tool, frozen):
         m, cfg = self.model, self.model.config
@@ -282,7 +289,7 @@ class FixedCutContact(PrescribedContact):
         pairs = m.zeros(m.n, wp.vec3)
         impulse = m.zeros(m.n, wp.vec3)
         reaction = m.zeros(1, wp.vec3)
-        wp.launch(rigid_step, m.n,
+        m.launch(rigid_step, m.n,
                   inputs=[state.x, state.v, history.rigid, history.damage, frozen.released, frozen.rigid_modes,
                           tool.position, tool.velocity, tool.rotation, tool.omega, self.friction,
                           wp.vec3(*cfg.blade_half_size), cfg.blade_bevel_height, radius, blade_offset,
@@ -291,14 +298,126 @@ class FixedCutContact(PrescribedContact):
                           int(frozen.cutting), int(cfg.cut_hold), int(cfg.cut_work == "advance")],
                   outputs=[updated.rigid, updated.damage, rigid, reaction, updated.rigid_modes], device=m.device)
         if frozen.pairs.shape[0]:
-            wp.launch(pair_step, frozen.pairs.shape[0],
+            m.launch(pair_step, frozen.pairs.shape[0],
                       inputs=[state.x, state.v, frozen.pairs, frozen.previous, frozen.pair_modes,
                               history.pairs, self.friction,
                               2 * radius, m.mass, cfg.dt, sn, gk, cfg.tangent_damping],
                       outputs=[updated.pairs, pairs, updated.pair_modes], device=m.device)
-        wp.launch(add_impulses, m.n, inputs=[rigid, pairs], outputs=[impulse], device=m.device)
-        result = m.step(state, impulse=impulse, topology=frozen.topology, fixed_yielded=frozen.yielded)
+        m.launch(add_impulses, m.n, inputs=[rigid, pairs], outputs=[impulse], device=m.device)
+        constraint_result = None
+
+        def constrain(grid, mass, velocity):
+            nonlocal constraint_result
+            constraint_result = grid_constraint.solve(
+                m, grid, mass, velocity, state.x, tool, history.side, frozen.grid_batches,
+            )
+            return constraint_result.velocity
+
+        result = m.step(state, impulse=impulse, topology=frozen.topology, fixed_yielded=frozen.yielded,
+                        grid_transform=constrain if cfg.blade_grid_constraint else None)
+        updated.side = history.side
+        if constraint_result is not None:
+            updated.side = constraint_result.side
+            updated.grid_batches = constraint_result.batches
+            updated.grid_residual = constraint_result.residual
+            combined = m.zeros(1, wp.vec3)
+            m.launch(grid_constraint.add_reaction, 1,
+                      inputs=[reaction, constraint_result.linear_impulse, cfg.dt],
+                      outputs=[combined], device=m.device)
+            reaction = combined
         return result, updated, reaction
 
-    def checkpoint_vjp(self, *args, **kwargs):
-        raise NotImplementedError("Fixed-cut trajectories currently retain the full Tape")
+    def checkpoint_vjp(self, initial, history, frozen, segment_steps, tool_at_step, objective,
+                       parameters=(), timings=None):
+        """Recompute segments with plastic stress and all continuous contact histories.
+
+        frozen and tool_at_step use global step indices. The objective adds a
+        per-step loss; it can select the last index for a terminal objective.
+        Entry-side labels and recorded solve schedules remain discrete.
+        """
+        m = self.model
+        steps = len(frozen)
+        if not m.requires_grad or steps < 1 or segment_steps < 1:
+            raise ValueError("Cut checkpoint VJP requires gradients and positive step counts")
+        parameters = tuple(dict.fromkeys((*parameters, m.young, m.yield_stress, self.friction)))
+
+        def arrays(state, contact_history):
+            result = dict(x=state.x, v=state.v, F=state.F, Fp=state.Fp,
+                          rigid=contact_history.rigid, pairs=contact_history.pairs, damage=contact_history.damage)
+            if state.stress is not None:
+                result['stress'] = state.stress
+            return result
+
+        if any(a.grad is None for a in (*arrays(initial, history).values(), *parameters)):
+            raise ValueError("Continuous states and parameters must have gradient buffers")
+        parameter_gradients = {a: np.zeros(a.numpy().shape, dtype=float) for a in parameters}
+
+        def now():
+            wp.synchronize_device(m.device)
+            return perf_counter()
+
+        measured = dict(forward_s=0.0, recompute_s=0.0, backward_s=0.0, recompute_max_abs={}, adjoint_trace=[])
+        begun = now()
+        loss = m.zeros(1, float)
+        checkpoints = [(0, initial, history)]
+        current, h = initial, history
+        for step in range(steps):
+            current, h, reaction = self.step(current, h, tool_at_step(step), frozen[step])
+            objective(step, current, h, reaction, loss)
+            if (step + 1) % segment_steps == 0 or step + 1 == steps:
+                checkpoints.append((step + 1, current, h))
+        terminal, terminal_history = current, h
+        measured['forward_s'] = now() - begun
+        gradient = {name: m.zeros(a.shape, a.dtype, False) for name, a in arrays(current, h).items()}
+        seed = m.array([1.0], float, False)
+        for index in reversed(range(len(checkpoints) - 1)):
+            begun = now()
+            first, start, start_history = checkpoints[index]
+            last, expected, expected_history = checkpoints[index + 1]
+            start_arrays = arrays(start, start_history)
+            for a in (*start_arrays.values(), *parameters):
+                a.grad.zero_()
+            local_loss = m.zeros(1, float)
+            with wp.Tape() as tape:
+                current, h = start, start_history
+                for step in range(first, last):
+                    current, h, reaction = self.step(current, h, tool_at_step(step), frozen[step])
+                    objective(step, current, h, reaction, local_loss)
+            current_arrays = arrays(current, h)
+            if timings is not None:
+                for name, expected_array in arrays(expected, expected_history).items():
+                    delta = np.abs(current_arrays[name].numpy() - expected_array.numpy())
+                    error = float(delta.max()) if delta.size else 0.0
+                    measured['recompute_max_abs'][name] = max(measured['recompute_max_abs'].get(name, 0.0), error)
+            finished = now()
+            measured['recompute_s'] += finished - begun
+            seeds = {a: gradient[name] for name, a in current_arrays.items()}
+            seeds[local_loss] = seed
+            tape.backward(grads=seeds)
+            gradient = {name: wp.clone(a.grad) for name, a in start_arrays.items()}
+            if timings is not None:
+                measured['adjoint_trace'].append(dict(step=first, maximum={
+                    name: float(np.max(np.abs(a.numpy()))) if a.size else 0.0
+                    for name, a in gradient.items()}))
+            for a in parameters:
+                parameter_gradients[a] += a.grad.numpy()
+            tape.zero()
+            measured['backward_s'] += now() - finished
+            del tape
+        if timings is not None:
+            timings.update(measured)
+        state_gradient = PlasticState(gradient['x'], gradient['v'], gradient['F'], gradient['Fp'],
+                                      stress=gradient.get('stress'))
+        history_gradient = CutHistory(gradient['rigid'], gradient['pairs'], gradient['damage'])
+        return CutGradient(terminal, terminal_history, loss, state_gradient, history_gradient, parameter_gradients)
+
+
+
+@dataclass
+class CutGradient:
+    terminal: PlasticState
+    history: CutHistory
+    loss: wp.array
+    initial_gradient: PlasticState
+    history_gradient: CutHistory
+    parameter_gradients: dict

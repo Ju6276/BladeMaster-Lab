@@ -88,10 +88,11 @@ class PrescribedContact:
     spring-dashpot Coulomb friction. Reaction is the force on the tool in N.
     """
 
-    def __init__(self, trajectory):
+    def __init__(self, trajectory, *, allow_grid_constraint=False):
         self.model = trajectory
         cfg = trajectory.config
-        if not cfg.external_tool or cfg.tool_substep != "hold" or cfg.blade_grid_constraint:
+        if (not cfg.external_tool or cfg.tool_substep != "hold"
+                or (cfg.blade_grid_constraint and not allow_grid_constraint)):
             raise ValueError("PrescribedContact requires external hold mode without grid constraint")
 
     def history(self):

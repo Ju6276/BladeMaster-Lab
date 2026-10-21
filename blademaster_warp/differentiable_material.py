@@ -357,7 +357,7 @@ class MaterialTrajectory(ElasticTrajectory):
                   outputs=[result], device=self.device)
         return result
 
-    def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None):
+    def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None, grid_transform=None):
         cfg = self.config
         grid = self.uncut if topology is None else topology
         stress = state.stress
@@ -395,6 +395,8 @@ class MaterialTrajectory(ElasticTrajectory):
         coupled_impulse = self.couple(grid, grid_impulse)
         self.launch(m.grid_vel, grid.count, inputs=[grid_mass, coupled_momentum, coupled_impulse],
                   outputs=[old_v, new_v], device=self.device)
+        if grid_transform is not None:
+            new_v = grid_transform(grid, grid_mass, new_v)
         if self.ordered_transfers:
             self.launch(gather_particles, self.n,
                       inputs=[state.x, state.v, grid.slots, self.weights, old_v, new_v, cfg.dt, cfg.flip_fraction],

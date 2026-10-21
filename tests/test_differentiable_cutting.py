@@ -174,3 +174,51 @@ def test_cutting_work_and_release_match_original(hold, initial_damage):
     np.testing.assert_allclose(updated.rigid.numpy(), original.histories.numpy(), atol=1e-8)
     if initial_damage < 1:
         assert updated.damage.numpy()[0] > initial_damage
+
+
+@pytest.mark.parametrize('segment_steps', [1, 3, 8])
+def test_cut_checkpoint_preserves_plastic_and_contact_history(split, segment_steps):
+    from scripts.diff_cut_validate import differentiable_tool, reaction_loss, terminal_loss
+
+    cfg, origin, values, history, rows, controls = split
+    model = MaterialTrajectory(cfg, ordered_transfers=True, precision="float64")
+    contact = FixedCutContact(model)
+    frozen = [contact.freeze(row['codes'], row['keys'], row['previous'], row['released'],
+                             cutting=False, rigid_modes=row['rigid_modes'], pair_modes=row['pair_modes'],
+                             yielded=row['yielded']) for row in rows]
+    q = model.array(controls, float)
+    initial = model.state(**values)
+    initial_history = contact.history(**history)
+    # Nonzero stress is a checkpoint state; the first step may compute it from F/Fp.
+    def tool(step):
+        return differentiable_tool(model, q, origin, step * cfg.dt)
+
+    def objective(step, state, h, force, loss):
+        model.launch(reaction_loss, 1, inputs=[force, 1 / len(rows)], outputs=[loss], device=model.device)
+        if step == len(rows) - 1:
+            model.launch(terminal_loss, model.n, inputs=[state.v, state.Fp], outputs=[loss], device=model.device)
+
+    loss = model.zeros(1, float)
+    with wp.Tape() as tape:
+        state, h = initial, initial_history
+        for step, branch in enumerate(frozen):
+            state, h, force = contact.step(state, h, tool(step), branch)
+            objective(step, state, h, force, loss)
+    tape.backward(loss)
+    expected_parameters = {a: a.grad.numpy().copy() for a in (q, model.young, model.yield_stress, contact.friction)}
+    expected_state = {name: getattr(initial, name).grad.numpy().copy() for name in ('x', 'v', 'F', 'Fp')}
+    expected_history = {name: getattr(initial_history, name).grad.numpy().copy() for name in ('rigid', 'pairs', 'damage')}
+    expected_loss = loss.numpy().copy()
+    tape.zero()
+    timings = {}
+    result = contact.checkpoint_vjp(initial, initial_history, frozen, segment_steps, tool, objective,
+                                    parameters=(q,), timings=timings)
+    np.testing.assert_allclose(result.loss.numpy(), expected_loss, atol=2e-7)
+    for a, expected in expected_parameters.items():
+        np.testing.assert_allclose(result.parameter_gradients[a], expected, rtol=2e-4, atol=2e-6)
+    for name, expected in expected_state.items():
+        np.testing.assert_allclose(getattr(result.initial_gradient, name).numpy(), expected, rtol=3e-4, atol=1e-5)
+    for name, expected in expected_history.items():
+        np.testing.assert_allclose(getattr(result.history_gradient, name).numpy(), expected, rtol=3e-4, atol=1e-5)
+    assert timings['recompute_max_abs']['Fp'] < 1e-5
+    assert timings['recompute_max_abs']['stress'] < 0.03

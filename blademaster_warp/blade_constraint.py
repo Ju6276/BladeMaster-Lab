@@ -228,7 +228,7 @@ class BladeConstraint:
         self.solver = solver
 
         def zeros(n, dtype):
-            return wp.zeros(n, dtype=dtype, device=solver.device)
+            return wp.zeros(n, dtype=solver._dtype(dtype), device=solver.device)
 
         for name in ("side", "rhs", "bound", "impulse", "extrapolated"):
             setattr(self, name, zeros(solver.n, float))
@@ -243,7 +243,11 @@ class BladeConstraint:
         self.residual = zeros(1, float)
         self.batches = zeros(1, int)
         self.refine = zeros(1, int)
-        wp.load_module(module=__name__, device=solver.device)
+        module = __name__
+        if solver.precision == "float64":
+            from .precision import double_kernel
+            module = double_kernel(prepare).module.name
+        wp.load_module(module=module, device=solver.device)
 
     def scatter(self, impulses):
         s = self.solver

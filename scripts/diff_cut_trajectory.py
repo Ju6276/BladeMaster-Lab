@@ -47,7 +47,8 @@ def motion(cfg, elapsed, controls):
 def tool_at(model, q, step):
     _, base, speed, origin = motion(model.config, step * model.config.dt, [0, 1, 1])
     position, velocity = model.zeros(1, wp.vec3), model.zeros(1, wp.vec3)
-    model.launch(path_motion, 1, inputs=[q, wp.vec3(*base), wp.vec3(*speed), wp.vec3(*origin)],
+    vector = wp.vec3d if model.precision == "float64" else wp.vec3
+    model.launch(path_motion, 1, inputs=[q, vector(*base), vector(*speed), vector(*origin)],
               outputs=[position, velocity], device=model.device)
     return Tool(position, velocity, model.array([[0, 0, 0, 1]], wp.quat, False), model.zeros(1, wp.vec3, False))
 
@@ -75,8 +76,9 @@ def freeze_archive(contact, archive):
     return frozen
 
 
-def record(cfg, controls, duration, output, frame_stride, ordered_transfers=False, precision="float32"):
-    original = Solver(cfg)
+def record(cfg, controls, duration, output, frame_stride, ordered_transfers=False, precision="float32",
+           reference_precision="float32"):
+    original = Solver(cfg, precision=reference_precision)
     port = ExternalToolPort(original)
     model = MaterialTrajectory(cfg, ordered_transfers=ordered_transfers, precision=precision)
     contact = FixedCutContact(model)
@@ -266,6 +268,7 @@ def main():
     parser.add_argument('--render-only', action='store_true')
     parser.add_argument('--ordered-transfers', action='store_true')
     parser.add_argument('--precision', choices=['float32', 'float64'], default='float32')
+    parser.add_argument('--reference-precision', choices=['float32', 'float64'], default='float32')
     parser.add_argument('--epsilons', type=float, nargs='+', default=[])
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -293,9 +296,11 @@ def main():
             parser.error("Step, duration and frame stride must be positive")
         controls = np.asarray(args.controls)
         model, contact, initial, history, frozen, forward = record(
-            cfg, controls, args.duration, args.output, args.frame_stride, args.ordered_transfers, args.precision)
+            cfg, controls, args.duration, args.output, args.frame_stride, args.ordered_transfers, args.precision,
+            args.reference_precision)
         report = dict(provenance=git_revision(), command=sys.argv, config=asdict(cfg),
-                      controls=controls.tolist(), ordered_transfers=args.ordered_transfers, precision=args.precision, forward=forward)
+                      controls=controls.tolist(), ordered_transfers=args.ordered_transfers, precision=args.precision,
+                      reference_precision=args.reference_precision, forward=forward)
         report_path.write_text(json.dumps(report, indent=2) + '\n')
     if args.backward:
         q = model.array(controls, float)

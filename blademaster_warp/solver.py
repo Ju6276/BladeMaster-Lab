@@ -166,7 +166,14 @@ PAIR_LIST_LANES = 16
 
 
 class Solver:
-    def __init__(self, config=Config(), device="cuda:0"):
+    precision = "float32"
+
+    def __init__(self, config=Config(), device="cuda:0", *, precision="float32"):
+        if precision not in ("float32", "float64"):
+            raise ValueError("Solver precision must be float32 or float64")
+        if precision == "float64" and config.pair_search == "hash":
+            raise ValueError("Double-precision reference runs use list, auto or all pair search")
+        self.precision = precision
         self.config = config
         self.device = wp.get_device(device)
         if not self.device.is_cuda:
@@ -211,10 +218,10 @@ class Solver:
         )
 
         def array(data, dtype):
-            return wp.array(np.asarray(data), dtype=dtype, device=self.device)
+            return wp.array(np.asarray(data), dtype=self._dtype(dtype), device=self.device)
 
         def zeros(shape, dtype):
-            return wp.zeros(shape, dtype=dtype, device=self.device)
+            return wp.zeros(shape, dtype=self._dtype(dtype), device=self.device)
 
         self.ref = array(self.reference, wp.vec3)
         self.x = array(self.reference, wp.vec3)
@@ -346,8 +353,17 @@ class Solver:
                 m.compute_stress, self.n, [self.F, self.Fp, self.mu, self.lam, self.stress, self.errors]
             )
 
+    def _dtype(self, dtype):
+        if self.precision == "float64":
+            from .precision import double_type
+            return double_type(dtype)
+        return dtype
+
     def launch(self, kernel, dim, args):
-        wp.launch(kernel, dim, args, device=self.device)
+        if self.precision == "float64":
+            from .precision import launch_double
+            return launch_double(kernel, dim, inputs=args, device=self.device)
+        return wp.launch(kernel, dim, args, device=self.device)
 
     def material_step(self):
         cfg = self.config
@@ -976,7 +992,8 @@ class Solver:
         """
         if self.config.external_tool:
             raise ValueError("Use ExternalToolPort.advance for an externally owned tool")
-        targets = np.ascontiguousarray(targets, dtype=np.float32)
+        numpy_dtype = np.float64 if self.precision == "float64" else np.float32
+        targets = np.ascontiguousarray(targets, dtype=numpy_dtype)
         if targets.ndim != 2 or targets.shape[1] != 3 or not np.isfinite(targets).all() or not len(targets):
             raise ValueError("targets must be finite (substeps, 3) edge positions")
         orientations = (
@@ -989,7 +1006,7 @@ class Solver:
         lengths = np.linalg.norm(orientations, axis=1)
         if np.any(lengths < 1.0e-6):
             raise ValueError("Zero quaternion")
-        orientations = np.ascontiguousarray(orientations / lengths[:, None], dtype=np.float32)
+        orientations = np.ascontiguousarray(orientations / lengths[:, None], dtype=numpy_dtype)
         cut_index = self._set_cut(cut_index)
         if not graph:
             for target, orientation in zip(targets, orientations):
@@ -1018,18 +1035,23 @@ class Solver:
         substeps; their arrays must stay the same between replays. `tag` names
         that wrapping in the cache key.
         """
-        targets = np.ascontiguousarray(targets, dtype=np.float32)
+        numpy_dtype = np.float64 if self.precision == "float64" else np.float32
+        targets = np.ascontiguousarray(targets, dtype=numpy_dtype)
         if orientations is None:
             orientations = np.tile([0.0, 0.0, 0.0, 1.0], (len(targets), 1))
         key = (len(targets), bool(cutting), cut_index, self.step_count % 2, self.single_field, tag)
         if key not in self._batches:
             start = time.perf_counter()
             # Eager warmup must have loaded all modules before capture.
-            wp.load_module(module=m, device=self.device)
-            wp.load_module(module=c, device=self.device)
-            wp.load_module(module=tool, device=self.device)
-            buffer = wp.array(targets, dtype=wp.vec3, device=self.device)
-            rotations = wp.array(orientations, dtype=wp.quat, device=self.device)
+            if self.precision == "float64":
+                from .precision import double_kernel
+                for kernel in (m.p2g, c.clear_step, tool.step):
+                    wp.load_module(module=double_kernel(kernel).module.name, device=self.device)
+            else:
+                for module in (m, c, tool):
+                    wp.load_module(module=module, device=self.device)
+            buffer = wp.array(targets, dtype=self._dtype(wp.vec3), device=self.device)
+            rotations = wp.array(orientations, dtype=self._dtype(wp.quat), device=self.device)
             count = self.step_count
             try:
                 with wp.ScopedCapture(device=self.device) as capture:

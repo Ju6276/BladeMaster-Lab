@@ -92,13 +92,14 @@ def test_elastic_checkpoint_rejects_plastic_state():
 
 @pytest.mark.parametrize("spacing", [0.006, 0.004])
 @pytest.mark.parametrize("steps", [1, 12])
-def test_multifield_plastic_forward(spacing, steps):
+@pytest.mark.parametrize("precision", ["float32", "float64"])
+def test_multifield_plastic_forward(spacing, steps, precision):
     cfg = config(spacing)
-    model = MaterialTrajectory(cfg)
+    model = MaterialTrajectory(cfg, precision=precision)
     values = initial_values(model)
     state = model.state(*values)
     grid = model.topology(cut_codes(model))
-    original = Solver(cfg)
+    original = Solver(cfg, precision=precision)
     for name, value in zip(("x", "v", "F", "Fp"), values):
         getattr(original, name).assign(value)
     original.codes.assign(cut_codes(model))
@@ -108,6 +109,8 @@ def test_multifield_plastic_forward(spacing, steps):
         original.impulses.zero_()
         original.material_step()
     for name, tolerance in (("x", 1e-6), ("v", 1e-4), ("F", 1e-5), ("Fp", 1e-5)):
+        if precision == "float64":
+            tolerance = 1e-10
         error = np.max(np.abs(getattr(state, name).numpy() - getattr(original, name).numpy()))
         assert error < tolerance, (name, error)
     assert not original.errors.numpy().any()

@@ -7,7 +7,8 @@ import pytest
 import warp as wp
 
 from blademaster_warp.differentiable_material import MaterialTrajectory, hencky_project
-from blademaster_warp.solver import Config
+from blademaster_warp.solver import Config, Solver
+from blademaster_warp.coupling import ExternalToolPort, ToolState
 
 
 @wp.kernel
@@ -72,3 +73,24 @@ def test_ordered_and_atomic_transfers_agree():
     for name, tolerance in (('x', 1e-6), ('v', 1e-4), ('F', 1e-5), ('Fp', 1e-5)):
         np.testing.assert_allclose(getattr(states[0], name).numpy(), getattr(states[1], name).numpy(),
                                    rtol=0, atol=tolerance)
+
+
+def test_double_reference_coupling_graph_matches_eager():
+    cfg = Config(size=(.012, .012, .012), grid_spacing=.006, dt=1.5625e-5,
+                 external_tool=True, blade_grid_constraint=True, contact_reference_dt=2.5e-5,
+                 blade_half_size=(.0005, .01, .01))
+    tool = ToolState([.0063, 0, .006], [0, 0, 0, 1], [-.05, 0, 0], [0, 0, 0])
+    values = []
+    for graph in (False, True):
+        solver = Solver(cfg, precision='float64')
+        port = ExternalToolPort(solver, record_trajectory=True)
+        assert solver.x.dtype == wp.vec3d and port.packed.dtype == wp.float64
+        forces = []
+        for _ in range(4):
+            result = port.advance(tool, 3 * cfg.dt, cutting=False, graph=graph)
+            forces.append(result.force_n)
+        values.append(dict(x=solver.x.numpy(), v=solver.v.numpy(), F=solver.F.numpy(),
+                           force=np.asarray(forces), tool=port.trajectory))
+    assert np.max(np.abs(values[0]['force'])) > 1e-4
+    for name in values[0]:
+        np.testing.assert_allclose(values[0][name], values[1][name], rtol=1e-10, atol=1e-12)

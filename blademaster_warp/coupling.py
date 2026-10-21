@@ -77,14 +77,15 @@ class ExternalToolPort:
         if not solver.config.external_tool:
             raise ValueError("ExternalToolPort requires Config(external_tool=True)")
         self.solver = solver
-        self.packed = wp.zeros(49, dtype=float, device=solver.device)
-        self.result = wp.zeros(10, dtype=float, device=solver.device)
+        scalar = solver.x.dtype._wp_scalar_type_
+        self.packed = wp.zeros(49, dtype=scalar, device=solver.device)
+        self.result = wp.zeros(10, dtype=scalar, device=solver.device)
         self.record_trajectory = record_trajectory
         self.trajectory = None
         self.trajectory_times = None
         self._results = {}
         self._replays = {}
-        self._pack = np.empty(49, np.float32)
+        self._pack = np.empty(49, np.float64 if scalar == wp.float64 else np.float32)
         self._pending = None
         self.timing_s = dict(submission=0.0, completion_and_readback=0.0)
 
@@ -116,7 +117,7 @@ class ExternalToolPort:
         samples = 2 if held_pose else steps + 1
         if self.record_trajectory:
             if steps not in self._results:
-                self._results[steps] = wp.zeros(10 + 7 * samples, dtype=float, device=s.device)
+                self._results[steps] = wp.zeros(10 + 7 * samples, dtype=self.packed.dtype, device=s.device)
             self.result = self._results[steps]
         pack = self._pack
         pack[0:3] = state.position

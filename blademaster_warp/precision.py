@@ -15,8 +15,10 @@ import warp as wp
 
 
 _TYPES = {float: wp.float64, wp.float32: wp.float64, wp.vec2: wp.vec2d,
-          wp.vec3: wp.vec3d, wp.mat33: wp.mat33d, wp.quat: wp.quatd}
-_NAMES = {'float32': 'float64', 'vec2': 'vec2d', 'vec3': 'vec3d', 'mat33': 'mat33d', 'quat': 'quatd'}
+          wp.vec3: wp.vec3d, wp.mat33: wp.mat33d, wp.quat: wp.quatd,
+          wp.spatial_vector: wp.spatial_vectord}
+_NAMES = {'float32': 'float64', 'vec2': 'vec2d', 'vec3': 'vec3d', 'mat33': 'mat33d', 'quat': 'quatd',
+          'spatial_vector': 'spatial_vectord'}
 _MODULES = {}
 
 

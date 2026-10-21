@@ -60,14 +60,15 @@ def numpy_tool(origin, elapsed, controls):
 
 def differentiable_tool(model, controls, origin, elapsed):
     position, velocity = model.zeros(1, wp.vec3), model.zeros(1, wp.vec3)
-    model.launch(knife_motion, 1, inputs=[controls, wp.vec3(*origin), elapsed],
+    vector = wp.vec3d if model.precision == "float64" else wp.vec3
+    model.launch(knife_motion, 1, inputs=[controls, vector(*origin), elapsed],
               outputs=[position, velocity], device=model.device)
     return Tool(position, velocity, model.array([[0, 0, 0, 1]], wp.quat, False),
                 model.zeros(1, wp.vec3, False))
 
 
-def capture_window(cfg, prefix, steps, controls):
-    original = Solver(cfg)
+def capture_window(cfg, prefix, steps, controls, precision="float32"):
+    original = Solver(cfg, precision=precision)
     port = ExternalToolPort(original)
     origin = np.array([0.0004, 0.0, 0.027 + cfg.blade_half_size[2]])
     for i in range(prefix):
@@ -166,11 +167,12 @@ def evaluate(cfg, origin, prefix, values, history, rows, controls, backward=Fals
 
 def run_case(spacing, material, prefix, steps, natural_branches=False,
              control_epsilons=(0.01, 0.003, 0.001), parameters=None, repeats=1,
-             grid_constraint=False, capture_path=None, precision="float32", ordered_transfers=False):
+             grid_constraint=False, capture_path=None, precision="float32", ordered_transfers=False,
+             reference_precision="float32"):
     evaluate_case = partial(evaluate, precision=precision, ordered_transfers=ordered_transfers)
     cfg = replace(configuration(spacing, material), blade_grid_constraint=grid_constraint)
     controls = np.array([0.0, 1.0, 0.4])
-    origin, values, history, rows, errors = capture_window(cfg, prefix, steps, controls)
+    origin, values, history, rows, errors = capture_window(cfg, prefix, steps, controls, reference_precision)
     recorded = evaluate_case(cfg, origin, prefix, values, history, rows, controls)
     if not natural_branches:
         for row, (rigid_modes, pair_modes, yielded) in zip(rows, recorded["contact_modes"]):
@@ -179,7 +181,8 @@ def run_case(spacing, material, prefix, steps, natural_branches=False,
         capture_path.parent.mkdir(parents=True, exist_ok=True)
         saved = {f"initial_{name}": value for name, value in values.items()}
         saved.update({f"history_{name}": value for name, value in history.items()})
-        saved['metadata'] = json.dumps(dict(config=asdict(cfg), origin=origin.tolist(), prefix=prefix,
+        saved['metadata'] = json.dumps(dict(config=asdict(cfg), reference_precision=reference_precision,
+                                            origin=origin.tolist(), prefix=prefix,
                                             controls=controls.tolist(), steps=steps))
         for i, row in enumerate(rows):
             for name, value in row.items():
@@ -241,7 +244,7 @@ def run_case(spacing, material, prefix, steps, natural_branches=False,
     del base["branch_modes"]
     del base["contact_modes"]
     return dict(config=asdict(cfg), material=material, prefix_steps=prefix, steps=steps,
-                precision=precision, ordered_transfers=ordered_transfers,
+                precision=precision, ordered_transfers=ordered_transfers, reference_precision=reference_precision,
                 controls=controls.tolist(), local_branch_policy="natural" if natural_branches else "recorded",
                 repeat_losses=repeat_losses, repeat_gradients=repeat_gradients,
                 original_errors=errors, initial_coded_particles=int(np.count_nonzero(rows[0]["codes"])),
@@ -264,6 +267,7 @@ def main():
     parser.add_argument("--grid-constraint", action="store_true")
     parser.add_argument("--ordered-transfers", action="store_true")
     parser.add_argument("--precision", choices=["float32", "float64"], default="float32")
+    parser.add_argument("--reference-precision", choices=["float32", "float64"], default="float32")
     parser.add_argument("--control-epsilons", type=float, nargs="+", default=[0.01, 0.003, 0.001])
     parser.add_argument("--parameters", nargs="+", choices=["young_modulus", "yield_stress", "friction", "controls"])
     parser.add_argument("--repeats", type=int, default=1)
@@ -281,7 +285,7 @@ def main():
                 row = run_case(spacing, material, prefix, args.steps, args.natural_branches,
                                args.control_epsilons, args.parameters, args.repeats, args.grid_constraint,
                                args.output / "captures" / f"{spacing}_{material}_{prefix}.npz",
-                               args.precision, args.ordered_transfers)
+                               args.precision, args.ordered_transfers, args.reference_precision)
                 report["cases"].append(row)
                 (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
                 print(json.dumps(dict(spacing=spacing, material=material, prefix=prefix,

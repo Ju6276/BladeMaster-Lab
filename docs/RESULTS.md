@@ -495,7 +495,19 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory \
 
 `solver_comparison.mp4` 为 **0.1 倍速、211 帧**；命令增加 `--render-only --playback-speed 1` 生成 `solver_comparison_1x.mp4`（**22 帧、20 fps**）。正常速度的六次循环版通过 `ffmpeg -stream_loop 5 -i solver_comparison_1x.mp4 -c copy -movflags +faststart solver_comparison_1x_loop.mp4` 生成。两版视频在 Mac 的 `~/Desktop/BladeMaster_videos/M4_original_vs_differentiable[_1x]_05a9327.mp4`。
 
+### M5：事件定位与自然切割扫描
+
+2026-10-21，提交 `26c9fe5`，RTX 4090，dirty=false。命令 `PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_events --spacing <.006|.004> --duration .24 --output runs/m5_26c9fe5_events_<6|4>mm`。两网格各 12 例，扫描刀位 ±0.05/±2 mm、下刀行程 ±1%、G_c 的 0.01/0.1/0.99/1.01/10 倍；粒子数 **1452/4892**，步长 **15.625/13.158 μs**。
+
+G_c=700 J/m² 时，两网格均有 **0** 个损伤释放事件，最大损伤 **0.13835/0.19641**，几何分侧得到 **726/726、2446/2446** 两块。G_c=70 时释放 **4/5** 个粒子，G_c=7 时释放 **4/9** 个。6 mm 下 G_c±1% 的终态位置距离差 ≤ **3.13e-16 m**；该区间反力对 G_c 的局部导数为零。
+
+刀向 x 正向偏移 **0.05 mm** 时，两网格分别有 **263/1817** 个粒子的分侧时刻改变，最大变化 **46.875/276.316 μs**，最终分侧集合相同。偏移 **−2 mm** 时切块为 **674/778、2330/2562**，侧码改变 **118/314** 个；6 mm 下还触发 **4** 个损伤释放事件。事件时间和分侧集合分别进入 M5 后续动力学导数。
+
+6/4 mm 的默认刀做功为 **9.596/7.876 mJ**，损伤计功为 **0.34478/0.26292 mJ**。从保存的损伤计算 `threshold × sum(damage)`，默认差值 < **2e-18 J**；G_c=7 时，计功超过截断后损伤对应值 **0.269/0.294 μJ**，来自跨越阈值的子步增量。
+
 ## 测试
+
+2026-10-21，提交 `26c9fe5`：全量 **672 passed、8 skipped、18 subtests passed**，136.72 s。新增 10 项覆盖平面穿越时刻/位置、损伤阈值时刻对刀位/初始损伤/G_c 的导数，以及 G_c 的完整 Tape/分段重算/双档差分。8 项跳过为 CRESSim 上游构建未配置。
 
 2026-10-21，提交 `05a9327`：提交前全量 **662 passed、8 skipped、18 subtests passed**，135.46 s。新增原求解器状态记录、同镜头并排视频与播放速度选项；两档视频已检查下刀、块间接触、横推及退刀帧。
 

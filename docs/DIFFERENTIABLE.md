@@ -40,7 +40,7 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_validate \
 | M3a 接触与摩擦 | 外部刀和砧板接触；独立摩擦历史 | 两个网格，接触建立/脱离、粘滑切换的单侧差分；推压轨迹记录分支变化 | 已完成切换扫描 |
 | M3b 轨迹优化 | 优化工具推压轨迹，使材料达到目标形状 | AD + Adam、FD + 同配置 Adam、CMA-ES，同预算五次初始化 | 4/8/16 控制量、两网格和时域、另一初始刀位的对照完成；长任务完整/分段 AD 在 20 s 内均未达 0.05 mm |
 | M4 固定切割分支 | 固定侧码、相容场交换、接触集合；接入塑性与刀路梯度 | 多场正向一致；E、屈服、摩擦和刀路的方向导数；换材料与刀路 | 已完成：12 个窗口、网格约束、完整状态检查点及 67200 步切割/退刀/推块通过 |
-| M5 切开事件 | 处理损伤阈值、接触集合和拓扑变化的梯度 | 阈值扰动扫描；事件时间导数或平滑方案对照；完整切割轨迹优化 | 进行中：事件定位与 G_c 求导；下一步接入事件后的状态导数 |
+| M5 切开事件 | 处理损伤阈值、接触集合和拓扑变化的梯度 | 阈值扰动扫描；事件时间导数或平滑方案对照；完整切割轨迹优化 | 进行中：事件定位、G_c 求导及两网格 24 例自然扫描完成；下一步接入事件后的状态导数 |
 
 M1–M3 小算例使用 float32，M4 的最终正向和梯度验收使用 float64。正向最大误差目标：位置 1 μm、速度 0.1 mm/s、F/Fp 为 1e-5、刀力 1e-4 N。弹性 E 梯度对至少两档有限差分误差 ≤ 1%，接触梯度 ≤ 2%；接近零的导数同时报告绝对误差。检查点 E 梯度误差 ≤ 0.1%，初始状态 VJP 逐数组比较。
 
@@ -125,17 +125,20 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_events.py -q
 
 ## 下一步
 
-1. M5：处理刀路变化引起的几何侧码、损伤阈值、接触集合与切开时刻变化，比较事件求导与连续损伤/连接过渡方案。改变正向物理的方案独立提交，记录力、损伤、切口和能量差异。
-2. 换初始刀位和刀路，验证切口随动作改变，再做完整香蕉切割的轨迹优化。
+1. M5 动力学：用释放前后不同接触力的短轨迹，接入事件时刻对后续 x/v 和刀力的影响；核对完整 Tape、分段反向和自然事件差分。
+2. M5 拓扑：处理几何侧码和接触集合变化，比较事件求导与连续损伤/连接过渡方案。改变正向物理的方案独立提交，记录力、损伤、切口和能量差异。
+3. 在改变切口位置、切块大小的香蕉刀路上核对梯度，再做完整切割轨迹优化。
 
 切割力网格收敛与阈值/能量核对配合 M5，按 HANDOFF 第 4 节执行。
 
-## 参考实现
+## 参考实现与方法
 
 - [Newton soft body](https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_soft_body.py)：Warp Tape、逐步状态和软体接触优化。
 - [Warp fluid checkpoint](https://github.com/NVIDIA/warp/blob/main/warp/examples/optim/example_fluid_checkpoint.py)：分段重算与 VJP 传递。
 - [DiffTaichi MPM](https://github.com/taichi-dev/difftaichi/blob/master/examples/diffmpm.py)：MPM 时间展开和反向组织。
 - [PlasticineLab MPM](https://github.com/hzaskywalker/PlasticineLab/blob/master/plb/engine/mpm_simulator.py)：参考其 Hencky 塑性投影及自定义 SVD 反向的组织；本项目对完整投影写专用伴随，重复伸长使用有限极限。
 - [Warp 可微文档](https://nvidia.github.io/warp/stable/user_guide/differentiability.html)：数组访问检查、自定义伴随和有限差分检查。
+- [接触梯度与碰撞时刻修正](https://arxiv.org/abs/2305.00092)、[Saltation Matrices](https://arxiv.org/abs/2306.06862)：事件发生时刻与事件前后状态变化的导数。
+- [DiSECt](https://diff-cutting-sim.github.io/)：沿切面的连接逐渐软化，作为连续损伤方案的对照。
 
 首版使用普通 kernel launch；梯度核对通过后再测 CUDA Graph 的前反向调度。

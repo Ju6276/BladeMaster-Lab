@@ -15,7 +15,7 @@ def git_revision():
     try:
         return {
             "commit": git("rev-parse", "HEAD"),
-            "dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
+            "dirty": bool(git("status", "--porcelain", "--untracked-files=normal")),
         }
     except (OSError, subprocess.CalledProcessError):
         return {"commit": None, "dirty": None}

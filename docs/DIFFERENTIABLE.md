@@ -4,6 +4,8 @@
 
 ## 实现与运行
 
+4090 工作目录：`~/Projects/BladeMaster-Warp-diff-20261021`；已运行报告：`runs/diff_clean/report.json`，提交 `1857020`，dirty=false。
+
 - `differentiable.ElasticTrajectory`：纯弹性、未切割的固定参考网格；复用原 P2G 和网格速度 kernel，PIC/FLIP、MUSL 使用独立的下一步数组。
 - 共转应力的正向调用 `material.corotated_stress`；反向通过极分解求导，分母为奇异值之和，覆盖单位阵和重复正伸长。
 - `checkpoint_vjp`：保存分段边界，反向时重算一段，返回初始位置、速度、变形梯度和 E 的 VJP。

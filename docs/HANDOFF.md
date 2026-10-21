@@ -151,6 +151,8 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 
 当前实现：`differentiable.py`、`differentiable_contact.py`。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
 
+4090 可微实验工作树：`~/Projects/BladeMaster-Warp-diff-20261021`，环境复用主仓库的 `.venv`。报告在 `runs/diff_clean/report.json`，数值见 RESULTS 的“可微 TLMPM”。
+
 下一步在 4090 跑长轨迹/显存扫描和接触切换扫描，然后比较 AD + Adam、FD + Adam 与 CMA-ES 的推压轨迹优化。固定事件后，现有反力路径对 G_c 的梯度为零；切割阈值的事件导数在 M5 处理。
 
 ## 6. 参考资料

@@ -32,13 +32,13 @@ def first_side_prefix(cfg):
     raise RuntimeError('No geometric side assignment in the first 0.2 seconds')
 
 
-def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary'):
+def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='lagged'):
     prefix = first_side_prefix(cfg)
     controls = np.array([0., 1., 1.])
     origin, values, saved, rows, _ = capture_window(cfg, prefix, steps, controls, precision='float64')
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
     contact_type = GeometryEventContact if geometry == 'event' else NaturalCutContact
-    c = contact_type(m, release=release)
+    c = contact_type(m, release=release, friction_update=friction_update)
     initial = m.state(**values)
     history = c.history(**saved, codes=rows[0]['codes'], pair_keys=rows[0]['previous'])
     q = m.array(controls, float)
@@ -146,7 +146,8 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary'):
     new_labels = np.count_nonzero(events['codes'][-1] != history.codes.numpy())
     if not new_labels:
         raise RuntimeError('Selected window contains no new side assignments')
-    return dict(config=asdict(cfg), release=release, geometry=geometry, particles=m.n, prefix_steps=prefix,
+    return dict(config=asdict(cfg), release=release, geometry=geometry, friction_update=friction_update,
+                particles=m.n, prefix_steps=prefix,
                 start_time_s=prefix * cfg.dt, steps=steps, duration_s=steps * cfg.dt,
                 newly_labelled_particles=int(new_labels), peak_pairs=max(map(len, events['pairs'])),
                 loss=float(loss.numpy()[0]), gradient_controls=gradient.tolist(),
@@ -164,6 +165,7 @@ def main():
     parser.add_argument('--segment-steps', type=int, nargs='+', default=[16, 32])
     parser.add_argument('--release', choices=['boundary', 'integrated'], default='integrated')
     parser.add_argument('--geometry', choices=['boundary', 'event'], default='boundary')
+    parser.add_argument('--friction-update', choices=['lagged', 'projected'], default='lagged')
     parser.add_argument('--epsilons', type=float, nargs='+', default=[.05, .005, .0005, .00005])
     args = parser.parse_args()
     if (not np.isfinite([*args.spacings, *args.epsilons]).all()
@@ -182,7 +184,8 @@ def main():
                     cfg = replace(cfg, size=(.024, .018, .018))
                 dt = tangent_history_dt(cfg, banana_dt(cfg, spacing))
                 cfg = replace(cfg, dt=dt, flip_reference_dt=dt)
-                row = evaluate(cfg, args.steps, args.release, args.epsilons, args.segment_steps, args.geometry)
+                row = evaluate(cfg, args.steps, args.release, args.epsilons, args.segment_steps,
+                               args.geometry, args.friction_update)
                 row.update(shape=shape, material=material)
                 report['cases'].append(row)
                 (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')

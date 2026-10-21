@@ -18,7 +18,7 @@ def sticking_step(state: wp.array(dtype=wp.vec2), dt: float, gk: float, gc: floa
     history = wp.vec3(dt * state[0][1], 0.0, 0.0)
     mass = float(3.0e-5)
     impulse, updated = branch_penalty(-0.001, v, wp.vec3(0.0, 0.0, 1.0), mass,
-                                      history, dt, 0.1, 0.2, 0.2, gk, gc, 1)
+                                      history, dt, 0.1, 0.2, 0.2, gk, gc, 1, 0)
     result[0] = wp.vec2(v[0] + impulse[0] / mass, updated[0] / dt)
 
 

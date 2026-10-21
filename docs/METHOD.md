@@ -89,6 +89,14 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 `Solver(precision="float64")` 与 `MaterialTrajectory(precision="float64")` 分别运行原正向流程和可微流程。`precision.py` 将同一份 Warp 函数的浮点类型及常量提升到双精度；分支和公式保持相同。原求解器继续使用动态多场注册与场交换，可微流程使用固定分支的稀疏映射；同精度对照检验两套推进结果。
 
+## 摩擦历史的增量与投影
+
+`friction_update="lagged"` 沿用本步旧历史计算试力，再更新或回算历史。静、动摩擦系数相等时，两条分支在粘滑边界的历史差为 `τ v_t`；这是 [Luding 式 18–20](https://www2.msm.ctw.utwente.nl/sluding/PAPERS/LudingC5.pdf) 所写更新顺序的离散结果。
+
+`friction_update="projected"` 采用 [LAMMPS `linear_history`](https://docs.lammps.org/pair_granular.html) 的先增量、后投影顺序：先取 `h_trial = P_t h_old + τ v_t`，再算 `f_trial = −k_t h_trial − c_t v_t`。若 `|f_trial| ≤ μ_s f_n`，保留 `h_trial`；否则令 `f_t = μ_d f_n f_trial/|f_trial|`，回算 `h_new = −(f_t+c_t v_t)/k_t`。在 `μ_s=μ_d` 的边界，两条分支给出相同的力和历史；`μ_s>μ_d` 时保留静动摩擦的力跳变。刀、砧板、粒子对共用该更新，原刚度、阻尼与摩擦系数不变。
+
+固定接触法向、零切向阻尼时，记 `Δh=h_new−h_old`、`Δp=τv_t−Δh`，切向输入功满足 `−f_t·τv_t = Δ(½k_t|h|²) + k_t h_new·Δp + ½k_t|Δh|²`，后两项分别是滑移耗散和离散耗散。自动测试核对该恒等式、粘滑边界连续性、零摩擦系数、力/历史 VJP 及多步砧板接触的检查点。`scripts.diff_natural_validate --friction-update projected` 记录此积分选择并与原求解器对照。
+
 ## 损伤释放的步内积分
 
 `EventCutContact` 使用每粒子阈值 Q = G_c V₀^(2/3) (1−ζ)/ζ（J）。将本步接触核算出的刃向冲量记为 J，正向相对推进速度记为 u，当前损伤为 D；步内恒定力和 u 下，完整步损伤增量为 Ju/Q，剩余断裂功为 R=(1−D)Q。若 Ju≥R，释放时刻 τ=Δt R/(Ju)，保留刃向冲量 R/u，并移除余下的 J−R/u；该步损伤功取 R，损伤变为 1。已释放粒子继续撤除原计功带内的刃向推力。其余方向的冲量和摩擦历史使用现有公式，粒子通过原一阶 MPM 步更新。
@@ -117,6 +125,7 @@ PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定�
 | 传递耗散 | PIC/FLIP 混合 | 默认每步固定比例；步长对照可用 `flip_reference_dt` 固定单位时间的残差阻尼，避免细化步长时同时改变耗散率 |
 | 刀身穿透处理 | 粒子罚接触 | 外部 `hold` 模式补充网格刀面法向约束，见上节 |
 | 接触刚度 | 每步常数 \(s_n\) | 默认按参考步长固定物理刚度，见上节 |
+| 摩擦历史积分 | 用当前历史计算试力，粘住时累加位移，滑动时回算历史 | 默认 `lagged` 相同；M5 可选 `projected` 先累加位移再投影到库仑界限，使相等静动摩擦系数下的分支历史连续，见上节 |
 | 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |
 | 损伤释放积分 | 损伤达到阈值后移除刃口推力 | 原 `Solver` 和 M4 在子步边界切换；M5 `EventCutContact` 根据剩余断裂功积分释放步的刃向冲量，使释放时刻进入状态导数，见上节 |
 | 几何分侧积分 | 子步更新侧码 | `GeometryEventContact` 在粒子进入分侧区域时切分实际推进，按事件时间求导；使用连续的刀后 `2Δx` 区域，原步末查询的 `max(相对推进速度×Δt,0)` 回看扩展由步内穿越查询替代 |

@@ -156,6 +156,8 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
 
 分段时长的 5 项测试覆盖塑性、接触历史、损伤功、活跃网格约束及固定刚度/耗散率。几何事件的 28 项测试覆盖解析自由落体、6/4 mm、20/400 kPa、方块/圆柱、直刀/斜刀/转动刀；从完整材料自然生成两侧不相容场，核对事件时刻、全部粒子状态、E 与刀位的 VJP 和分段重算。自然香蕉窗口的较大刀路扰动仍在接触切换处失败，E1/E2 继续验收。
 
+`--friction-update projected` 将摩擦历史先累加本步位移，再投影到库仑界限。原 `lagged` 顺序在相等静动摩擦系数的粘滑边界产生 `τv_t` 历史跳变；新顺序的力和历史连续。8 项摩擦测试及 24 项转动刀/几何事件组合检查通过，公式与 LAMMPS 对照见 METHOD。自然窗口保留原七档扰动，分别记录梯度、接触集合和粘滑切换。
+
 提交 `acead71` 的 8 个自然分侧窗口正向侧码/接触集合与原求解器一致，16/32 步检查点全部状态重算差为 0。80 组差分中 65 组改变记录事件，49 组导数偏差 >2%、8 组符号相反；跨事件验收失败。详细配置、命令和数字见 RESULTS。
 
 当前已完成 M1/M2 基础验收、M3 计划实验、M4 固定切割分支验收和 M5 局部损伤释放；M3 长推压的 AD 优化在原预算内失败。M4 完整轨迹读取记录的侧码、释放标记和接触对；M5 的 2 ms 释放窗口固定初态、侧码和空粒子对集合。最新固定耗散率实验的两档微扰改变释放步号和刚体接触模式的数量均为 0。完整切割优化及随刀路变化的拓扑状态导数待接入。
@@ -200,5 +202,6 @@ E1 使用几何事件时刻求根及前后分段的实际 TLMPM 积分；E2 继�
 - [DiSECt](https://diff-cutting-sim.github.io/)：沿切面的连接逐渐软化，作为连续损伤方案的对照。
 - [APIC](https://doi.org/10.1145/2766996)：粒子—网格传递的数值耗散及局部仿射速度表示，用于分析当前 PIC/FLIP 的步长敏感性。
 - [NairnMPM PIC damping](https://osupdocs.forestry.oregonstate.edu/index.php?title=Damping_Options#PIC_Damping)：PIC/FLIP 混合与传递残差阻尼的关系；据此实现固定耗散率的步长对照。
+- [LAMMPS tangential history](https://docs.lammps.org/pair_granular.html)：先增量、后库仑投影的摩擦历史积分；M5 用于核对粘滑边界的历史连续性。
 
 首版使用普通 kernel launch；梯度核对通过后再测 CUDA Graph 的前反向调度。

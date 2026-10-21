@@ -39,8 +39,8 @@ class NaturalCutContact(FixedCutContact):
     boundary switch or the within-step impulse integral used by EventCutContact.
     """
 
-    def __init__(self, trajectory, *, release="integrated"):
-        super().__init__(trajectory)
+    def __init__(self, trajectory, *, release="integrated", friction_update='lagged'):
+        super().__init__(trajectory, friction_update=friction_update)
         cfg = trajectory.config
         if cfg.tool_count != 1 or cfg.free_blade:
             raise ValueError("Natural cutting requires one externally prescribed knife")

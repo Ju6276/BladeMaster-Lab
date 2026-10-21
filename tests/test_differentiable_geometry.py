@@ -11,13 +11,13 @@ from blademaster_warp.solver import Config
 from scripts.diff_cut_validate import reaction_loss, terminal_loss
 
 
-def fixture(angle=0., omega=0., spacing=.006, shape='block', young=20000, seed=7):
+def fixture(angle=0., omega=0., spacing=.006, shape='block', young=20000, seed=7, friction_update='lagged'):
     cfg = Config(size=(.012, .012, .012), grid_spacing=spacing, dt=.0002,
                  sampling_seed=seed, shape=shape, young_modulus=young, yield_stress=.01 * young,
                  external_tool=True, blade_grid_constraint=False, blade_bevel_height=.005,
                  contact_reference_dt=.0002, flip_reference_dt=.0002)
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
-    c = GeometryEventContact(m)
+    c = GeometryEventContact(m, friction_update=friction_update)
     x = m.reference + [0, 0, .03]
     velocity = np.random.default_rng(3).normal(scale=.03, size=x.shape)
     initial, history = m.state(x=x, v=velocity), c.history()
@@ -29,11 +29,13 @@ def fixture(angle=0., omega=0., spacing=.006, shape='block', young=20000, seed=7
 
 @pytest.mark.parametrize('angle,omega', [(0., 0.), (.2, .5)])
 @pytest.mark.parametrize('parameter', ['position', 'velocity', 'x'])
+@pytest.mark.parametrize('friction_update', ['lagged', 'projected'])
 @pytest.mark.parametrize('spacing,shape,young,seed', [(.006, 'block', 20000, 7), (.004, 'block', 400000, 7),
                                                      (.006, 'cylinder', 20000, 7), (.006, 'block', 20000, 0)])
-def test_event_time_and_state_derivatives(angle, omega, parameter, spacing, shape, young, seed, monkeypatch):
+def test_event_time_and_state_derivatives(angle, omega, parameter, spacing, shape, young, seed,
+                                         friction_update, monkeypatch):
     monkeypatch.setattr(wp.config, 'verify_autograd_array_access', True)
-    m, c, initial, history, tool = fixture(angle, omega, spacing, shape, young, seed)
+    m, c, initial, history, tool = fixture(angle, omega, spacing, shape, young, seed, friction_update)
 
     def evaluate():
         state, h, force = c.step(initial, history, tool)

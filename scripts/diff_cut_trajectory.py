@@ -206,8 +206,28 @@ def render(directory):
     surface = SurfaceRecorder(geometry, None, embedding_backend='cuda', ccd_backend='cuda')
     board = dict(size_mm=[190, 130, 8], center_mm=[0, 0, -4])
     scenes = [ReplayScene(asdict(cfg), board, 640, 600, style='paper') for _ in range(2)]
+    corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+    corners = corners * np.asarray(cfg.blade_half_size)
+    rotations = frames['tool'][:, 3:]
+    cross = 2 * np.cross(rotations[:, None, :3], corners[None, :, :])
+    rotated = (corners[None, :, :] + rotations[:, None, 3:] * cross
+               + np.cross(rotations[:, None, :3], cross))
+    tool_points = rotated + frames['tool'][:, None, :3]
+    points = 1000 * np.concatenate((frames['x'].reshape(-1, 3), tool_points.reshape(-1, 3)))
     for scene in scenes:
-        scene.renderer.GetActiveCamera().SetParallelScale(70)
+        camera = scene.renderer.GetActiveCamera()
+        forward = np.asarray(camera.GetDirectionOfProjection())
+        right = np.cross(forward, camera.GetViewUp())
+        right /= np.linalg.norm(right)
+        basis = np.array([right, np.cross(right, forward), forward])
+        projected = points @ basis.T
+        low, high = projected.min(axis=0), projected.max(axis=0)
+        center = (low + high) / 2 @ basis
+        distance = np.linalg.norm(np.asarray(camera.GetPosition()) - camera.GetFocalPoint())
+        camera.SetFocalPoint(*center)
+        camera.SetPosition(*(center - distance * forward))
+        half_width, half_height = (high - low)[:2] / 2
+        camera.SetParallelScale(max(half_height, half_width / (640 / 600)) + 1000 * cfg.grid_spacing)
     font = ImageFont.truetype('DejaVuSans.ttf', 22)
     small = ImageFont.truetype('DejaVuSans.ttf', 18)
     filename = directory / 'differentiable_cutting.mp4'

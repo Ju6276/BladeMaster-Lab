@@ -684,3 +684,61 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
 - `python runs/audit_20261022/event_condition.py`：基准步长及 dt/128 各 **68** 个入区根，`|∂g/∂τ|` 分别为 **0.11914–0.14325 / 0.11915–0.14308 m/s**，本窗口没有接近零的穿越速度。下一步比较事件段的应力更新时间与宏步分割相位，核对材料推进的状态/梯度收敛阶，再逐项恢复接触切换。
 
 报告比较来源修正为 `03fd308`：checkpoint-only 首段作为梯度基准，对应误差字段为 `null`；后续段数或完整 Tape 的比较记录 `gradient_reference`。全量测试仍为 **785 passed、8 skipped、18 subtests passed**，147.34 s。
+
+### M5 E1：中点积分与步内穿越（2026-10-22）
+
+`0a8fd13`：事件分段采用显式中点 RK2，摩擦历史在阶段终点按库仑界限投影。固定材料、接触刚度和 PIC 速率的 **27** 档时间步对照中，最细相邻两档的三项刀路梯度相对差最大 **0.1279%**，材料梯度最大 **0.06259%**；位置最大分量差 **1.041 nm**，事件时刻差 **0.2691 ns**，最终侧码、释放、接触对及事件粒子集合一致。自然差分最大误差 **0.003862%**，检查点状态重算差 **0**。
+
+| 材料 / 网格 | 时间网格相位 | dt/32 → dt/64 行程梯度 | 相对差 |
+|---|---:|---:|---:|
+| banana / 6 mm | 0 | −0.02506961 → −0.02504539 | 0.09661% |
+| banana / 6 mm | 1/4 | −0.02504662 → −0.02504461 | 0.008040% |
+| banana / 6 mm | 1/2 | −0.02512598 → −0.02509385 | 0.1279% |
+| banana / 4 mm | 0 | 0.21444212 → 0.21443270 | 0.004393% |
+| soft / 6 mm | 0 | 0.006233852 → 0.006233193 | 0.01058% |
+| plastic / 6 mm | 0 | 0.008598364 → 0.008605933 | 0.08796% |
+| soft / 4 mm | 0 | 0.002880771 → 0.002880311 | 0.01597% |
+| plastic / 4 mm | 0 | 0.007109533 → 0.007109035 | 0.007006% |
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
+  --output runs/e1_0a8fd13_phases --spacings .006 --materials banana \
+  --dt-divisors 8 16 32 64 --phases 0 .25 .5 --adjoint checkpoint \
+  --segment-steps 32 --epsilons 5e-9 --integration midpoint
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
+  --output runs/e1_0a8fd13_refine_4mm --spacings .004 --materials banana \
+  --dt-divisors 16 32 64 --adjoint checkpoint --segment-steps 32 \
+  --parameters knife_depth_scale --epsilons 5e-9 --integration midpoint
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
+  --output runs/e1_0a8fd13_refine_materials --spacings .006 .004 --materials soft plastic \
+  --dt-divisors 16 32 64 --adjoint checkpoint --segment-steps 32 \
+  --parameters knife_depth_scale --epsilons 5e-9 --integration midpoint
+```
+
+`7419b30`：候选查询加入 RK2 二次位置延拓及旋转分段搜索。抛物线粒子、半圈刀和整圈刀的两端均在区外、步内进入再离开案例通过，事件时刻及导数与解析式/独立求根对照。粘着接触振子与矩阵指数解相比，步长减半的状态和梯度误差均下降 **>3.8 倍**；滑动接触符合恒定库仑加速度。全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**820 passed、8 skipped、18 subtests passed**，201.68 s。8 项跳过为 CRESSim 上游构建。以上正式报告均为 dirty=false，运行于 RTX 4090。
+
+同提交的 **8/8** 自然窗口，每项刀路梯度均有至少两档差分误差 ≤2%，最差第二档 **0.0003088%**；三档局部扰动共 **48** 组的最大误差 **0.08092%**。完整 Tape 与 16/32 步检查点的控制量/初始位置梯度最大差 **4.09e-14/2.12e-12**，状态重算差 **0**，损伤功平衡误差 ≤**9.75e-20 J**。包含大扰动的全部 **128** 组中，**35** 组误差 >2%、**2** 组反号；反号均在行程 ±5%，同时改变分侧与接触集合。E2 将接触建立/脱离及历史切换分解为单事件，核对连续性和单侧导数，区分有限扰动的非线性与状态跳变。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/e1_7419b30_materials --geometry event --integration midpoint \
+  --friction-update projected --spacings .006 .004 --materials banana soft plastic \
+  --epsilons .05 .005 .0005 .00005 .000005 .0000005 .00000005 .000000005 \
+  --segment-steps 16 32
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/e1_7419b30_shapes --geometry event --integration midpoint \
+  --friction-update projected --spacings .006 --materials banana --shapes block cylinder \
+  --epsilons .05 .005 .0005 .00005 .000005 .0000005 .00000005 .000000005 \
+  --segment-steps 16 32
+```
+
+`7419b30` 同一 6 mm 香蕉窗口、相位 0 的 **dt/64→dt/128** 行程梯度为 **−0.02504539→−0.02505073**，相差 **0.02130%**（`d3124a0` 同两档为 16.76%）；刀位梯度差 **0.0003992%**，位置差 **0.06026 nm**，事件时刻差 **0.05289 ns**。最终侧码、释放、接触对及事件粒子集合一致。
+
+三个时间网格相位 **0/1⁄4/1⁄2**、三档步长共 **9** 档复测，dt/128 行程梯度分别为 **−0.02505073/−0.02505046/−0.02506833**；相邻 dt/64→dt/128 的相对差分别为 **0.02130%/0.02335%/0.1017%**，同一最细步长的相位间差 **0.07128%**。刀路自然差分最大误差 **0.001385%**，材料梯度的最细两档相对差 ≤**0.002841%**，状态重算差 **0**，损伤功平衡误差 ≤**1.02e-18 J**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
+  --output runs/e1_7419b30_refine --spacings .006 --materials banana \
+  --dt-divisors 32 64 128 --phases 0 .25 .5 --adjoint checkpoint \
+  --segment-steps 32 --epsilons 5e-9 --integration midpoint
+```

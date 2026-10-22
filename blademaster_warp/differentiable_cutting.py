@@ -483,7 +483,11 @@ class FixedCutContact(PrescribedContact):
             current_arrays = arrays(current, h)
             if timings is not None:
                 for name, expected_array in arrays(expected, expected_history).items():
-                    delta = np.abs(current_arrays[name].numpy() - expected_array.numpy())
+                    actual_value = current_arrays[name].numpy()
+                    expected_value = expected_array.numpy()
+                    if not np.isfinite(actual_value).all() or not np.isfinite(expected_value).all():
+                        raise FloatingPointError(f'Nonfinite checkpoint {name} at step {last}')
+                    delta = np.abs(actual_value - expected_value)
                     error = float(delta.max()) if delta.size else 0.0
                     measured['recompute_max_abs'][name] = max(measured['recompute_max_abs'].get(name, 0.0), error)
                 if h.codes is not None:

@@ -905,3 +905,20 @@ E3 汇总：上述 `fb379d4`、`39741bf`、`a55b185` 的 **50 组自然差分全
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest tests -q --tb=short
 ```
+
+### 2026-10-22：M5 E4 完整暂停续切与平行两刀
+
+`8d35d5c`，RTX 4090、dirty=false，**6 mm、1452 粒子、G_c=700**。暂停续切 **0.74 s / 47360 步**，最终 **726/726** 两块；第一刀横移/深度各两档自然差分共 **4** 组，最大误差 **0.01160%**。暂停、退刀和再次进入阶段的损伤总和保持 **0.5706745558166016**。
+
+平行两刀 **1.04 s / 66560 步**，最终 **380/648/424** 三块；第一刀控制量到第二刀及末端目标的 **4** 组自然差分最大误差 **0.1855%**。第一刀释放 **1** 个粒子，第二刀当前损伤按规则重置，旧切口侧码逐步核对通过。
+
+两任务的 **32/127 步 CPU 检查点**连续状态重算差均为 **0**，刀路梯度最大差 **5.84e-16**，初态位置梯度最大差 **7.43e-13**。暂停损伤变化 **0**，损伤计功平衡误差 ≤**5.64e-18 J**。独立正向耗时 **248.35/359.94 s**，峰值 CUDA 数组内存 **3.561/3.180 GiB**。报告和末态数组的有限数检查通过。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate \
+  --output runs/e4_8d35d5c/resume --cases resume --spacings .006 \
+  --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
+PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate \
+  --output runs/e4_8d35d5c/two-cuts --cases two-cuts --spacings .006 \
+  --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
+```

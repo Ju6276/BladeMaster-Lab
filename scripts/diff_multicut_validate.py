@@ -148,6 +148,20 @@ def multicut_path(cfg, name):
                    np.asarray(indices), np.asarray(basis), objective_start)
 
 
+def validate_differences(rows, controls, tolerance=.02):
+    for control in controls:
+        selected = [row for row in rows if row['parameter'] == control]
+        values = [[row[key] for key in ('epsilon', 'ad', 'fd', 'left_fd', 'right_fd', 'relative_error')]
+                  for row in selected]
+        if not selected or not np.isfinite(values).all():
+            raise RuntimeError(f'Missing or nonfinite finite differences for {control}')
+        epsilons = {row['epsilon'] for row in selected}
+        if len(epsilons) < 2 or min(epsilons) <= 0:
+            raise RuntimeError(f'Two distinct positive perturbations are required for {control}')
+        if any(row['relative_error'] < 0 or row['relative_error'] > tolerance for row in selected):
+            raise RuntimeError(f'Natural finite-difference error exceeds {tolerance:g} for {control}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -165,6 +179,8 @@ def main():
         numbers.append(args.cutting_energy)
     if not np.isfinite(numbers).all() or min(numbers) <= 0:
         parser.error('Spacings, segment lengths, perturbations and fracture energy must be positive and finite')
+    if len(set(args.epsilons)) < 2:
+        parser.error('Provide at least two distinct finite-difference perturbations')
     args.output.mkdir(parents=True, exist_ok=True)
     report = dict(provenance=git_revision(), command=sys.argv, cases=[])
     for spacing in args.spacings:
@@ -187,7 +203,10 @@ def main():
                 stem = f'{name}_{material}_h{spacing:g}'
                 np.savez_compressed(args.output / f'{stem}.npz', **arrays)
                 report['cases'].append(row)
-                (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+                (args.output / 'report.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
+                validate_differences(row['finite_difference'], path.control_names)
+                if not np.isfinite(row['pause_damage_max_abs']) or row['pause_damage_max_abs'] != 0:
+                    raise RuntimeError('Damage changed while cutting was paused')
                 print(json.dumps(dict(case=stem, loss=row['loss'], pieces=row['final_piece_sizes'],
                     max_fd_error=max(entry['relative_error'] for entry in row['finite_difference']))), flush=True)
 

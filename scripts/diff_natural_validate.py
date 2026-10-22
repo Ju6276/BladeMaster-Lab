@@ -86,6 +86,31 @@ def time_edges(steps, dt, phase, start, trajectory, knots=None):
     return edges
 
 
+def difference_result(parameter, epsilon, ad, baseline_loss, losses):
+    if len(losses) != 2 or not np.isfinite([epsilon, ad, baseline_loss, *losses]).all() or epsilon <= 0:
+        raise FloatingPointError(f'Invalid finite-difference inputs for {parameter}, epsilon={epsilon}')
+    fd = (losses[1] - losses[0]) / (2 * epsilon)
+    left = (baseline_loss - losses[0]) / epsilon
+    right = (losses[1] - baseline_loss) / epsilon
+    error = abs(ad - fd) / max(abs(ad), abs(fd), 1e-12)
+    if not np.isfinite([fd, left, right, error]).all():
+        raise FloatingPointError(f'Nonfinite finite difference for {parameter}, epsilon={epsilon}')
+    return dict(parameter=parameter, epsilon=epsilon, ad=ad, fd=fd,
+                left_fd=left, right_fd=right, relative_error=error)
+
+
+def event_time_array(events, instructions, edges, particles, start=0., *, multicut=False):
+    shape = (max(item.cut_index for item in instructions) + 1, particles)
+    times = np.full(shape, np.nan)
+    for step, entries in enumerate(events):
+        cut = instructions[step].cut_index
+        for particle, time in entries.items():
+            if np.isfinite(times[cut, particle]):
+                raise RuntimeError(f'Duplicate side-assignment event for cut {cut}, particle {particle}')
+            times[cut, particle] = start + edges[step] + time
+    return times if multicut else times[0]
+
+
 def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='projected',
              *, initial_window=None, return_arrays=False, adjoint='full',
              controls_to_check=('knife_x_mm', 'knife_depth_scale'), integration='midpoint', phase=0.,
@@ -103,7 +128,9 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
         raise ValueError('Trajectory must be straight or cut-withdraw-push')
     if any(name not in STATE_PARAMETERS for name in state_parameters):
         raise ValueError(f'State parameters must be selected from {STATE_PARAMETERS}')
-    window = capture_initial(cfg, steps) if initial_window is None else initial_window
+    window = initial_window
+    if window is None:
+        window = intact_initial(cfg) if path is not None else capture_initial(cfg, steps)
     if not np.isfinite(phase) or not 0 <= phase < 1:
         raise ValueError('Time-grid phase must be in [0, 1)')
     total_duration = steps * cfg.dt
@@ -309,12 +336,9 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                         for a, b in zip(shifted['geometry'], events['geometry']) for p in a.keys() & b.keys()),
                         default=0.),
                 ))
-            fd = (losses[1] - losses[0]) / (2 * epsilon)
-            finite_difference.append(dict(parameter=parameter, epsilon=epsilon, ad=ad, fd=fd,
-                                           left_fd=(baseline_loss - losses[0]) / epsilon,
-                                           right_fd=(losses[1] - baseline_loss) / epsilon,
-                                           relative_error=abs(ad - fd) / max(abs(ad), abs(fd), 1e-12),
-                                           event_changes=changes))
+            difference = difference_result(parameter, epsilon, ad, baseline_loss, losses)
+            difference['event_changes'] = changes
+            finite_difference.append(difference)
             if progress:
                 print(json.dumps(dict(stage='finite_difference', parameter=parameter, epsilon=epsilon,
                                        relative_error=finite_difference[-1]['relative_error'])), flush=True)
@@ -350,13 +374,12 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                       pause_damage_max_abs=events['pause_damage_max_abs'])
     if not return_arrays:
         return result
-    event_times = np.full(m.n, np.nan)
-    for step, entries in enumerate(events['geometry']):
-        for particle, time in entries.items():
-            event_times[particle] = window.start_time + edges[step] + time
+    event_times = event_time_array(events['geometry'], instructions, edges, m.n, window.start_time,
+                                   multicut=path is not None)
     arrays = {name: getattr(terminal, name).numpy() for name in values}
     arrays.update(codes=terminal_history.codes.numpy(), damage=terminal_history.damage.numpy(),
-                  pair_keys=terminal_history.pair_keys.copy(), force=events['force'], event_times=event_times)
+                  pair_keys=terminal_history.pair_keys.copy(), force=events['force'])
+    arrays['event_times' if path is None else 'event_times_by_cut'] = event_times
     return result, arrays
 
 

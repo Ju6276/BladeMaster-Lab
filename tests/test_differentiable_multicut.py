@@ -43,6 +43,30 @@ def test_new_cut_resets_damage_adjoint_and_preserves_material_and_old_digits():
     np.testing.assert_array_equal(history.damage.numpy(), np.full(m.n, .7))
 
 
+@pytest.mark.parametrize('corrupt_call', [1, 2])
+def test_checkpoint_rejects_nonfinite_saved_or_recomputed_state(monkeypatch, corrupt_call):
+    m, contact = model()
+    step = contact.step
+    calls = 0
+
+    def corrupt(*args):
+        nonlocal calls
+        state, h, force = step(*args)
+        calls += 1
+        if calls == corrupt_call:
+            state.stress.assign(np.full((m.n, 3, 3), np.nan))
+        return state, h, force
+
+    monkeypatch.setattr(contact, 'step', corrupt)
+
+    def objective(step, state, history, force, loss):
+        m.launch(terminal_loss, m.n, inputs=[state.v, state.Fp], outputs=[loss], device=m.device)
+
+    with pytest.raises(FloatingPointError, match='Nonfinite checkpoint stress'):
+        contact.checkpoint_vjp(m.state(), contact.history(), [CutInstruction(False)], 1,
+                              lambda _: contact.tool([1, 1, 1]), objective, timings={})
+
+
 @pytest.mark.parametrize('shape', ['block', 'cylinder'])
 @pytest.mark.parametrize('second_yaw', [0., np.pi / 3])
 def test_first_cut_gradient_reaches_second_cut_and_checkpoints(shape, second_yaw, monkeypatch):

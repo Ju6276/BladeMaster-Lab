@@ -830,6 +830,20 @@ PYTHONPATH=. .venv/bin/python runs/e23_fb379d4/full_path_extra_fd.py
 PYTHONPATH=. .venv/bin/python runs/e23_fb379d4/full_path_yield_fd.py
 ```
 
+### 2026-10-22：M5 E3 完整轨迹的时间步对照
+
+`fb379d4` 的基础步长与 `39741bf` 的细两档，均为 RTX 4090、dirty=false：**6 mm、G_c=700、1.05 s**，步长 **15.625/7.8125/3.90625 μs**。刀路梯度的最大相邻差由 **0.1848%** 降为 **0.05160%**；最细两档刀位/行程/横推分别相差 **0.005032%/0.008205%/0.05160%**，E/屈服应力/摩擦梯度差为 **0.006049%/0.0007495%/0.005536%**。
+
+最细两档位置差 **0.8321 μm**、速度差 **2.078e-8 m/s**、Fp 差 **1.902e-6**、事件时刻差 **31.57 ns**、刀冲量差 **2.917e-6 N·s**。侧码、释放、接触对及事件粒子集合一致；损伤释放均为 **0**。128 步检查点的连续状态重算差 **0**，损伤功平衡误差 ≤**8.68e-19 J**，进程 CUDA 数组内存池峰值 **4.569 GiB**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
+  --output runs/e3_39741bf/refine_1050ms_h6_gc700 --from-initial \
+  --trajectory cut-withdraw-push --duration 1.05 --spacings .006 --dt-divisors 2 4 \
+  --adjoint checkpoint --segment-steps 128 --epsilons \
+  --parameters knife_x_mm knife_depth_scale knife_lateral_scale
+```
+
 ### 2026-10-22：CPU 检查点存储
 
 `a55b185`，RTX 4090、dirty=false：**4 mm、4892 粒子、G_c=7、50 ms / 3800 步、每段 8 步**，GPU/CPU 检查点的末端 x/v/F/Fp/应力/损伤差、事件时刻差及刀冲量差均为 **0**，两组均释放 **5** 个粒子。刀路梯度最大差 **1.53e-14**，材料梯度最大相对差 **4.42e-15**，全部检查点状态重算差 **0**。

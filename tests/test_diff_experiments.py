@@ -23,7 +23,7 @@ def test_contact_onset_has_distinct_one_sided_derivatives():
 def test_static_to_dynamic_friction_retains_force_jump():
     cfg = configuration(0.006)
     sn, gk = cfg.contact_scales()
-    critical = cfg.friction_static * sn * 0.0003 / (2 * cfg.tangent_damping * np.sqrt(gk) * cfg.dt)
+    critical = cfg.friction_static * sn * 0.0003 / ((gk + 2 * cfg.tangent_damping * np.sqrt(gk)) * cfg.dt)
     _, stick, _, stick_force = evaluate(cfg, -0.0003, critical * (1 - 1e-4), 0.0)
     _, slip, _, slip_force = evaluate(cfg, -0.0003, critical * (1 + 1e-4), 0.0)
     assert (stick, slip) == (1, 2)

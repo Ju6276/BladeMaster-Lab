@@ -7,7 +7,7 @@ import warp as wp
 from blademaster_warp.differentiable_constraint import solve
 from blademaster_warp.differentiable_geometry import GeometryEventContact
 from blademaster_warp.differentiable_material import MaterialTrajectory
-from blademaster_warp.differentiable_midpoint import project_history
+from blademaster_warp.friction import tangential_return
 from blademaster_warp.solver import Config
 
 
@@ -117,24 +117,29 @@ def test_midpoint_pair_search_matches_exhaustive_stage_contacts(spacing):
 
 
 @pytest.mark.parametrize('surface', ['board', 'blade'])
-def test_contact_history_has_zero_rate_before_contact(surface):
+@pytest.mark.parametrize('clearance', [1e-4, 1e-5])
+def test_contact_history_is_inactive_outside_and_uses_active_midpoint(surface, clearance):
     m = model(tangent_damping=0., friction_static=10., friction_dynamic=10.)
     c = GeometryEventContact(m)
     x, v = m.reference.copy(), np.zeros((m.n, 3))
     if surface == 'board':
-        x[:, 2] = m.config.grid_spacing / 4 + 1e-5
+        x[:, 2] = m.config.grid_spacing / 4 + clearance
         normal_axis, tangent_axis, channel = 2, 0, 0
         tool = c.tool([1, 1, 1])
     else:
         x[:, 2] += .1
-        x[:, 0] = m.config.blade_half_size[0] + m.config.grid_spacing / 4 + 1e-5
+        x[:, 0] = m.config.blade_half_size[0] + m.config.grid_spacing / 4 + clearance
         normal_axis, tangent_axis, channel = 0, 1, 1
         tool = c.tool([0, 0, .106])
     v[:, normal_axis], v[:, tangent_axis] = -.5, .1
     state, history, _ = c.advance_segment(m.state(x=x, v=v), c.history(), tool, m.duration, False)
-    np.testing.assert_allclose(state.v.numpy()[:, tangent_axis], .1, atol=1e-13)
-    np.testing.assert_allclose(history.rigid.numpy()[channel, :, tangent_axis], .1 * m.config.dt,
-                               atol=1e-13)
+    active_midpoint = clearance < .5 * .5 * m.config.dt
+    expected_history = .1 * m.config.dt if active_midpoint else 0.
+    kt_over_mass = m.config.contact_scales()[1] / m.config.dt**2
+    expected_velocity = .1 - .5 * kt_over_mass * m.config.dt * expected_history
+    np.testing.assert_allclose(state.v.numpy()[:, tangent_axis], expected_velocity, atol=1e-13)
+    np.testing.assert_allclose(history.rigid.numpy()[channel, :, tangent_axis], expected_history, atol=1e-14)
+
 
 
 @pytest.mark.parametrize('knife_speed', [0., .1])
@@ -166,24 +171,27 @@ def test_midpoint_grid_projection_constrains_the_final_stage_velocity(knife_spee
 
 @wp.kernel
 def zero_cone_probe(parameters: wp.array(dtype=float), damping: float, output: wp.array(dtype=wp.vec3)):
-    output[0] = project_history(-.0002, wp.vec3(parameters[0], 0., 0.), wp.vec3(0., 0., 1.),
-                                 wp.vec3(parameters[1], 0., 0.), 75., 37.5, damping, 0., 0.)
+    force, history = tangential_return(wp.vec3(0., 0., 1.), wp.vec3(parameters[0], 0., 0.),
+                                       wp.vec3(parameters[1], 0., 0.), .015, 37.5, damping,
+                                       .0002, 0., 0., .5, -1)
+    output[0] = history
 
 
 @pytest.mark.parametrize('damping', [0., .1])
-def test_zero_friction_history_cancels_trial_force_and_its_derivative(damping):
+def test_zero_friction_history_relaxation_and_its_derivative(damping):
     m = model()
     parameters = m.array([0., 0.], float)
     output = m.zeros(1, wp.vec3)
     with wp.Tape() as tape:
         m.launch(zero_cone_probe, 1, inputs=[parameters, damping], outputs=[output], device=m.device)
     tape.backward(grads={output: m.array([[1., 0., 0.]], wp.vec3, False)})
-    np.testing.assert_allclose(parameters.grad.numpy(), [-damping / 37.5, 0.], atol=1e-15)
+    decay = (damping - .5 * .0002 * 37.5) / (damping + .5 * .0002 * 37.5)
+    np.testing.assert_allclose(parameters.grad.numpy(), [0., decay], atol=1e-15)
     for sign in (-1, 1):
         values = sign * np.array([1e-7, 2e-7])
         result = m.zeros(1, wp.vec3)
         m.launch(zero_cone_probe, 1, inputs=[m.array(values, float), damping], outputs=[result], device=m.device)
-        np.testing.assert_allclose(37.5 * result.numpy()[0, 0] + damping * values[0], 0., atol=1e-15)
+        np.testing.assert_allclose(result.numpy()[0, 0], decay * values[1], atol=1e-15)
 
 
 @pytest.mark.parametrize('spacing', [.006, .004])
@@ -245,9 +253,6 @@ def test_sliding_to_sticking_trajectory_gradient_and_checkpoint(dt):
     tool = c.tool([1, 1, 1])
     steps = round(.008 / dt)
     instructions = [CutInstruction(cutting=False)] * steps
-    sn, gk = m.config.contact_scales()
-    kt = gk * m.mass / dt**2
-    damping = 2 * m.config.tangent_damping * np.sqrt(m.mass * kt)
 
     def objective(step, state, h, force, loss):
         if step == steps - 1:
@@ -258,11 +263,12 @@ def test_sliding_to_sticking_trajectory_gradient_and_checkpoint(dt):
         force_ratios = []
         loss = m.zeros(1, float)
         for step, instruction in enumerate(instructions):
+            previous_velocity = state.v.numpy()[:, 0].mean()
             state, h, force = c.step(state, h, tool, instruction)
             objective(step, state, h, force, loss)
-            force_t = -kt * h.rigid.numpy()[0, :, 0] - damping * state.v.numpy()[:, 0]
-            normal_force = sn * m.mass / dt**2 * (m.config.grid_spacing / 4 - state.x.numpy()[:, 2])
-            force_ratios.append(float(np.mean(np.abs(force_t) / normal_force)))
+            # Internal forces cancel in the total horizontal momentum balance.
+            force_t = m.mass * (state.v.numpy()[:, 0].mean() - previous_velocity) / dt
+            force_ratios.append(abs(force_t) / (m.mass * 9.81))
         return loss, np.asarray(force_ratios)
 
     with wp.Tape() as tape:

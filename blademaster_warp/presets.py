@@ -64,7 +64,7 @@ def tangent_history_dt(cfg, maximum):
     """Halve a step until fixed-normal sticking history has eigenvalues inside the unit circle.
 
     Contact stiffness stays fixed through contact_reference_dt. For state
-    (tangent velocity, history / dt), the update is [[1-d, -k], [1, 1]],
+    (tangent velocity, history / dt), the implicit-history update is [[1-k-d, -k], [1, 1]],
     where k=gamma_k and d=2*gamma_c*sqrt(k).
     """
     if maximum <= 0:
@@ -78,7 +78,7 @@ def tangent_history_dt(cfg, maximum):
         ratio = 1.0 if cfg.contact_reference_dt == 0 else (step / cfg.contact_reference_dt) ** 2
         stiffness = cfg.tangent_stiffness * ratio
         damping = 2 * cfg.tangent_damping * math.sqrt(stiffness)
-        if stiffness < damping and 4 - 2 * damping + stiffness > 0:
+        if damping > 0 and 4 - 2 * damping - stiffness > 0:
             return step
         if cfg.contact_reference_dt == 0:
             raise ValueError("Reducing dt requires contact_reference_dt to preserve contact stiffness")

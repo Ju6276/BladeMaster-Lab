@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 from blademaster_warp.contact import blade_query, penalty_impulse
+from blademaster_warp.differentiable_cutting import contact_mode as cutting_contact_mode
 from blademaster_warp.provenance import git_revision
 from scripts.diff_validate import configuration, relative_error
 
@@ -17,15 +18,7 @@ from scripts.diff_validate import configuration, relative_error
 @wp.func
 def contact_mode(gap: float, relative: wp.vec3, normal: wp.vec3, history: wp.vec3,
                  dt: float, sn: float, mus: float, gk: float, gc: float):
-    predicted = gap + dt * wp.min(wp.dot(relative, normal), 0.0)
-    if predicted >= 0.0:
-        return int(0)
-    tangent = relative - wp.dot(relative, normal) * normal
-    spring = history - wp.dot(history, normal) * normal
-    trial_per_mass = -gk / dt * spring - 2.0 * gc * wp.sqrt(gk) * tangent
-    if wp.length(trial_per_mass) <= mus * sn / dt * (-predicted):
-        return int(1)
-    return int(2)
+    return cutting_contact_mode(gap, relative, normal, history, 1.0, dt, sn, mus, gk, gc, 0, 0) % 10
 
 
 @wp.kernel
@@ -60,15 +53,8 @@ def probe(
     )
     impulse[0] = result
     loss[0] = wp.dot(result, wp.vec3(0.3, 0.7, 0.2)) / dt
-    predicted = gap + dt * wp.min(normal_velocity, 0.0)
-    branch = int(0)
-    if predicted < 0.0:
-        jn = -sn * mass / dt * predicted
-        trial = 2.0 * gc * mass * wp.sqrt(gk) * wp.abs(speed)
-        branch = 1
-        if trial > mus * jn:
-            branch = 2
-    mode[0] = branch
+    mode[0] = contact_mode(gap, relative, wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0),
+                           dt, sn, mus, gk, gc)
 
 
 def evaluate(cfg, gap, speed, normal_velocity, derivative=False):
@@ -128,7 +114,7 @@ def main():
                                        0, (1e-6, 3e-7)))
         gap = -0.0003
         sn, gk = cfg.contact_scales()
-        critical_speed = cfg.friction_static * sn * (-gap) / (2 * cfg.tangent_damping * np.sqrt(gk) * cfg.dt)
+        critical_speed = cfg.friction_static * sn * (-gap) / ((gk + 2 * cfg.tangent_damping * np.sqrt(gk)) * cfg.dt)
         for factor in (0.0, 0.5, 0.99, 0.9999, 1.0, 1.0001, 1.01, 2.0):
             cases.append(scan_case(cfg, "friction_switch", gap, critical_speed * factor, 0.0,
                                    1, (critical_speed * 1e-3, critical_speed * 1e-4)))

@@ -26,7 +26,7 @@ def test_checkpoint_only_validation_matches_full_tape(phase):
     origin = np.array([.0004, 0, values['x'][:, 2].max() + cfg.blade_half_size[2] + .00005])
     window = WindowState(origin, values, saved, np.zeros(model.n, np.int64), np.empty(0, np.int64),
                          0., cfg.dt, [])
-    results = [evaluate(cfg, 6, 'integrated', [1e-7], [2, 3], 'event', 'projected',
+    results = [evaluate(cfg, 6, 'integrated', [1e-7], [2, 3], 'event', 'midpoint',
                         initial_window=window, adjoint=mode, phase=phase,
                         controls_to_check=('knife_x_mm', 'knife_depth_scale', 'knife_lateral_scale'))
                for mode in ('full', 'checkpoint')]
@@ -69,7 +69,7 @@ def test_multicut_report_accumulates_damage_work_across_resets(explicit_window, 
         pytest.fail('A custom path must start intact when no window is supplied')
 
     monkeypatch.setattr('scripts.diff_natural_validate.capture_initial', wrong_prefix)
-    result, arrays = evaluate(cfg, 6, 'integrated', [1e-5, 1e-6], [2, 3], 'event', 'projected',
+    result, arrays = evaluate(cfg, 6, 'integrated', [1e-5, 1e-6], [2, 3], 'event', 'midpoint',
                       initial_window=window if explicit_window else None, adjoint='checkpoint', path=path,
                       return_arrays=True,
                       controls_to_check=path.control_names, checkpoint_device='cpu')

@@ -283,13 +283,13 @@ class GeometryEventContact(NaturalCutContact):
     pre-event material flow; all times and flow evaluations participate in AD.
     """
 
-    def __init__(self, trajectory, *, release="integrated", friction_update="projected",
+    def __init__(self, trajectory, *, release="integrated", friction_update="midpoint",
                  integration="midpoint"):
         super().__init__(trajectory, release=release, friction_update=friction_update)
         if integration not in ("symplectic", "midpoint"):
             raise ValueError("Geometry integration must be symplectic or midpoint")
-        if integration == "midpoint" and friction_update != "projected":
-            raise ValueError("Midpoint integration requires projected friction histories")
+        if integration == "midpoint" and friction_update != "midpoint":
+            raise ValueError("Midpoint integration requires midpoint friction histories")
         self.integration = integration
 
     def pose(self, tool, elapsed):

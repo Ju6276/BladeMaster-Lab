@@ -74,7 +74,7 @@ def test_sliding_midpoint_matches_constant_coulomb_acceleration(steps):
                                .1 * total + .5 * acceleration * total**2, rtol=1e-10, atol=1e-14)
 
 
-def test_midpoint_requires_projected_friction():
+def test_midpoint_requires_midpoint_friction():
     m, _, _, _, _, _, _ = oscillator(.00005)
-    with pytest.raises(ValueError, match='projected friction'):
-        GeometryEventContact(m, friction_update='lagged')
+    with pytest.raises(ValueError, match='midpoint friction'):
+        GeometryEventContact(m, friction_update='implicit')

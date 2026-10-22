@@ -64,12 +64,12 @@ def main():
     parser.add_argument('--flip-reference-dt', type=float)
     parser.add_argument('--geometry', choices=['boundary', 'event'], default='event')
     parser.add_argument('--release', choices=['boundary', 'integrated'], default='integrated')
-    parser.add_argument('--friction-update', choices=['lagged', 'projected'], default='projected')
+    parser.add_argument('--friction-update', choices=['implicit', 'midpoint'], default='midpoint')
     parser.add_argument('--integration', choices=['symplectic', 'midpoint'], default='midpoint')
     parser.add_argument('--phases', type=float, nargs='+', default=[0.])
     args = parser.parse_args()
-    if args.geometry == 'event' and args.integration == 'midpoint' and args.friction_update != 'projected':
-        parser.error('Midpoint integration requires --friction-update projected')
+    if args.geometry == 'event' and args.integration == 'midpoint' and args.friction_update != 'midpoint':
+        parser.error('Midpoint integration requires --friction-update midpoint')
     numbers = [*args.spacings, args.duration, *args.dt_divisors, *args.epsilons, *args.segment_steps]
     if args.flip_reference_dt is not None:
         numbers.append(args.flip_reference_dt)

@@ -29,7 +29,7 @@ def test_sticking_history_step_and_adjoint(damping):
     cfg = replace(cfg, dt=tangent_history_dt(cfg, maximum))
     model = MaterialTrajectory(cfg, precision='float64')
     _, stiffness = cfg.contact_scales()
-    linear = np.array([[1 - 2 * damping * np.sqrt(stiffness), -stiffness], [1, 1]])
+    linear = np.array([[1 - stiffness - 2 * damping * np.sqrt(stiffness), -stiffness], [1, 1]])
     assert np.max(np.abs(np.linalg.eigvals(linear))) < 1
     initial = np.array([[0.003, -0.002]])
     seed = np.array([[0.3, -0.2]])
@@ -54,11 +54,27 @@ def test_sticking_history_requires_damping():
 
 
 def test_step_reduction_preserves_contact_stiffness():
-    cfg = banana_config()
+    cfg = replace(banana_config(), tangent_damping=2.)
     maximum = banana_dt(cfg, cfg.grid_spacing)
     step = tangent_history_dt(cfg, maximum)
     assert step < maximum
     assert replace(cfg, dt=step).contact_scales()[1] / step**2 == pytest.approx(
         replace(cfg, dt=maximum).contact_scales()[1] / maximum**2)
     with pytest.raises(ValueError, match='contact_reference_dt'):
-        tangent_history_dt(replace(cfg, contact_reference_dt=0), maximum)
+        tangent_history_dt(replace(cfg, contact_reference_dt=0, tangent_damping=5.), maximum)
+
+
+def test_step_selection_rejects_unstable_implicit_history_boundary():
+    maximum = 1e-4
+    cfg = replace(banana_config(), contact_reference_dt=maximum, tangent_stiffness=.3,
+                  tangent_damping=1.9 / (2 * np.sqrt(.3)))
+    step = tangent_history_dt(cfg, maximum)
+
+    def radius(dt):
+        k = cfg.tangent_stiffness * (dt / maximum)**2
+        d = 2 * cfg.tangent_damping * np.sqrt(k)
+        return np.max(np.abs(np.linalg.eigvals([[1 - k - d, -k], [1, 1]])))
+
+    assert radius(maximum) > 1
+    assert radius(step) < 1
+    assert step == maximum / 2

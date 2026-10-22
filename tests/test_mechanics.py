@@ -156,17 +156,16 @@ def test_blade_distance_and_normal_against_fp64(bevel):
 
 
 def friction_reference(n, relative, jn, history, me, dt, mus, mud, gk, gc):
-    """Paper Eqs. 12-13: tangential spring-dashpot capped by Coulomb friction."""
+    """Backward Euler: elastic displacement and series-slider force equilibrium."""
     vt = relative - (relative @ n) * n
     ht = history - (history @ n) * n
     k = gk * me / dt**2
     damping = 2 * gc * np.sqrt(me * k)
-    trial = (-k * ht - damping * vt) * dt
-    magnitude = np.linalg.norm(trial)
-    if magnitude <= mus * jn:
-        return trial, ht + dt * vt
-    applied = trial * (mud * jn / magnitude)
-    return applied, -(applied / dt + damping * vt) / k
+    trial_force = -k * (ht + dt * vt) - damping * vt
+    magnitude = np.linalg.norm(trial_force)
+    force = trial_force if magnitude <= mus * jn / dt else trial_force * (mud * jn / dt / magnitude)
+    updated = (damping * ht - dt * force) / (damping + dt * k)
+    return dt * force, updated
 
 
 def test_friction_stick_and_slip_history():

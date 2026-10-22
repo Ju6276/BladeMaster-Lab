@@ -194,7 +194,7 @@ def main():
                 path = multicut_path(cfg, name)
                 steps = round(path.times[-1] / dt)
                 row, arrays = evaluate(cfg, steps, 'integrated', args.epsilons, args.segment_steps,
-                    'event', 'projected', initial_window=intact_initial(cfg), return_arrays=True,
+                    'event', 'midpoint', initial_window=intact_initial(cfg), return_arrays=True,
                     adjoint='checkpoint', controls_to_check=path.control_names,
                     checkpoint_device=args.checkpoint_device, path=path, progress=True)
                 model = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)

@@ -11,6 +11,7 @@ Symbols follow the paper:
 
 import warp as wp
 from .material import compatible, insert_key
+from .friction import tangential_return
 
 # Bits of the `cutting` argument of the blade contact kernels.
 CUT_ON = wp.constant(1)
@@ -31,16 +32,11 @@ def friction(
     gk: float,
     gc: float,
 ):
-    vt = relative - wp.dot(relative, n) * n
-    ht = history - wp.dot(history, n) * n
     k = gk * me / (dt * dt)
     damping = 2.0 * gc * wp.sqrt(me * k)
-    trial = (-k * ht - damping * vt) * dt
-    magnitude = wp.length(trial)
-    if magnitude <= mus * jn:
-        return trial, ht + dt * vt
-    applied = trial * (mud * jn / magnitude)
-    return applied, -(applied / dt + damping * vt) / k
+    force, updated = tangential_return(n, relative, history, jn / dt, k, damping,
+                                       dt, mus, mud, 1.0, -1)
+    return dt * force, updated
 
 
 @wp.func

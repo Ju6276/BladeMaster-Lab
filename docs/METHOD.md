@@ -111,15 +111,15 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 `GeometryEventContact` 默认采用 `integration="midpoint"`：对参考网格上的半离散动力学执行显式中点 RK2。第一阶段推进半段，第二阶段用中点的速度、应力、刀位和接触力推进整段。粒子位置率为插值网格速度，变形率为参考梯度作用于当前速度，速度率包含材料/接触加速度及固定单位时间的 PIC 残差阻尼。塑性 Fp 在预测点和终点分别从段初 Fp 返回映射。各阶段、分段时长及返回映射均进入同一 Warp Tape。
 
-接触阶段使用该时刻的间隙计算法向罚力；切向历史按阶段切向速度积分，并在阶段终点根据新的法向力和接触方向投影到库仑界限。粒子对使用相对速度及两粒子的有效质量。刀力积分采用中点力乘实际分段时长。`integration="symplectic"` 调用原 MUSL 步进；M4 固定分支和原 `Solver` 使用此步进。
+接触阶段使用该时刻的间隙计算法向罚力；切向力和历史增量共同满足下节的 Kelvin–Voigt–滑动元件方程。终点将历史投影到新的切平面，接触脱离时清零。粒子对使用相对速度及两粒子的有效质量。刀力积分采用中点力乘实际分段时长。`integration="symplectic"` 调用原 MUSL 步进；M4 固定分支和原 `Solver` 使用此步进。
 
-切向历史的积分率只在阶段实际接触时取相对切向速度；未接触或脱离时清零。中点实际接触对重新搜索，与初始候选集合合并，按粒子 ID 映射预测点和段初历史。粒子位置由网格插值速度推进，因此初始粒子速度的预测查询可能漏掉中点接触。
+切向历史只在阶段实际接触时更新；未接触或脱离时清零。中点实际接触对重新搜索，与初始候选集合合并，按粒子 ID 映射段初历史。第二阶段使用段初弹性历史和中点相对速度求整个分段的增量，避免重复累计预测半步。粒子位置由网格插值速度推进，因此初始粒子速度的预测查询可能漏掉中点接触。
 
 中点阶段的刀位连续推进，网格刀面约束使用 `v_grid − v_tool − ω×r` 的法向分量；原 `hold` 子步仍使用固定刀位约束。相对接触速度的构造与 [MuJoCo 接触雅可比](https://mujoco.readthedocs.io/en/stable/computation/index.html#contact) 一致，投影求解仍复用本仓库的相容场算子。
 
 阶段网格的约束候选速度为 `v_base_grid + τ a_stage`，投影增量加回同一阶段的力增量；段末速度由段初速度加这些增量得到。这样中点预测阶段已施加的投影不会使终点漏掉法向冲量。反力累计使用终点实际增加的冲量除以分段时长。
 
-中点 RK2 的系数对照 [PETSc TSRK2B](https://petsc.org/release/manualpages/TS/TSRK2B/)；摩擦历史的库仑回算对照 [LAMMPS linear_history](https://docs.lammps.org/pair_granular.html)。MPM 的传递与时间积分误差分析见 [Berzins 2021](https://www.scipedia.com/wd/images/e/e1/Draft_Content_867464886p1127.pdf)。这里在 Warp 中实现这些阶段和返回映射。
+中点 RK2 的系数对照 [PETSc TSRK2B](https://petsc.org/release/manualpages/TS/TSRK2B/)，切向接触采用下节的本构积分。MPM 的传递与时间积分误差分析见 [Berzins 2021](https://www.scipedia.com/wd/images/e/e1/Draft_Content_867464886p1127.pdf)。这里在 Warp 中实现这些阶段和返回映射。
 
 `diff_natural_refine --phases 0 .25 .5` 固定同一初态和结束时刻，改变第一步长度，从而比较时间网格起点对状态及梯度的影响。检查点保存每步时长并按相同区间重算。
 
@@ -131,13 +131,19 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 时间展开参考 DiffTaichi，塑性组织参考 PlasticineLab，分段反向参考 Warp 的 checkpoint 示例；对应链接见 DIFFERENTIABLE 的方法来源。TLMPM 传递、专用伴随和切割事件积分均在本仓库实现；双精度验证使用相同公式生成的内核。
 
-## 摩擦历史的增量与投影
+## 摩擦弹性历史与滑移耗散
 
-`friction_update="lagged"` 沿用本步旧历史计算试力，再更新或回算历史。静、动摩擦系数相等时，两条分支在粘滑边界的历史差为 `τ v_t`；这是 [Luding 式 18–20](https://www2.msm.ctw.utwente.nl/sluding/PAPERS/LudingC5.pdf) 所写更新顺序的离散结果。
+切向接触由 Kelvin–Voigt 元件（弹簧和阻尼器并联）串联库仑滑动元件组成。记段初切平面上的弹性位移为 h₀，阶段相对切向速度为 vₜ，分段时长为 τ，弹性增量为 Δh，滑移为 Δs，则 `τvₜ=Δh+Δs`，`fₜ=−kₜ(h₀+θΔh)−cₜΔh/τ`。阻尼器作用于弹性位移率；滑动时总相对速度还包含滑移率。
 
-`friction_update="projected"` 采用 [LAMMPS `linear_history`](https://docs.lammps.org/pair_granular.html) 的先增量、后投影顺序：先取 `h_trial = P_t h_old + τ v_t`，再算 `f_trial = −k_t h_trial − c_t v_t`。若 `|f_trial| ≤ μ_s f_n`，保留 `h_trial`；否则令 `f_t = μ_d f_n f_trial/|f_trial|`，回算 `h_new = −(f_t+c_t v_t)/k_t`。在 `μ_s=μ_d` 的边界，两条分支给出相同的力和历史；`μ_s>μ_d` 时保留静动摩擦的力跳变。刀、砧板、粒子对共用该更新，原刚度、阻尼与摩擦系数不变。
+`friction.tangential_return` 先计算 `f_trial=−kₜ(h₀+θτvₜ)−cₜvₜ`。若 `|f_trial|≤μ_s f_n`，取 `Δs=0`；滑动时取 `fₜ=μ_d f_n f_trial/|f_trial|`、`Δs=τ(fₜ−f_trial)/(cₜ+θτkₜ)`，两者均返回 `h₁=h₀+τvₜ−Δs`。零库仑半径取 `fₜ=0`。静动摩擦系数相等时，两条分支的力与历史连续；静摩擦系数较大时保留力跳变。
 
-固定接触法向、零切向阻尼时，记 `Δh=h_new−h_old`、`Δp=τv_t−Δh`，切向输入功满足 `−f_t·τv_t = Δ(½k_t|h|²) + k_t h_new·Δp + ½k_t|Δh|²`，后两项分别是滑移耗散和离散耗散。自动测试核对该恒等式、粘滑边界连续性、零摩擦系数、力/历史 VJP 及多步砧板接触的检查点。`scripts.diff_natural_validate --friction-update projected` 记录此积分选择并与原求解器对照。
+原 `Solver`、M3/M4 和自然单步默认 `friction_update="implicit"`，θ=1；M5 中点积分使用 `friction_update="midpoint"`，θ=1/2。θ 只选择本构时间积分，刚度、阻尼和摩擦系数由同一配置确定。终点切平面投影与脱离清零会减少储能；完整轨迹收支下一步分别记录历史传输/重置耗散。
+
+固定法向下，切向输入功满足下面的离散恒等式：
+
+`−fₜ·τvₜ = ½kₜ(|h₁|²−|h₀|²) + (cₜ/τ)|Δh|² − fₜ·Δs + (θ−½)kₜ|Δh|²`。
+
+右侧依次为弹簧储能变化、阻尼耗散、滑动耗散和积分耗散；自然粘滑分支、`0≤μ_d≤μ_s`、`θ≥1/2` 时后三项非负。`energy.contact_storage` 和 `energy.friction_increment_energy` 用 NumPy 独立核对这些量。自动测试覆盖旋转法向、零/非零阻尼、零摩擦、边界连续性、状态与参数 VJP、解析滑动松弛、砧板振子的二阶状态/梯度收敛及检查点。
 
 ## 损伤释放的步内积分
 
@@ -168,10 +174,10 @@ PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定�
 | 粒子位置更新 | 未写明 | 用插值网格速度推进（de Vaucorbeil 2020 TLMPM 式 13），速度用 PIC/FLIP |
 | 传递耗散 | PIC/FLIP 混合 | 默认每步固定比例；步长对照可用 `flip_reference_dt` 固定单位时间的残差阻尼，避免细化步长时同时改变耗散率 |
 | 刀身穿透处理 | 粒子罚接触 | 外部 `hold` 模式补充固定刀面的网格法向约束；M5 中点阶段按相对运动刀面速度约束，见上节 |
-| 事件间时间积分 | MUSL 单步推进、预测步末接触间隙 | M5 `GeometryEventContact` 默认显式中点 RK2，在阶段实际间隙上取罚力，并在终点对切向历史返回映射，以改善事件分段的状态和梯度收敛 |
+| 事件间时间积分 | MUSL 单步推进、预测步末接触间隙 | M5 `GeometryEventContact` 默认使用中点材料阶段与 θ=1/2 切向本构积分，在阶段实际间隙上取法向罚力，终点运输/重置历史，以改善事件分段的状态和梯度收敛 |
 | 接触刚度 | 每步常数 \(s_n\) | 默认按参考步长固定物理刚度，见上节 |
 | 塑性返回映射 | 共旋弹性与 von Mises 型投影，具体返回映射未给出 | 保留共旋储能，使用与其功共轭应力一致的等容增量变分返回；参考 [Miehe、Apel、Lambrecht 的增量最小化框架](https://doi.org/10.1016/S0045-7825(02)00438-3)，本地推导共旋势的驻点、Newton 求解和隐式 VJP。原因是对数应变径向返回在强压缩下会增加共旋储能，数字见 RESULTS |
-| 摩擦历史积分 | 用当前历史计算试力，粘住时累加位移，滑动时回算历史 | 原 `Solver` 和 M4 使用 `lagged`；M5 几何事件默认 `projected`，先累加位移再投影到库仑界限，使相等静动摩擦系数下的分支历史连续，见上节 |
+| 摩擦历史积分 | 用当前历史计算试力，粘住时累加位移，滑动时回算历史 | 采用弹簧/阻尼器并联后串联滑动元件的接触网络，见 [Computational Analysis for Industrial Brush，图 2](https://journals.utm.my/aej/article/download/15382/6897)。本地推导 θ 时间积分和离散能量恒等式；原求解器 θ=1，M5 中点 θ=1/2。原因是按总相对速度回算阻尼历史在零输入功时可生成弹簧储能，数字见 RESULTS |
 | 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |
 | 可微求解 | 正向 TLMPM 切割与工具双向耦合 | 增加粒子、材料、接触历史、切割事件和刀路的自动微分与伴随；当前可微刀路由外部给定 |
 | 损伤释放积分 | 损伤达到阈值后移除刃口推力 | 原 `Solver` 和 M4 在子步边界切换；M5 `EventCutContact` 根据剩余断裂功积分释放步的刃向冲量，使释放时刻进入状态导数，见上节 |

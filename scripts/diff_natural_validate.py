@@ -112,7 +112,7 @@ def event_time_array(events, instructions, edges, particles, start=0., *, multic
     return times if multicut else times[0]
 
 
-def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='projected',
+def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='midpoint',
              *, initial_window=None, return_arrays=False, adjoint='full',
              controls_to_check=('knife_x_mm', 'knife_depth_scale'), integration='midpoint', phase=0.,
              trajectory='straight', progress=False, state_parameters=(), checkpoint_device=None, path=None):
@@ -410,12 +410,12 @@ def main():
     parser.add_argument('--state-parameters', nargs='+', choices=STATE_PARAMETERS, default=[])
     parser.add_argument('--release', choices=['boundary', 'integrated'], default='integrated')
     parser.add_argument('--geometry', choices=['boundary', 'event'], default='boundary')
-    parser.add_argument('--friction-update', choices=['lagged', 'projected'], default='projected')
+    parser.add_argument('--friction-update', choices=['implicit', 'midpoint'], default='midpoint')
     parser.add_argument('--integration', choices=['symplectic', 'midpoint'], default='midpoint')
     parser.add_argument('--epsilons', type=float, nargs='+', default=[.05, .005, .0005, .00005])
     args = parser.parse_args()
-    if args.geometry == 'event' and args.integration == 'midpoint' and args.friction_update != 'projected':
-        parser.error('Midpoint integration requires --friction-update projected')
+    if args.geometry == 'event' and args.integration == 'midpoint' and args.friction_update != 'midpoint':
+        parser.error('Midpoint integration requires --friction-update midpoint')
     if (not np.isfinite([*args.spacings, *args.epsilons]).all()
             or min(*args.spacings, *args.epsilons, args.steps, *args.segment_steps) <= 0
             or max(args.epsilons) >= 1):

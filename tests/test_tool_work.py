@@ -18,7 +18,7 @@ def test_planar_contact_work_matches_analytic_wrench(stage, angle, motion):
                  external_tool=True, friction_static=0., friction_dynamic=0.,
                  tangent_damping=0., yield_stress=0, contact_reference_dt=.0002)
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
-    c = FixedCutContact(m, friction_update='projected')
+    c = FixedCutContact(m, friction_update='midpoint')
     rotation = np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0],
                          [-np.sin(angle), 0, np.cos(angle)]])
     origin = np.array([0., 0., .1])
@@ -57,7 +57,7 @@ def test_grid_constraint_work_includes_angular_impulse(omega, monkeypatch):
                  external_tool=True, blade_grid_constraint=True, yield_stress=0,
                  friction_static=0., friction_dynamic=0., tangent_damping=0.)
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
-    c = FixedCutContact(m, friction_update='projected')
+    c = FixedCutContact(m, friction_update='midpoint')
     state = m.state(x=np.tile([cfg.blade_half_size[0] + 1e-5, .002, .103], (m.n, 1)),
                     v=np.tile([-2., 0, 0], (m.n, 1)))
     history = c.history()
@@ -92,7 +92,7 @@ def test_work_across_natural_events_and_checkpoint(integration, monkeypatch):
     from blademaster_warp.differentiable_natural import CutInstruction
 
     monkeypatch.setattr(wp.config, 'verify_autograd_array_access', True)
-    m, c, initial, history, tool = fixture(friction_update='projected', integration=integration)
+    m, c, initial, history, tool = fixture(friction_update='midpoint', integration=integration)
     steps = 3
 
     def knife(step):
@@ -139,7 +139,7 @@ def test_work_across_natural_events_and_checkpoint(integration, monkeypatch):
 @pytest.mark.parametrize('integration', ['symplectic', 'midpoint'])
 def test_rotating_event_work_gradient(integration, monkeypatch):
     monkeypatch.setattr(wp.config, 'verify_autograd_array_access', True)
-    m, c, initial, history, tool = fixture(.2, .5, friction_update='projected', integration=integration)
+    m, c, initial, history, tool = fixture(.2, .5, friction_update='midpoint', integration=integration)
 
     def run():
         state, h, loss = initial, history, m.zeros(1, float)
@@ -154,7 +154,9 @@ def test_rotating_event_work_gradient(integration, monkeypatch):
 
     with wp.Tape() as tape:
         loss = run()
-    tape.backward(loss)
+    # Normalize by baseline work so the sensitivity check is independent of joule scale.
+    scale = 1. / float(loss.numpy()[0])
+    tape.backward(grads={loss: m.array([scale], float, False)})
     ad = tool.omega.grad.numpy()[0, 1]
     assert abs(ad) > 1e-9
     base = tool.omega.numpy().copy()
@@ -162,7 +164,7 @@ def test_rotating_event_work_gradient(integration, monkeypatch):
         values = []
         for sign in (-1, 1):
             tool.omega.assign(base + [[0, sign * epsilon, 0]])
-            values.append(run().numpy()[0])
+            values.append(scale * run().numpy()[0])
         np.testing.assert_allclose((values[1] - values[0]) / (2 * epsilon), ad,
                                    rtol=2e-4, atol=1e-10)
     tool.omega.assign(base)

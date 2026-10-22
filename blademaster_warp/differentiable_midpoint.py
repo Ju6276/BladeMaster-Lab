@@ -1,4 +1,4 @@
-"""Explicit midpoint stages with endpoint return maps for contact histories."""
+"""Midpoint material stages and constitutive contact-history increments."""
 
 import numpy as np
 import warp as wp
@@ -25,21 +25,10 @@ def tangent(relative: wp.vec3, normal: wp.vec3):
 
 
 @wp.func
-def project_history(gap: float, relative: wp.vec3, normal: wp.vec3, history: wp.vec3,
-                    kn: float, kt: float, damping: float, mus: float, mud: float):
+def transport_history(gap: float, normal: wp.vec3, history: wp.vec3):
     if gap >= 0.0:
         return wp.vec3(0.0)
-    vt = tangent(relative, normal)
-    ht = tangent(history, normal)
-    trial = -kt * ht - damping * vt
-    magnitude = wp.length(trial)
-    normal_force = kn * (-gap)
-    if mus > 0.0 and magnitude <= mus * normal_force:
-        return ht
-    force = wp.vec3(0.0)
-    if magnitude > 0.0:
-        force = trial * (mud * normal_force / magnitude)
-    return -(force + damping * vt) / kt
+    return tangent(history, normal)
 
 
 @wp.func
@@ -69,84 +58,47 @@ def blade_contact(x: wp.vec3, v: wp.vec3, position: wp.vec3, velocity: wp.vec3,
 @wp.kernel
 def rigid_history_endpoint(
     x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3),
-    stage_x: wp.array(dtype=wp.vec3), stage_v: wp.array(dtype=wp.vec3),
-    base_history: wp.array2d(dtype=wp.vec3), damage: wp.array(dtype=float),
-    stage_damage: wp.array(dtype=float), departed: wp.array(dtype=int),
-    position: wp.array(dtype=wp.vec3), rotation: wp.array(dtype=wp.quat),
-    stage_position: wp.array(dtype=wp.vec3), stage_rotation: wp.array(dtype=wp.quat),
-    velocity: wp.array(dtype=wp.vec3), omega: wp.array(dtype=wp.vec3),
-    half: wp.vec3, bevel: float, radius: float, offset: float, board_half: wp.vec2,
-    hold: int, kn: float, board_kn: float, kt: float, damping: float,
-    friction: wp.array(dtype=float), duration: wp.array(dtype=float),
+    history: wp.array2d(dtype=wp.vec3), damage: wp.array(dtype=float),
+    departed: wp.array(dtype=int), position: wp.array(dtype=wp.vec3),
+    rotation: wp.array(dtype=wp.quat), velocity: wp.array(dtype=wp.vec3),
+    omega: wp.array(dtype=wp.vec3), half: wp.vec3, bevel: float,
+    radius: float, offset: float, board_half: wp.vec2, hold: int,
     result: wp.array2d(dtype=wp.vec3),
 ):
     p = wp.tid()
     up = wp.vec3(0.0, 0.0, 1.0)
-    h = wp.vec3(0.0)
-    if board_gap(stage_x[p], radius, board_half) < 0.0:
-        h = tangent(base_history[0, p], up) + duration[0] * tangent(stage_v[p], up)
-    result[0, p] = project_history(board_gap(x[p], radius, board_half), v[p], up, h,
-                                  board_kn, kt, damping, friction[0], friction[1])
+    result[0, p] = transport_history(board_gap(x[p], radius, board_half), up, history[0, p])
     gap, normal, relative = blade_contact(
         x[p], v[p], position[0], velocity[0], rotation[0], omega[0],
         half, bevel, offset, hold, damage[p], departed[p],
     )
-    stage_gap, stage_normal, stage_relative = blade_contact(
-        stage_x[p], stage_v[p], stage_position[0], velocity[0], stage_rotation[0], omega[0],
-        half, bevel, offset, hold, stage_damage[p], departed[p],
-    )
-    h = wp.vec3(0.0)
-    if stage_gap < 0.0:
-        h = tangent(base_history[1, p], stage_normal) + duration[0] * tangent(stage_relative, stage_normal)
-    result[1, p] = project_history(gap, relative, normal, h, kn, kt, damping, friction[0], friction[1])
+    result[1, p] = transport_history(gap, normal, history[1, p])
 
 
 @wp.kernel
-def pair_history_endpoint(
-    x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3),
-    stage_x: wp.array(dtype=wp.vec3), stage_v: wp.array(dtype=wp.vec3),
-    pairs: wp.array2d(dtype=int), previous: wp.array(dtype=int), base_history: wp.array(dtype=wp.vec3),
-    diameter: float, kn: float, kt: float, damping: float, friction: wp.array(dtype=float),
-    duration: wp.array(dtype=float), result: wp.array(dtype=wp.vec3),
-):
+def pair_history_endpoint(x: wp.array(dtype=wp.vec3), pairs: wp.array2d(dtype=int),
+                          history: wp.array(dtype=wp.vec3), diameter: float,
+                          result: wp.array(dtype=wp.vec3)):
     i = wp.tid()
-    p, q = pairs[i, 0], pairs[i, 1]
-    normal = wp.normalize(x[p] - x[q])
-    stage_normal = wp.normalize(stage_x[p] - stage_x[q])
-    h = wp.vec3(0.0)
-    if wp.length(stage_x[p] - stage_x[q]) < diameter:
-        if previous[i] >= 0:
-            h = tangent(base_history[previous[i]], stage_normal)
-        h += duration[0] * tangent(stage_v[p] - stage_v[q], stage_normal)
-    result[i] = project_history(wp.length(x[p] - x[q]) - diameter, v[p] - v[q], normal,
-                                h, kn, kt, damping, friction[0], friction[1])
+    delta = x[pairs[i, 0]] - x[pairs[i, 1]]
+    result[i] = transport_history(wp.length(delta) - diameter, wp.normalize(delta), history[i])
 
 
-def project_endpoint(contact, state, history, stage, base_history, stage_tool, end_tool, duration, branch,
-                     departed):
+def project_endpoint(contact, state, history, end_tool, branch, departed):
     m, cfg = contact.model, contact.model.config
     radius = cfg.grid_spacing / 4
     offset = max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0])
-    sn, gk = cfg.contact_scales()
-    kn = sn * m.mass / cfg.dt**2
-    kt = gk * m.mass / cfg.dt**2
-    damping = 2 * cfg.tangent_damping * np.sqrt(m.mass * kt)
     rigid = m.zeros((2, m.n), wp.vec3)
     m.launch(rigid_history_endpoint, m.n,
-             inputs=[state.x, state.v, stage.x, stage.v, base_history.rigid, history.damage,
-                     base_history.damage, departed, end_tool.position, end_tool.rotation,
-                     stage_tool.position, stage_tool.rotation, stage_tool.velocity, stage_tool.omega,
+             inputs=[state.x, state.v, history.rigid, history.damage, departed,
+                     end_tool.position, end_tool.rotation, end_tool.velocity, end_tool.omega,
                      cfg.blade_half_size, cfg.blade_bevel_height, radius, offset, cfg.board_half_extent,
-                     int(branch.cutting and cfg.cut_hold), kn,
-                     (cfg.board_normal_scale or sn) * m.mass / cfg.dt**2, kt, damping,
-                     contact.friction, duration], outputs=[rigid], device=m.device)
+                     int(branch.cutting and cfg.cut_hold)], outputs=[rigid], device=m.device)
     history.rigid = rigid
     if branch.pairs.shape[0]:
         pairs = m.zeros(branch.pairs.shape[0], wp.vec3)
         m.launch(pair_history_endpoint, branch.pairs.shape[0],
-                 inputs=[state.x, state.v, stage.x, stage.v, branch.pairs, branch.previous,
-                         base_history.pairs, 2 * radius, kn / 2, kt / 2, damping / 2,
-                         contact.friction, duration], outputs=[pairs], device=m.device)
+                 inputs=[state.x, branch.pairs, history.pairs, 2 * radius], outputs=[pairs], device=m.device)
         history.pairs = pairs
     return history
 
@@ -168,18 +120,13 @@ def advance_midpoint(contact, state, history, tool, duration, cutting):
     # Material transport uses interpolated grid velocities, so an Euler-stage
     # contact can be absent from a search using the initial particle velocities.
     stage_keys = np.union1d(keys, contact.contact_keys(mid, history.codes, 0.))
-    endpoint_branch = contact.freeze(history.codes.numpy(), stage_keys, history.pair_keys,
-                                     history.damage.numpy() >= 1, cutting=cutting)
-    mid_history = project_endpoint(contact, mid, mid_history, state, history, tool, mid_tool,
-                                    half, endpoint_branch, departed)
-    mid_branch = contact.freeze(history.codes.numpy(), stage_keys, stage_keys,
+    mid_branch = contact.freeze(history.codes.numpy(), stage_keys, history.pair_keys,
                                 history.damage.numpy() >= 1, cutting=cutting)
     result, updated, force = FixedCutContact.step(
         contact, mid, mid_history, mid_tool, mid_branch, duration=duration, edge_departed=departed,
         stage_base=state, stage_history=history,
     )
-    updated = project_endpoint(contact, result, updated, mid, history, mid_tool, end_tool,
-                                duration, endpoint_branch, departed)
+    updated = project_endpoint(contact, result, updated, end_tool, mid_branch, departed)
     updated.path_midpoint = m.zeros(m.n, wp.vec3, False)
     m.launch(position_midpoint, m.n, inputs=[state.x, mid.x, result.x],
              outputs=[updated.path_midpoint], device=m.device)

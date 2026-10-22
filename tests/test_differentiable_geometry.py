@@ -11,7 +11,7 @@ from blademaster_warp.solver import Config
 from scripts.diff_cut_validate import reaction_loss, terminal_loss
 
 
-def fixture(angle=0., omega=0., spacing=.006, shape='block', young=20000, seed=7, friction_update='lagged',
+def fixture(angle=0., omega=0., spacing=.006, shape='block', young=20000, seed=7, friction_update='implicit',
             integration='symplectic'):
     cfg = Config(size=(.012, .012, .012), grid_spacing=spacing, dt=.0002,
                  sampling_seed=seed, shape=shape, young_modulus=young, yield_stress=.01 * young,
@@ -30,9 +30,9 @@ def fixture(angle=0., omega=0., spacing=.006, shape='block', young=20000, seed=7
 
 @pytest.mark.parametrize('angle,omega', [(0., 0.), (.2, .5)])
 @pytest.mark.parametrize('parameter', ['position', 'velocity', 'x'])
-@pytest.mark.parametrize('friction_update,integration', [('lagged', 'symplectic'),
-                                                        ('projected', 'symplectic'),
-                                                        ('projected', 'midpoint')])
+@pytest.mark.parametrize('friction_update,integration', [('implicit', 'symplectic'),
+                                                        ('midpoint', 'symplectic'),
+                                                        ('midpoint', 'midpoint')])
 @pytest.mark.parametrize('spacing,shape,young,seed', [(.006, 'block', 20000, 7), (.004, 'block', 400000, 7),
                                                      (.006, 'cylinder', 20000, 7), (.006, 'block', 20000, 0)])
 def test_event_time_and_state_derivatives(angle, omega, parameter, spacing, shape, young, seed,
@@ -80,7 +80,7 @@ def test_event_time_and_state_derivatives(angle, omega, parameter, spacing, shap
 @pytest.mark.parametrize('integration', ['symplectic', 'midpoint'])
 @pytest.mark.parametrize('checkpoint_device', [None, 'cpu'])
 def test_geometry_event_checkpoint(integration, checkpoint_device):
-    m, c, initial, history, tool = fixture(.2, .5, friction_update='projected', integration=integration)
+    m, c, initial, history, tool = fixture(.2, .5, friction_update='midpoint', integration=integration)
     steps = 3
 
     def knife(step):
@@ -110,7 +110,7 @@ def test_geometry_event_checkpoint(integration, checkpoint_device):
 
 @pytest.mark.parametrize('integration', ['symplectic', 'midpoint'])
 def test_free_fall_event_time_matches_quadratic_flow(integration):
-    m, c, initial, history, tool = fixture(friction_update='projected', integration=integration)
+    m, c, initial, history, tool = fixture(friction_update='midpoint', integration=integration)
     x = initial.x.numpy() + [.02, 0, 0]
     initial = m.state(x=x, v=np.tile([0, 0, .02], (m.n, 1)))
     particle = int(np.argmax(x[:, 2]))

@@ -77,7 +77,7 @@ def test_freefall_energy_matches_discrete_integrator(integration, divisor):
                  external_tool=True, young_modulus=20000, yield_stress=0,
                  contact_reference_dt=.0002, flip_reference_dt=.0002)
     model = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True, requires_grad=False)
-    contact = GeometryEventContact(model, friction_update='projected', integration=integration)
+    contact = GeometryEventContact(model, friction_update='midpoint', integration=integration)
     state = model.state(x=model.reference + [0, 0, .1])
     history = contact.history()
     initial = energy_snapshot(model, state)

@@ -1,4 +1,4 @@
-"""Increment-project friction: continuity, constitutive work and trajectory VJPs."""
+"""Constitutive friction: continuity, constitutive work and trajectory VJPs."""
 
 import numpy as np
 import pytest
@@ -12,14 +12,14 @@ from scripts.diff_cut_validate import terminal_loss
 
 
 @wp.kernel
-def probe(parameters: wp.array(dtype=float), dt: float, damping: float, projected: int,
+def probe(parameters: wp.array(dtype=float), dt: float, damping: float, midpoint: int,
           impulse: wp.array(dtype=wp.vec3), history: wp.array(dtype=wp.vec3)):
     ratio = dt / 0.0002
     j, h = branch_penalty(parameters[0], wp.vec3(parameters[1], parameters[2], 0.0),
                            wp.vec3(0.0, 0.0, 1.0), 3.0e-5,
                            wp.vec3(parameters[3], parameters[4], 0.0), dt,
                            0.1 * ratio * ratio, parameters[5], parameters[6],
-                           0.05 * ratio * ratio, damping, -1, projected, 0)
+                           0.05 * ratio * ratio, damping, -1, midpoint, 0)
     impulse[0] = j
     history[0] = h
 
@@ -31,9 +31,9 @@ def model():
                               precision='float64', ordered_transfers=True)
 
 
-def evaluate(m, parameters, *, dt=.0002, damping=.1, projected=1):
+def evaluate(m, parameters, *, dt=.0002, damping=.1, midpoint=0):
     impulse, history = m.zeros(1, wp.vec3), m.zeros(1, wp.vec3)
-    m.launch(probe, 1, inputs=[parameters, dt, damping, projected], outputs=[impulse, history], device=m.device)
+    m.launch(probe, 1, inputs=[parameters, dt, damping, midpoint], outputs=[impulse, history], device=m.device)
     return impulse, history
 
 
@@ -44,21 +44,20 @@ def test_equal_coulomb_coefficients_have_continuous_history(dt):
     damping = .2 * np.sqrt(mass * k)
     threshold_history = (.2 * normal_force - damping * speed) / k
     for epsilon in (1e-8, 1e-10):
-        for projected in (0, 1):
-            boundary = threshold_history - projected * dt * speed
+        for midpoint in (0, 1):
+            theta = .5 if midpoint else 1.
+            boundary = threshold_history - theta * dt * speed
             states = []
             for sign in (-1, 1):
                 p = m.array([-.001, speed, 0., boundary + sign * epsilon, 0., .2, .2], float)
-                states.append(evaluate(m, p, dt=dt, projected=projected)[1].numpy()[0, 0])
+                states.append(evaluate(m, p, dt=dt, midpoint=midpoint)[1].numpy()[0, 0])
             jump = abs(states[1] - states[0])
-            if projected:
-                assert jump <= 2 * epsilon
-            else:
-                np.testing.assert_allclose(jump, dt * speed, atol=2 * epsilon, rtol=0)
+            assert jump <= 2 * epsilon
+
 
 
 @pytest.mark.parametrize('sliding', [False, True])
-def test_projected_force_and_history_vjp(sliding, monkeypatch):
+def test_midpoint_force_and_history_vjp(sliding, monkeypatch):
     monkeypatch.setattr(wp.config, 'verify_autograd_array_access', True)
     m = model()
     base = np.array([-.001, .1, .02, .0005 if sliding else .0001, .00004, .2, .2])
@@ -94,7 +93,7 @@ def test_zero_coulomb_radius_has_zero_tangential_force_derivative():
 
 
 @pytest.mark.parametrize('sliding', [False, True])
-def test_undamped_projected_friction_work_balance(sliding):
+def test_undamped_midpoint_friction_work_balance(sliding):
     m = model()
     dt, k = .0002, .05 * 3e-5 / .0002**2
     old = np.array([.00039 if sliding else .0001, 0., 0.])
@@ -114,9 +113,9 @@ def test_undamped_projected_friction_work_balance(sliding):
         assert slip_work > 0
 
 
-def test_projected_board_history_checkpoint_and_friction_gradient():
+def test_midpoint_board_history_checkpoint_and_friction_gradient():
     m = model()
-    c = NaturalCutContact(m, friction_update='projected')
+    c = NaturalCutContact(m, friction_update='midpoint')
     initial = m.state(x=m.reference - [0, 0, .0003], v=np.tile([.2, .03, -.01], (m.n, 1)))
     history = c.history()
     tool = c.tool([1, 1, 1])

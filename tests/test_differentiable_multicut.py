@@ -21,7 +21,7 @@ def model(shape='block'):
                  external_tool=True, blade_grid_constraint=True, blade_bevel_height=.005,
                  contact_reference_dt=.0002, flip_reference_dt=.0002)
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
-    return m, GeometryEventContact(m, friction_update='projected', integration='midpoint')
+    return m, GeometryEventContact(m, friction_update='midpoint', integration='midpoint')
 
 
 def test_new_cut_resets_damage_adjoint_and_preserves_material_and_old_digits():

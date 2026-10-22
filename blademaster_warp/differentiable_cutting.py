@@ -6,7 +6,8 @@ from time import perf_counter
 import numpy as np
 import warp as wp
 
-from .contact import blade_query, penalty_impulse
+from .contact import blade_query
+from .friction import tangential_return
 from .differentiable_contact import PrescribedContact
 from .differentiable_material import FixedTopology, PlasticState
 from .differentiable_events import crossing_fraction
@@ -16,7 +17,7 @@ from . import differentiable_constraint as grid_constraint
 @wp.func
 def contact_mode(gap: float, relative: wp.vec3, normal: wp.vec3, history: wp.vec3,
                  mass: float, dt: float, sn: float, mus: float, gk: float, gc: float,
-                 project_history: int, stage: int):
+                 midpoint_friction: int, stage: int):
     predicted = gap
     if stage == 0:
         predicted += dt * wp.min(wp.dot(relative, normal), 0.0)
@@ -25,12 +26,14 @@ def contact_mode(gap: float, relative: wp.vec3, normal: wp.vec3, history: wp.vec
     jn = sn * mass / dt * (-predicted)
     vt = relative - wp.dot(relative, normal) * normal
     ht = history - wp.dot(history, normal) * normal
-    if project_history != 0 and stage == 0:
-        ht = ht + dt * vt
+    theta = float(1.0)
+    if midpoint_friction != 0:
+        theta = 0.5
+    ht = ht + theta * dt * vt
     k = gk * mass / (dt * dt)
     damping = 2.0 * gc * wp.sqrt(mass * k)
     mode = int(2)
-    if wp.length((-k * ht - damping * vt) * dt) <= mus * jn and (project_history == 0 or mus > 0.0):
+    if wp.length((-k * ht - damping * vt) * dt) <= mus * jn and mus * jn > 0.0:
         mode = 1
     if wp.dot(relative, normal) < 0.0:
         mode += 10
@@ -40,32 +43,23 @@ def contact_mode(gap: float, relative: wp.vec3, normal: wp.vec3, history: wp.vec
 @wp.func
 def branch_penalty(gap: float, relative: wp.vec3, normal: wp.vec3, mass: float, history: wp.vec3,
                    dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, mode: int,
-                   project_history: int, stage: int):
+                   midpoint_friction: int, stage: int):
     if mode < 0:
-        if project_history == 0 and stage == 0:
-            return penalty_impulse(gap, relative, normal, mass, history, dt, sn, mus, mud, gk, gc)
-        mode = contact_mode(gap, relative, normal, history, mass, dt, sn, mus, gk, gc, project_history, stage)
+        mode = contact_mode(gap, relative, normal, history, mass, dt, sn, mus, gk, gc, midpoint_friction, stage)
     if mode == 0:
         return wp.vec3(0.0), wp.vec3(0.0)
     closing = float(0.0)
     if mode >= 10 and stage == 0:
         closing = wp.dot(relative, normal)
     jn = -sn * mass / dt * (gap + dt * closing)
-    vt = relative - wp.dot(relative, normal) * normal
-    ht = history - wp.dot(history, normal) * normal
     k = gk * mass / (dt * dt)
     damping = 2.0 * gc * wp.sqrt(mass * k)
-    force_history = ht
-    if project_history != 0 and stage == 0:
-        force_history = ht + dt * vt
-    trial = (-k * force_history - damping * vt) * dt
-    if mode % 10 == 1:
-        return jn * normal + trial, ht + dt * vt
-    applied = wp.vec3(0.0)
-    magnitude = wp.length(trial)
-    if magnitude > 0.0:
-        applied = trial * (mud * jn / magnitude)
-    return jn * normal + applied, -(applied / dt + damping * vt) / k
+    theta = float(1.0)
+    if midpoint_friction != 0:
+        theta = 0.5
+    force, updated = tangential_return(normal, relative, history, jn / dt, k, damping,
+                                       dt, mus, mud, theta, mode % 10)
+    return jn * normal + dt * force, updated
 
 
 @wp.kernel
@@ -98,7 +92,7 @@ def rigid_step(
     fracture_energy: wp.array(dtype=float),
     threshold_factor: float,
     integrate_release: int,
-    project_history: int,
+    midpoint_friction: int,
     stage: int,
     cutting: int,
     cut_hold: int,
@@ -129,10 +123,10 @@ def rigid_step(
         board_gap = 1.0e30
     board, board_history = branch_penalty(
         board_gap, v[p], wp.vec3(0.0, 0.0, 1.0), mass, history[0, p],
-        dt, board_sn, friction[0], friction[1], gk, gc, fixed_modes[0, p], project_history, stage,
+        dt, board_sn, friction[0], friction[1], gk, gc, fixed_modes[0, p], midpoint_friction, stage,
     )
     modes[0, p] = contact_mode(board_gap, v[p], wp.vec3(0.0, 0.0, 1.0), history[0, p],
-                               mass, dt, board_sn, friction[0], gk, gc, project_history, stage)
+                               mass, dt, board_sn, friction[0], gk, gc, midpoint_friction, stage)
     q = rotation[0]
     local = wp.quat_rotate_inv(q, xp - position[0])
     closest, normal, distance = blade_query(local, half, bevel)
@@ -150,10 +144,10 @@ def rigid_step(
     relative = v[p] - velocity[0] - wp.cross(omega[0], lever)
     blade, blade_history = branch_penalty(
         distance - blade_offset, relative, n, mass, history[1, p],
-        dt, sn, friction[0], friction[1], gk, gc, fixed_modes[1, p], project_history, stage,
+        dt, sn, friction[0], friction[1], gk, gc, fixed_modes[1, p], midpoint_friction, stage,
     )
     modes[1, p] = contact_mode(distance - blade_offset, relative, n, history[1, p],
-                               mass, dt, sn, friction[0], gk, gc, project_history, stage)
+                               mass, dt, sn, friction[0], gk, gc, midpoint_friction, stage)
     feature = int(0)
     for axis in range(3):
         digit = int(0)
@@ -224,7 +218,7 @@ def pair_step(
     sn: float,
     gk: float,
     gc: float,
-    project_history: int,
+    midpoint_friction: int,
     stage: int,
     next_history: wp.array(dtype=wp.vec3),
     impulse: wp.array(dtype=wp.vec3),
@@ -244,10 +238,10 @@ def pair_step(
         old = history[previous[index]]
     applied, updated = branch_penalty(distance - diameter, v[p] - v[q], normal,
                                      mass / 2.0, old, dt, sn, friction[0], friction[1], gk, gc,
-                                     fixed_modes[index], project_history, stage)
+                                     fixed_modes[index], midpoint_friction, stage)
     next_history[index] = updated
     modes[index] = contact_mode(distance - diameter, v[p] - v[q], normal, old,
-                               mass / 2.0, dt, sn, friction[0], gk, gc, project_history, stage)
+                               mass / 2.0, dt, sn, friction[0], gk, gc, midpoint_friction, stage)
     wp.atomic_add(impulse, p, applied)
     wp.atomic_add(impulse, q, -applied)
 
@@ -305,10 +299,10 @@ def pair_snapshot(solver):
 class FixedCutContact(PrescribedContact):
     """Fixed release flags and pair identities; pose and particle states remain differentiable."""
 
-    def __init__(self, trajectory, *, friction_update='lagged'):
+    def __init__(self, trajectory, *, friction_update='implicit'):
         super().__init__(trajectory, allow_grid_constraint=True)
-        if friction_update not in ('lagged', 'projected'):
-            raise ValueError('Friction history update must be lagged or projected')
+        if friction_update not in ('implicit', 'midpoint'):
+            raise ValueError('Friction history update must be implicit or midpoint')
         self.friction_update = friction_update
         cfg = trajectory.config
         self.friction = trajectory.array([cfg.friction_static, cfg.friction_dynamic], float)
@@ -346,7 +340,8 @@ class FixedCutContact(PrescribedContact):
              stage_base=None, stage_history=None):
         m, cfg = self.model, self.model.config
         duration = m.duration if duration is None else duration
-        damage = history.damage if stage_history is None else stage_history.damage
+        base_history = history if stage_history is None else stage_history
+        damage = base_history.damage
         stage = int(stage_base is not None)
         edge_departed = self._no_edge_departure if edge_departed is None else edge_departed
         sn, gk = cfg.contact_scales()
@@ -364,14 +359,14 @@ class FixedCutContact(PrescribedContact):
         updated.trial_damage = m.zeros(m.n, float)
         updated.damage_work = m.zeros(m.n, float)
         m.launch(rigid_step, m.n,
-                  inputs=[state.x, state.v, history.rigid, damage, frozen.released, edge_departed,
+                  inputs=[state.x, state.v, base_history.rigid, damage, frozen.released, edge_departed,
                           frozen.rigid_modes,
                           tool.position, tool.velocity, tool.rotation, tool.omega, self.friction,
                           cfg.blade_half_size, cfg.blade_bevel_height, radius, blade_offset,
                           cfg.board_half_extent, m.mass, duration, cfg.dt, sn, cfg.board_normal_scale or sn,
                           gk, cfg.tangent_damping, cfg.cut_band_cells * cfg.grid_spacing,
                           self.fracture_energy, threshold_factor, int(self.integrate_release),
-                          int(self.friction_update == 'projected'),
+                          int(self.friction_update == 'midpoint'),
                           stage,
                           int(frozen.cutting), int(cfg.cut_hold), int(cfg.cut_work == "advance")],
                   outputs=[updated.rigid, updated.damage, updated.trial_damage, updated.damage_work, rigid, reaction,
@@ -379,9 +374,9 @@ class FixedCutContact(PrescribedContact):
         if frozen.pairs.shape[0]:
             m.launch(pair_step, frozen.pairs.shape[0],
                       inputs=[state.x, state.v, frozen.pairs, frozen.previous, frozen.pair_modes,
-                              history.pairs, self.friction,
+                              base_history.pairs, self.friction,
                               2 * radius, m.mass, duration, cfg.dt, sn, gk, cfg.tangent_damping,
-                              int(self.friction_update == 'projected'), stage],
+                              int(self.friction_update == 'midpoint'), stage],
                       outputs=[updated.pairs, pairs, updated.pair_modes], device=m.device)
         m.launch(add_impulses, m.n, inputs=[rigid, pairs], outputs=[impulse], device=m.device)
         constraint_result = None
@@ -550,7 +545,7 @@ class EventCutContact(FixedCutContact):
     are supplied by the caller; release flags follow the evolving damage.
     """
 
-    def __init__(self, trajectory, *, friction_update='lagged'):
+    def __init__(self, trajectory, *, friction_update='implicit'):
         if trajectory.config.cut_hold:
             raise ValueError('Event release requires cut_hold=False: the contact normal must persist across release')
         super().__init__(trajectory, friction_update=friction_update)

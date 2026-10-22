@@ -51,3 +51,35 @@ def energy_snapshot(model, state, gravity=(0., 0., -9.81)):
         *(getattr(state, name).numpy() for name in ('x', 'v', 'F', 'Fp')),
         model.mass, model.volume, float(model.young.numpy()[0]), model.config.poisson_ratio, gravity,
     )
+
+
+def contact_storage(gap, history, normal_stiffness, tangent_stiffness):
+    """Linear normal penalty and tangential elastic history; SI units per contact."""
+    gap = np.asarray(gap, dtype=float)
+    history = np.asarray(history, dtype=float)
+    kn, kt, gap = np.broadcast_arrays(normal_stiffness, tangent_stiffness, gap)
+    if (history.shape != gap.shape + (3,) or not np.isfinite(history).all()
+            or not np.isfinite([gap, kn, kt]).all() or np.any(kn <= 0) or np.any(kt <= 0)):
+        raise ValueError('Invalid contact energy state or stiffness')
+    return dict(normal_j=.5 * kn * np.minimum(gap, 0.) ** 2,
+                tangent_j=.5 * kt * np.sum(history * history, axis=-1))
+
+
+def friction_increment_energy(history, updated, displacement, force, stiffness, damping, duration, theta):
+    """History is elastic displacement; total displacement also includes slider slip."""
+    h0, h1, dx, force = [np.asarray(a, dtype=float) for a in (history, updated, displacement, force)]
+    if (h0.shape != h1.shape or h0.shape != dx.shape or h0.shape != force.shape
+            or h0.shape[-1:] != (3,) or not np.isfinite([h0, h1, dx, force]).all()
+            or not np.isfinite([stiffness, damping, duration, theta]).all()
+            or stiffness <= 0 or damping < 0 or duration <= 0 or not .5 <= theta <= 1):
+        raise ValueError('Invalid friction energy increment')
+    elastic_increment = h1 - h0
+    slip = dx - elastic_increment
+    square = np.sum(elastic_increment ** 2, axis=-1)
+    return dict(
+        input_work_j=-np.sum(force * dx, axis=-1),
+        storage_change_j=.5 * stiffness * np.sum(h1 ** 2 - h0 ** 2, axis=-1),
+        viscous_j=damping / duration * square,
+        sliding_j=-np.sum(force * slip, axis=-1),
+        integration_j=(theta - .5) * stiffness * square,
+    )

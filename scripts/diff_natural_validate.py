@@ -68,14 +68,14 @@ def intact_initial(cfg):
                        np.zeros(m.n, dtype=np.int64), np.empty(0, dtype=np.int64), 0., cfg.dt, [])
 
 
-def time_edges(steps, dt, phase, start, trajectory):
+def time_edges(steps, dt, phase, start, trajectory, knots=None):
     total = steps * dt
     edges = np.arange(steps + 1, dtype=float) * dt
     if phase:
         edges = np.concatenate(([0.], (np.arange(steps) + phase) * dt, [total]))
-    if trajectory == 'cut-withdraw-push':
+    if knots is not None or trajectory == 'cut-withdraw-push':
         tolerance = 8 * np.finfo(float).eps * max(total, dt)
-        for knot in PATH_TIMES[1:]:
+        for knot in (PATH_TIMES[1:] if knots is None else knots):
             relative = knot - start
             if 0 < relative < total:
                 nearest = int(np.argmin(np.abs(edges - relative)))
@@ -89,14 +89,16 @@ def time_edges(steps, dt, phase, start, trajectory):
 def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='projected',
              *, initial_window=None, return_arrays=False, adjoint='full',
              controls_to_check=('knife_x_mm', 'knife_depth_scale'), integration='midpoint', phase=0.,
-             trajectory='straight', progress=False, state_parameters=(), checkpoint_device=None):
+             trajectory='straight', progress=False, state_parameters=(), checkpoint_device=None, path=None):
     directions = dict(knife_x_mm=np.array([1., 0., 0.]),
                       knife_depth_scale=np.array([0., 1., 0.]),
                       knife_lateral_scale=np.array([0., 0., 1.]))
+    if path is not None:
+        directions = dict(zip(path.control_names, np.eye(len(path.control_names))))
     if adjoint not in ('full', 'checkpoint') or (adjoint == 'checkpoint' and not segment_steps):
         raise ValueError('Use full Tape or checkpoint adjoints with at least one segment length')
     if not controls_to_check or any(name not in directions for name in controls_to_check):
-        raise ValueError('Select knife_x_mm, knife_depth_scale or knife_lateral_scale')
+        raise ValueError(f'Select controls from {tuple(directions)}')
     if trajectory not in ('straight', 'cut-withdraw-push'):
         raise ValueError('Trajectory must be straight or cut-withdraw-push')
     if any(name not in STATE_PARAMETERS for name in state_parameters):
@@ -105,14 +107,18 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     if not np.isfinite(phase) or not 0 <= phase < 1:
         raise ValueError('Time-grid phase must be in [0, 1)')
     total_duration = steps * cfg.dt
-    edges = time_edges(steps, cfg.dt, phase, window.start_time, trajectory)
-    durations = np.diff(edges) if phase or trajectory != 'straight' else np.full(steps, cfg.dt)
+    edges = time_edges(steps, cfg.dt, phase, window.start_time, trajectory,
+                       None if path is None else path.times)
+    durations = np.diff(edges) if phase or trajectory != 'straight' or path is not None else np.full(steps, cfg.dt)
     instructions = [CutInstruction(duration=float(dt),
                     cutting=trajectory == 'straight' or window.start_time + edges[i] < PATH_TIMES[1])
                     for i, dt in enumerate(durations)]
+    if path is not None:
+        instructions = [path.instruction(window.start_time + edges[i], float(dt))
+                        for i, dt in enumerate(durations)]
     steps = len(durations)
     origin, values, saved, rows = window.origin, window.values, window.history, window.rows
-    controls = np.array([0., 1., 1.])
+    controls = np.array([0., 1., 1.]) if path is None else np.zeros(len(path.control_names))
     m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
     contact_type = GeometryEventContact if geometry == 'event' else NaturalCutContact
     kwargs = dict(integration=integration) if geometry == 'event' else {}
@@ -120,35 +126,67 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     initial = m.state(**values)
     history = c.history(**saved, codes=window.codes, pair_keys=window.pair_keys)
     q = m.array(controls, float)
+    path_tool = None if path is None else path.bind(m, q)
 
     def knife(step):
+        if path_tool is not None:
+            return path_tool(window.start_time + edges[step])
         if trajectory == 'cut-withdraw-push':
             return tool_at_time(m, q, window.start_time + edges[step])
         return differentiable_tool(m, q, origin, window.start_time + edges[step])
 
     def objective(step, state, h, force, loss):
-        m.launch(reaction_loss, 1, inputs=[force, float(durations[step])], outputs=[loss], device=m.device)
+        if path is None or window.start_time + edges[step] >= path.objective_start:
+            m.launch(reaction_loss, 1, inputs=[force, float(durations[step])], outputs=[loss], device=m.device)
         if step == steps - 1:
             m.launch(terminal_loss, m.n, inputs=[state.v, state.Fp], outputs=[loss], device=m.device)
 
-    def rollout(compare=False):
+    def rollout(compare=False, log=False):
         state, h = initial, history
         loss = m.zeros(1, float)
         codes, pairs, released, rigid_modes = [], [], [], []
         geometry_events = []
-        forces, damage_work = [], 0.
+        forces, damage_work, damage_increment = [], 0., 0.
+        milestones = []
+        previous_damage = h.damage.numpy()
+        old_cut_codes = h.codes.numpy() % (3 ** h.cut_index)
+        pause_damage_error = 0.
         error = {name: 0. for name in (*values, 'force', 'rigid_history', 'pair_history', 'damage')}
         discrete = dict(side_particles=0, pair_keys=0)
         for step in range(steps):
+            previous_index = h.cut_index
+            if path is not None and instructions[step].cut_index != previous_index:
+                old_cut_codes = h.codes.numpy() % (3 ** instructions[step].cut_index)
             state, h, force = c.step(state, h, knife(step), instructions[step])
             objective(step, state, h, force, loss)
             codes.append(h.codes.numpy())
             pairs.append(h.pair_keys.copy())
-            released.append(h.damage.numpy() >= 1)
+            current_damage = h.damage.numpy()
+            released.append(current_damage >= 1)
             rigid_modes.append(h.rigid_modes.numpy())
             geometry_events.append({p: float(t.numpy()[0]) for p, t in h.geometry_events})
             forces.append(force.numpy()[0])
             damage_work += float(np.sum(h.damage_work.numpy()))
+            damage_increment += float(np.sum(current_damage) - (
+                np.sum(previous_damage) if h.cut_index == previous_index else 0.))
+            if path is not None:
+                if not np.array_equal(codes[-1] % (3 ** h.cut_index), old_cut_codes):
+                    raise RuntimeError('A later cut changed an earlier cut digit')
+                if not instructions[step].cutting and h.cut_index == previous_index:
+                    pause_damage_error = max(pause_damage_error, float(np.max(np.abs(
+                        current_damage - previous_damage))))
+            previous_damage = current_damage
+            if path is not None and (step == steps - 1 or path.segment(window.start_time + edges[step + 1])
+                                     != path.segment(window.start_time + edges[step])):
+                milestones.append(dict(time_s=float(window.start_time + edges[step + 1]),
+                    cut_index=h.cut_index, cutting=instructions[step].cutting,
+                    labelled_per_cut=[int(np.count_nonzero(codes[-1] // 3**i % 3))
+                                      for i in range(h.cut_index + 1)],
+                    damage_sum=float(np.sum(current_damage)),
+                    released_particles=int(np.count_nonzero(current_damage >= 1)),
+                    plastic_max_abs=float(np.max(np.abs(state.Fp.numpy() - np.eye(3))))))
+                if progress and log:
+                    print(json.dumps(dict(stage='milestone', **milestones[-1])), flush=True)
             if compare:
                 row = rows[step]
                 for name in values:
@@ -167,12 +205,14 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                         np.abs(h.pairs.numpy() - row['pairs']))))
         return loss, state, h, dict(codes=np.asarray(codes), pairs=pairs, released=np.asarray(released),
                                    rigid_modes=np.asarray(rigid_modes), geometry=geometry_events,
-                                   force=np.asarray(forces), damage_work=damage_work), error, discrete
+                                   force=np.asarray(forces), damage_work=damage_work,
+                                   damage_increment=damage_increment, milestones=milestones,
+                                   pause_damage_max_abs=pause_damage_error), error, discrete
 
-    compare = trajectory == 'straight' and phase == 0 and cfg.dt == window.reference_dt and steps == len(rows)
+    compare = path is None and trajectory == 'straight' and phase == 0 and cfg.dt == window.reference_dt and steps == len(rows)
     begun = perf_counter()
     with wp.Tape() if adjoint == 'full' else nullcontext() as tape:
-        loss, terminal, terminal_history, events, forward_error, discrete_error = rollout(compare=compare)
+        loss, terminal, terminal_history, events, forward_error, discrete_error = rollout(compare=compare, log=True)
     forward_s = perf_counter() - begun
     if progress:
         print(json.dumps(dict(stage='forward', duration_s=total_duration, elapsed_s=forward_s,
@@ -287,10 +327,10 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     if not new_labels:
         raise RuntimeError('Selected window contains no new side assignments')
     threshold = cfg.cutting_energy * m.volume**(2 / 3) * (1 - cfg.sharpness) / cfg.sharpness
-    work_from_damage = threshold * np.sum(terminal_history.damage.numpy() - history.damage.numpy())
+    work_from_damage = threshold * events['damage_increment']
     result = dict(config=asdict(cfg), release=release, geometry=geometry, friction_update=friction_update,
                 integration=integration if geometry == 'event' else 'symplectic',
-                adjoint=adjoint, trajectory=trajectory, forward_s=forward_s,
+                adjoint=adjoint, trajectory=trajectory if path is None else path.name, forward_s=forward_s,
                 particles=m.n, prefix_steps=round(window.start_time / cfg.dt),
                 start_time_s=window.start_time, steps=steps, duration_s=total_duration, time_grid_phase=phase,
                 newly_labelled_particles=int(new_labels), peak_pairs=max(map(len, events['pairs'])),
@@ -305,6 +345,9 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                 vs_original_discrete=discrete_error if compare else None,
                 checkpoint=checkpoint, finite_difference=finite_difference,
                 process_peak_live_cuda_pool_bytes=wp.get_mempool_used_mem_high(m.device))
+    if path is not None:
+        result.update(path=path.record(), milestones=events['milestones'],
+                      pause_damage_max_abs=events['pause_damage_max_abs'])
     if not return_arrays:
         return result
     event_times = np.full(m.n, np.nan)

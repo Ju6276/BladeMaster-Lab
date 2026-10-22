@@ -1167,3 +1167,15 @@ OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extri
 OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_rotation_audit.py
 PYTHONPATH=. .venv/bin/python -m pytest tests -q
 ```
+
+## 2026-10-22：E5 约束位移更新与移动面轨迹
+
+`11fbbd5`、dirty=false，RTX 4090，`extrinsic_primal_validate.py`：64 粒子、16 面积分点、160 步，8 类输入各四档自然差分，至少两档相对误差 ≤**2e-5**；最差第二档为初速度的 **1.5073e-5**。初速度四档误差为 **0.404486/0.649818/4.2691e-6/1.5073e-5**；旋转归一化状态差 **5.6409e-11**，标准 **1e-10**。原型用稳定增量求和及全局约束位移直接更新粒子，每步与网格冲量推进对照 x/v/F/Fp/应力，原四档扰动和验收阈值保持不变。
+
+`a7df3f4` 整理 `MaterialTrajectory.correct_displacement`；提交前在 `11fbbd5`、dirty=true 的对应源码上，13 项未切开/部分切开/交叉侧码、弹性/塑性及 PIC/FLIP 状态与 VJP 对照通过。全量 **1076 passed、8 skipped、18 subtests passed**（265.79 s）。8 项跳过为 CRESSim 上游构建。干净 `a7df3f4` 的整段界面复跑已启动；自然切口接入及整体能量扫描随后运行。
+
+```bash
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_primal_validate.py
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_displacement_correction.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
+```

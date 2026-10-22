@@ -51,6 +51,32 @@ def samples():
     return [np.asarray(x) for x in zip(*values)]
 
 
+def test_constitutive_return_within_four_ulps_of_yield():
+    model = MaterialTrajectory(Config(size=(.012, .012, .012), grid_spacing=.006), precision='float64')
+    rng = np.random.default_rng(793)
+    stretches = rng.uniform(.8, 1.2, (256, 3))
+    stress = stretches * (stretches - 1)
+    radius = np.linalg.norm(stress - stress.mean(axis=1)[:, None], axis=1)
+    stretches = np.repeat(stretches, 7, axis=0)
+    radius = np.repeat(radius, 7)
+    radius += np.tile([-4, -2, -1, 0, 1, 2, 4], 256) * np.spacing(radius)
+    count = len(radius)
+    F = np.asarray([np.diag(s) for s in stretches])
+    Fp = np.tile(np.eye(3), (count, 1, 1))
+    arrays = [model.array(F, wp.mat33), model.array(Fp, wp.mat33),
+              model.array(np.ones(count), float), model.array(np.ones(count), float),
+              model.array(radius, float)]
+    plastic, actual_stress = model.zeros(count, wp.mat33), model.zeros(count, wp.mat33)
+    success = model.zeros(count, int, False)
+    model.launch(response, count, inputs=arrays, outputs=[plastic, actual_stress, success], device=model.device)
+    assert np.all(success.numpy())
+    np.testing.assert_allclose(plastic.numpy(), Fp, atol=2e-14, rtol=0.)
+    np.testing.assert_allclose(np.linalg.det(plastic.numpy()), 1., atol=2e-14, rtol=0.)
+    J = np.prod(stretches, axis=1)
+    expected = 2 * (stretches - 1) + ((J - 1) * J)[:, None] / stretches
+    np.testing.assert_allclose(actual_stress.numpy(), [np.diag(p) for p in expected], atol=2e-14, rtol=0.)
+
+
 @pytest.mark.parametrize('parameter', range(5), ids=['F', 'Fp', 'mu', 'lambda', 'yield_radius'])
 def test_constitutive_vjp_against_numpy(parameter, monkeypatch):
     monkeypatch.setattr(wp.config, 'verify_autograd_array_access', True)

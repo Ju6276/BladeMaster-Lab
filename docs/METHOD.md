@@ -135,6 +135,8 @@ M5 中点阶段的 `MaterialTrajectory.flow_velocity` 对当前速度先 P2G，�
 
 应力使用本仓库的解析 VJP，塑性返回映射使用驻点方程的隐式 VJP，其余连续算子由 Warp Tape 生成反向。旋转导数的分母取正奇异值之和；塑性谱导数通过稳定对数差商处理重复主伸长。`tests/test_constitutive_adjoint.py` 独立用 NumPy SVD、SciPy 增量能量最小化和第一 Piola 应力检查 24 组旋转、重复/近重复伸长及非对称 Fp，并以两档差分核对 F、Fp、μ、λ、屈服半径的 VJP（rtol=2e-6、atol=1e-7）。`tests/test_plasticity.py` 另检查 400 组随机体积/偏形变的驻点、耗散与塑性体积，以及屈服边界和强压缩的矩阵方向导数。
 
+初始塑性增量为零时，线搜索中的线性项用恒等式 `g·s+r|s|=(r−|g|)|s|+½|g||s||g/|g|+s/|s||²` 计算，避免近屈服时弹性功与塑性功抵消。屈服条件和驻点容差保持原值；1792 个距离屈服边界不超过四个相邻浮点间距的状态检查返回收敛、塑性体积和应力。
+
 时间展开参考 DiffTaichi，塑性组织参考 PlasticineLab，分段反向参考 Warp 的 checkpoint 示例；对应链接见 DIFFERENTIABLE 的方法来源。TLMPM 传递、专用伴随和切割事件积分均在本仓库实现；双精度验证使用相同公式生成的内核。
 
 ## 摩擦弹性历史与滑移耗散

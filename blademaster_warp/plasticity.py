@@ -41,6 +41,16 @@ def incremental_energy_change(stretches: wp.vec3d, increment: wp.vec3d, step: wp
     gradient = deviator(wp.cw_mul(stretches, stretches - wp.vec3d(wp.float64(1.0))))
     plastic = radius * wp.length(step)
     norm = wp.length(increment)
+    if norm == wp.float64(0.0):
+        step_norm = wp.length(step)
+        gradient_norm = wp.length(gradient)
+        if step_norm > wp.float64(0.0) and gradient_norm > wp.float64(0.0):
+            # Near yield, the linear elastic and plastic works cancel. Use
+            # the angle between their directions to retain the small difference.
+            sum_direction = gradient / gradient_norm + step / step_norm
+            linear = ((radius - gradient_norm) * step_norm
+                      + wp.float64(0.5) * gradient_norm * step_norm * wp.length_sq(sum_direction))
+            return linear + elastic
     if norm > wp.float64(0.0):
         unit = increment / norm
         gradient += radius * unit

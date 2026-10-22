@@ -198,7 +198,7 @@ E5 能量基准工作树为 `~/Projects/BladeMaster-Warp-e5-20261022`（`33a7001
 
 公式更新后的自然窗口重验已完成，干净工作树 `~/Projects/BladeMaster-Warp-e5-friction-20261022`，日志 `runs/e5_109fe3f/banana_h6.log`。6 mm 香蕉、2 ms、三相位、dt=15.625/7.8125/3.90625 μs，固定 PIC 参考时间 15.625 μs，比较 32/127 步 CPU 检查点及两档自然差分。`43a939a` 的塑性交叉轨迹已结束，报告为 `~/Projects/BladeMaster-Warp-e4-energy-20261022/runs/e4_43a939a/crossing/report.json`：横移两档误差 **8.03%/13.94%**，深度两档 **7.53%/0.01368%**，3 项失败，队列退出。32/127 步检查点重算状态差均为 **0**。`runs/e4_43a939a/trace_crossing.py` 从未切初态重放基准及横移 ±1e-7 mm，逐段保存状态和约束统计；基准目标精确复现，全部阶段的网格约束求解次数 **0**。
 
-当前公式的 6 mm 交叉两刀复验工作树为 `~/Projects/BladeMaster-Warp-e4-current-20261022`（干净 `ca90da9`），日志 `runs/e4_ca90da9/crossing.log`，报告目录 `runs/e4_ca90da9/crossing/`。命令显式使用 `--dt .000015625 --flip-reference-dt .000015625`，其余配置与上面的长轨迹相同。双精度、固定累加、中点积分及事件求根修复均保留；相关 **105** 项复核通过。`ca90da9` 全量 **1017 passed、8 skipped、18 subtests passed**（273.94 s）。
+当前公式的 6 mm 交叉两刀复验工作树为 `~/Projects/BladeMaster-Warp-e4-current-20261022`（干净 `ca90da9`），日志 `runs/e4_ca90da9/crossing.log`，报告目录 `runs/e4_ca90da9/crossing/`。命令显式使用 `--dt .000015625 --flip-reference-dt .000015625`，其余配置与上面的长轨迹相同。横移 ε=1e-6/1e-7 mm 两项已返回，误差 **0.00094923%/0.00033584%**；深度两项继续验收。双精度、固定累加、中点积分及事件求根修复均保留；相关 **105** 项复核通过。`ca90da9` 全量 **1017 passed、8 skipped、18 subtests passed**（273.94 s）。
 
 旧轨迹 `runs/e4_43a939a/trace_jump.py` 已定位横移 ε=1e-7 mm 的一个跳变：第 44593 步，粒子 1167 的刀距跨过 0，旧摩擦端点回算使历史从 0 跳到 **1.372 μm**。`109fe3f` 已替换该公式；新增 6 项接触起始处的解析连续性检查通过，完整轨迹结果继续以当前公式报告核对。
 
@@ -210,7 +210,7 @@ G_c=7/70/700/1400 与三档步长的 50 ms 扫描已完成，报告在 `e5-trans
 
 `e5-transfer` 的 `runs/e5_release_audit/cohesive_unit.py` 已完成双线性内聚单元的独立验证：四档 G_c 的加载—卸载总功误差 ≤**2.615e-11 J/m²**，192 组状态的 AD/FD 最大相对误差 **1.653e-8**，保留损伤与断后压缩接触。来源、测试参数和数字见 RESULTS。
 
-当前界面工作树为 `~/Projects/BladeMaster-Warp-e5-cohesive-20261022`。`d4bbb6f` 增加多场交换前的网格冲量入口，7 项独立传递/功配对/转置导数检查通过；全量 **1030 passed、8 skipped、18 subtests passed**（261.66 s）。干净提交下 `runs/e5_release_audit/cohesive_grid.py`、`cohesive_grid_refine.py` 完成 24 例平面双侧算例；`cohesive_surface_grid.py` 完成旋转/剪切算例。0.125 μs 三相位的最大相对能量残差 **2.327e-7**，旋转轨迹差 ≤**5.22e-15**，六类输入的两档梯度误差 ≤**8.144e-7**。界面响应已整理到 `cohesive.py`；`tests/test_cohesive.py` 包含断裂功、不可逆历史、虚功、客观性、自然差分和加载边界两侧切线。下一项是自然切口的参考面积、双侧映射、插入牵引平衡与检查点历史，再接回完整刀路；插入受载界面时同时核对受力连续性和能量。
+当前界面工作树为 `~/Projects/BladeMaster-Warp-e5-cohesive-20261022`。`d4bbb6f` 增加多场交换前的网格冲量入口，7 项独立传递/功配对/转置导数检查通过；全量 **1030 passed、8 skipped、18 subtests passed**（261.66 s）。干净提交下 `runs/e5_release_audit/cohesive_grid.py`、`cohesive_grid_refine.py` 完成 24 例平面双侧算例；`cohesive_surface_grid.py` 完成旋转/剪切算例。0.125 μs 三相位的最大相对能量残差 **2.327e-7**，旋转轨迹差 ≤**5.22e-15**，六类输入的两档梯度误差 ≤**8.144e-7**。`769dd89` 已在干净提交下完成旋转/剪切耦合复验，新增 15 项界面测试后的全量为 **1045 passed、8 skipped、18 subtests passed**（249.28 s）。界面响应已整理到 `cohesive.py`；`tests/test_cohesive.py` 包含断裂功、不可逆历史、虚功、客观性、自然差分和加载边界两侧切线。下一项是自然切口的参考面积、双侧映射、插入牵引平衡与检查点历史，再接回完整刀路；插入受载界面时同时核对受力连续性和能量。
 
 同一 `cut_index` 内损伤 D 累积；新刀重置本刀 D，旧侧码与塑性 Fp 保留。M4 使用记录的离散分支；M5 的自然流程在每条扰动轨迹上重新生成侧码、接触对和损伤释放。`scripts.diff_natural_validate --from-initial` 从未切割初态展开，默认窗口模式从原求解器选定的共同状态起步。
 

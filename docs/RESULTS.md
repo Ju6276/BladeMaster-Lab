@@ -1051,6 +1051,8 @@ PYTHONPATH=. .venv/bin/python runs/e4_43a939a/trace_crossing.py
 
 三条完整横移轨迹定位到 **0.696765625 s / 第 44593 步**：粒子 1167 的基准/负扰动/正扰动刀距为 **−4.564e-12/−1.374e-11/+4.609e-12 m**，旧端点摩擦回算产生 **1.372e-6/1.372e-6/0 m** 的历史位移。接触起始处的历史跳变传入后续刀力；此时三条轨迹的塑性、释放及侧码数量相同。`109fe3f` 已删除这条端点回算，当前接触网络在零初始历史下满足 `h₁=Δt μFₙ t/(c+θΔt kₜ)`，随法向载荷趋零；θ=1/2、1 与三档阻尼共 **6** 个解析连续性检查通过。命令：`PYTHONPATH=. .venv/bin/python runs/e4_43a939a/trace_jump.py`、`PYTHONPATH=. .venv/bin/python -m pytest tests/test_friction_energy.py -q`（**33 passed**）。
 
+`ca90da9`，RTX 4090、dirty=false，固定 `--dt .000015625 --flip-reference-dt .000015625` 的当前公式复验：横移 ε=1e-6/1e-7 mm 的 AD/FD 相对误差为 **0.00094923%/0.00033584%**，对应旧值 **8.02884%/13.94012%**。深度两档继续验收。日志：`runs/e4_ca90da9/crossing.log`，命令其余参数同本节的 `diff_multicut_validate`。
+
 `d221ad4`、dirty=true（追加上述 6 项测试及文档），RTX 4090：`PYTHONPATH=. .venv/bin/python -m pytest tests -q`，**1023 passed、8 skipped、18 subtests passed**（254.58 s）。
 
 ## 2026-10-22：E5 完整短轨迹阈值扫描与释放力闭合路径
@@ -1083,7 +1085,7 @@ PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_grid.py
 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_grid_refine.py
 ```
 
-同提交旋转/剪切界面：初始开口 **(−0.03,0.2,0.1) mm**、角速度 **(30,−20,200) s⁻¹**，0.2 ms，dt=1/0.5/0.25 μs。G_c=7 的相对能量残差 **−1.787e-5/−1.936e-7/+1.372e-7**，G_c=70 为 **−1.565e-5/−7.232e-7/−1.817e-7**。160 步整体旋转对照的状态相对差 ≤**5.22e-15**；卸载初态 κ=0.3 mm 下，初速度、界面位置/变形、损伤历史、内聚参数及 E 的两档自然差分最大相对误差 **8.144e-7**（E 用 ε=1e-4/1e-5，其余 1e-5/1e-6）。
+`769dd89`，RTX 4090、dirty=false，旋转/剪切界面：初始开口 **(−0.03,0.2,0.1) mm**、角速度 **(30,−20,200) s⁻¹**，0.2 ms，dt=1/0.5/0.25 μs。G_c=7 的相对能量残差 **−1.787e-5/−1.936e-7/+1.372e-7**，G_c=70 为 **−1.565e-5/−7.232e-7/−1.817e-7**。160 步整体旋转对照的状态相对差 ≤**5.22e-15**；卸载初态 κ=0.3 mm 下，初速度、界面位置/变形、损伤历史、内聚参数及 E 的两档自然差分最大相对误差 **8.144e-7**（E 用 ε=1e-4/1e-5，其余 1e-5/1e-6）。
 
 ```bash
 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_surface_grid.py

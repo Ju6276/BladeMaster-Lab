@@ -818,6 +818,8 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
 
 刀位/行程/横推梯度为 **−0.00869876627 / −1.88067358 / 0.532864613**；`1e-7` 自然差分误差为 **0.001071% / 0.0006306% / 0.01955%**，`1e-8` 为 **0.04597% / 0.0004850% / 0.001143%**。行程负向扰动改变一个粒子的分侧步号。**16/32/128** 步检查点的控制量/初始位置梯度最大差为 **5.49e-14 / 2.29e-12**，全部连续状态重算差 **0**；损伤功平衡误差 **2.17e-19 J**，进程 CUDA 数组内存池峰值 **5.485 GiB**。
 
+屈服应力 **30 kPa**，末端目标对其倍数的梯度为 **−1.15993703**；`1e-7/1e-8` 自然差分误差为 **0.00005520%/0.0004225%**，扰动后的末端侧码及释放集合一致。
+
 ```bash
 PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
   --output runs/e23_fb379d4/initial_1050ms_gc700 --geometry event --from-initial \
@@ -825,4 +827,5 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
   --adjoint checkpoint --segment-steps 16 32 128 --epsilons 1e-7 \
   --parameters knife_x_mm knife_depth_scale knife_lateral_scale
 PYTHONPATH=. .venv/bin/python runs/e23_fb379d4/full_path_extra_fd.py
+PYTHONPATH=. .venv/bin/python runs/e23_fb379d4/full_path_yield_fd.py
 ```

@@ -992,3 +992,18 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_plasticity.py tests/test_ener
 PYTHONPATH=. .venv/bin/python -m pytest tests -q --tb=short
 PYTHONPATH=. .venv/bin/python runs/e5_plastic_probe.py
 ```
+
+
+### 2026-10-22：M5 E5 切向摩擦储能与耗散
+
+`109fe3f`，RTX 4090：原求解器与可微接触共用 Kelvin–Voigt–滑动元件更新，原/M4 使用 θ=1，M5 中点使用 θ=1/2。**27** 项接触能量检查通过，覆盖随机法向和状态、三档阻尼、零摩擦、解析松弛、两档状态/参数差分与实际接触核；随机增量的储能/耗散恒等式残差 ≤**2e-18 J**。接触振子状态与梯度的步长减半误差下降 **>3.8 倍**，粘滑切换、自然事件及检查点检查通过。
+
+同参数单接触：m=0.01 kg、kₙ=1000 N/m、kₜ=500 N/m、阻尼比 0.1、间隙 −0.1 mm、切向速度 0.5 m/s。`43a939a` 的零摩擦输入功为 0，新增储能 **5e-5 J**；`109fe3f` 干净提交在 **100/50/25 μs** 三档步长下的输入功、储能和耗散均为 **0**。μ=0.2、100 μs 时，输入功 **1e-6 J**、储能 **4.48459e-9 J**、耗散 **9.95515e-7 J**。
+
+切向步长检查使用新更新矩阵，稳定条件为 `d>0、γk+2d<4`，d=2γc√γk；新增一个边界测试拒绝谱半径大于 1 的步长。旋转做功梯度以基准做功归一化，两个自然差分仍使用 rtol=2e-4。全量 **1003 passed、8 skipped、18 subtests passed**，**271.00 s**；8 项跳过为 CRESSim 上游构建。整体轨迹分项能量和 G_c 扫描继续执行。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_friction_energy.py tests/test_differentiable_midpoint.py tests/test_tangent_history_step.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
+PYTHONPATH=. .venv/bin/python runs/e5_friction_probe.py
+```

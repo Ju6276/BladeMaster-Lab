@@ -473,6 +473,15 @@ class FixedCutContact(PrescribedContact):
                             or not np.array_equal(h.pair_keys, expected_history.pair_keys)
                             or h.cut_index != expected_history.cut_index):
                         raise RuntimeError("Checkpoint recomputation changed the cutting topology")
+                for name in ('side', 'rigid_modes', 'pair_modes'):
+                    actual = getattr(h, name)
+                    reference = getattr(expected_history, name)
+                    if ((actual is None) != (reference is None)
+                            or (actual is not None
+                                and not np.array_equal(actual.numpy(), reference.numpy()))):
+                        raise RuntimeError(f"Checkpoint recomputation changed contact state {name}")
+                if h.grid_batches != expected_history.grid_batches:
+                    raise RuntimeError("Checkpoint recomputation changed the grid solve schedule")
                 actual_boundary = h.edge_departed
                 expected_boundary = expected_history.edge_departed
                 if ((actual_boundary is None) != (expected_boundary is None)

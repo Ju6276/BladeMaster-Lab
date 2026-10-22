@@ -1073,3 +1073,22 @@ PYTHONPATH=. .venv/bin/python runs/e5_release_cycle.py
 `ec7bcb4`，RTX 4090、dirty=false，独立单元使用 [Camanho–Dávila 双线性界面形式及 MOOSE 实现](https://mooseframework.inl.gov/releases/moose/2022-06-10/source/materials/cohesive_zone_model/BiLinearMixedModeTraction.html)：最大开裂位移保存不可逆损伤，压缩刚度独立保留。测试刚度 **5e8 Pa/m**、强度 **5e4 Pa**，G_c=7/70/700/1400 的加载—卸载—完全断裂功分别等于 **7/70/700/1400 J/m²**，最大能量绝对残差 **2.615e-11 J/m²**；断裂后的 −0.03 mm 压缩对应 **−15 kPa**。
 
 192 组状态的开裂位移、历史和三个材料参数自然差分（ε=1e-5/1e-6/1e-7）最大相对误差 **1.653e-8**；两步加载历史到卸载力的梯度误差 **5.979e-9**。128 组刚体旋转与储能虚功通过。混合开裂/剪切路径采用 128/256/512 个分段时，积分功残差 **−2.872e-4/−7.180e-5/−1.795e-5 J/m²**，每次细化约降 4 倍。下一项将界面连接运行时生成的切口，核对插入能量、双侧力及刀路导数。命令：`PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_unit.py`。
+
+## 2026-10-22：E5 双侧界面与 TLMPM 耦合
+
+`d4bbb6f`，RTX 4090、dirty=false，64 粒子、12 mm 方块、6 mm 网格、E=20 kPa、纯 FLIP、无重力。平面界面 4 个积分点、参考面积 **1.44e-4 m²**，测试 K=5e8 Pa/m、σ=5e4 Pa；初始双侧分离速度 4 m/s、动能 **0.0038016 J**。G_c=7/70、0.4 ms、dt=2/1/0.5 μs 共 6 例，G_c=7 完全断裂耗散为 **0.001008 J=G_c A₀**。再取 dt=0.5/0.25/0.125 μs、三档时间网格相位共 18 例，G_c=7 的最大相对能量残差为 **7.659e-6/1.520e-6/2.131e-7**，G_c=70 为 **7.213e-6/1.482e-6/2.326e-7**。160 步轨迹的初速度、内聚参数和 E 自然差分最大相对误差 **2.400e-7**。
+
+```bash
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_grid.py
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_grid_refine.py
+```
+
+同提交旋转/剪切界面：初始开口 **(−0.03,0.2,0.1) mm**、角速度 **(30,−20,200) s⁻¹**，0.2 ms，dt=1/0.5/0.25 μs。G_c=7 的相对能量残差 **−1.787e-5/−1.936e-7/+1.372e-7**，G_c=70 为 **−1.565e-5/−7.232e-7/−1.817e-7**。160 步整体旋转对照的状态相对差 ≤**5.22e-15**；卸载初态 κ=0.3 mm 下，初速度、界面位置/变形、损伤历史、内聚参数及 E 的两档自然差分最大相对误差 **8.144e-7**（E 用 ε=1e-4/1e-5，其余 1e-5/1e-6）。
+
+```bash
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_surface_grid.py
+```
+
+同提交 192 个有限变形界面状态：力/表面应力与增量势导数的相对差 **1.577e-16/2.622e-16**，刚体旋转虚功绝对残差 ≤**1.137e-13**。加载边界 κ=0.2/0.3/1 mm 的左右导数分别符合卸载刚度与软化斜率；两者不同，力连续。命令：`PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_frame.py`、`PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_loading_corner.py`。
+
+`d4bbb6f`、dirty=true（新增 `cohesive.py` 与 15 项测试），RTX 4090：`PYTHONPATH=. .venv/bin/python -m pytest tests -q`，**1045 passed、8 skipped、18 subtests passed**（249.28 s）。

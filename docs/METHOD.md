@@ -71,6 +71,12 @@ M5 中点阶段的 `MaterialTrajectory.flow_velocity` 对当前速度先 P2G，�
 
 `MaterialTrajectory.step(grid_load=...)` 接收每个逻辑网格槽的附加冲量（N·s），在相容场交换 C 之前与 P2G 冲量相加。网格力 `f_g` 对应粒子加速度 `a=W M⁻¹ C f_g`，与其共轭的网格速度为 `u_g=M⁻¹ C Wᵀ m v`；现有质量加权耦合满足 `Cᵀ M⁻¹=M⁻¹ C`，因此 `Σm v·a=Σf_g·u_g`。界面两侧用相同插值及其转置分别取得速度、散射等反作用力，可直接核对界面功。显式裂纹的双侧运动与牵引组织参考 [CRAMP 的裂纹牵引说明](https://osupdocs.forestry.oregonstate.edu/index.php?title=Traction_Laws)，这里的多场功配对由现有 C 推导。
 
+## 内聚界面元件
+
+`cohesive.cohesive_response` 使用各开裂方向相同的刚度 K（Pa/m）、强度 σ（Pa）和断裂能 G_c（J/m²）。起裂/完全断裂位移为 `δ₀=σ/K`、`δ_f=2G_c/σ`，`CohesiveParameters` 检查 `0<δ₀<δ_f`。开口 g、当前法向 n 的压缩量为 `s=min(g·n,0)`，损伤驱动量为 `a=g−sn`；历史 `κ=max(κ_old,|a|)`，中间段损伤 `D=δ_f(κ−δ₀)/(κ(δ_f−δ₀))`，两端分别为 0、1。参考面积上的储能 `ψ=K[(1−D)|a|²+s²]/2`，累计断裂耗散 `Γ=G_c clamp((κ−δ₀)/(δ_f−δ₀),0,1)`。牵引 `T=K[(1−D)g+Dsn]` 保留断裂后的压缩响应。加载—卸载切换处力连续、切线有折点；测试分别核对两侧解析导数。
+
+界面变形 F_Γ 映射两侧当前面的平均切向量，`n=normalize(cofactor(F_Γ)N)`。元件同时输出固定 D 时的 `P_Γ=∂ψ/∂F_Γ`（N/m），使功率为 `T·ġ+P_Γ:Ḟ_Γ`。双侧参考插值 N_i 与切向梯度 ∇_ΓN_i 对应网格力 `A₀[±N_i T−P_Γ∇_ΓN_i/2]`，相同映射推进面位置与切向量。参考面积 A₀ 保持固定；刚体旋转时两项功相消。
+
 ## 可微弹性与固定接触
 
 `differentiable.ElasticTrajectory` 在未切割单场上复用 P2G、网格速度和共转应力；G2P 与 MUSL 写入下一步状态。每一步保存独立数组，分段 VJP 在反向时重算段内状态。E 使用可求导数组；参考采样、密度、ν 与步长保持固定。
@@ -192,6 +198,7 @@ PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定�
 | 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |
 | 可微求解 | 正向 TLMPM 切割与工具双向耦合 | 增加粒子、材料、接触历史、切割事件和刀路的自动微分与伴随；当前可微刀路由外部给定 |
 | 损伤释放积分 | 方向接触功的经验阈值；达到阈值后移除刃向冲量，材料应力保持原更新 | 原 `Solver` 和 M4 在子步边界切换；M5 `EventCutContact` 根据剩余断裂功积分释放步的刃向冲量，使释放时刻进入状态导数，见上节 |
+| E5 内聚元件 | 方向接触功损伤，几何侧码独立分离网格 | 已实现独立双线性内聚元件，形式参考 [Camanho–Dávila/MOOSE](https://mooseframework.inl.gov/releases/moose/2022-06-10/source/materials/cohesive_zone_model/BiLinearMixedModeTraction.html)，大变形虚功参考 [Reinoso–Paggi](https://arxiv.org/abs/1507.05168)。本地推导平均面法向、共轭表面应力与现有多场的力映射；K、σ、G_c 为独立材料量。原因是已释放刃向投影力的闭合路径功非零。元件与 TLMPM 耦合算例已核对，自然切口入口的面积生成、插入牵引平衡和历史接入待完成；动态插入的牵引初始化参考 [Sierra/SM](https://www.sandia.gov/files/sierra/SM_Users_5_20/main/materials/cohesive.html) |
 | 几何分侧积分 | 子步更新侧码 | `GeometryEventContact` 用 RK2 二次位置延拓和三个时刻的几何间隙生成入区候选；旋转查询按角跨度 ≤π/2 分段，在实际材料推进上验证括区、求根并切分，按事件时间求导；使用连续的刀后 `2Δx` 区域，原步末查询的 `max(相对推进速度×Δt,0)` 回看扩展由步内穿越查询替代 |
 | 耦合区间内的刀具 | 位姿与速度保持不变 | 默认相同；`tool_substep='predict'` 用 6×6 移动性矩阵逐子步更新刀速并推进位姿 |
 | 接触检测 | 未写明 | 默认用设备端条件重建邻居表；`hash` 每子步重建 Warp HashGrid，`all` 全对检测（每粒子 64 线程），按完整搜索核对接触集合 |

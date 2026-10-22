@@ -222,11 +222,15 @@ G_c=7/70/700/1400 与三档步长的 50 ms 扫描已完成，报告在 `e5-trans
 
 移动面压力核 `cohesive_contact_response` 与共享法向导数已实现，新增 4 项测试；全量 **1063 passed、8 skipped、18 subtests passed**（300.46 s）。`e5-cohesive/runs/e5_release_audit/extrinsic_surface.json` 的三档能量残差约随步长线性下降；`extrinsic_surface_short.json` 保存 160 步旋转一致性和闭合前 24 步八类输入导数。
 
-移动面联合约束与隐式反向原型为 `extrinsic_monolithic.py`，局部 10 类输入自然差分通过。`11fbbd5` 下的 `extrinsic_primal_validate.json` 记录 160 步直接位移原型：8 类输入各至少两档误差 ≤2e-5，最差第二档 **1.507e-5**，旋转归一化状态差 **5.641e-11**；全部 32 组差分保留。位移更新源码为 `a7df3f4` 的 `MaterialTrajectory.correct_displacement`，13 项状态/导数等价检查通过，全量 **1076 passed、8 skipped、18 subtests passed**（265.79 s）。干净源码复验工作树 `~/Projects/BladeMaster-Warp-e5-correction-20261022`，日志 `runs/e5_release_audit/extrinsic_primal_validate.log`；通过后合并零开口承载、自然参考面、永久历史和接触去重。完整自然切割仍使用原损伤释放律。
+移动面联合约束与隐式反向原型为 `extrinsic_monolithic.py`，局部 10 类输入自然差分通过。`11fbbd5` 下的 `extrinsic_primal_validate.json` 记录 160 步直接位移原型：8 类输入各至少两档误差 ≤2e-5，最差第二档 **1.507e-5**，旋转归一化状态差 **5.641e-11**；全部 32 组差分保留。位移更新源码为 `a7df3f4` 的 `MaterialTrajectory.correct_displacement`，13 项状态/导数等价检查通过，全量 **1076 passed、8 skipped、18 subtests passed**（265.79 s）。干净源码复验工作树 `~/Projects/BladeMaster-Warp-e5-correction-20261022`，日志 `runs/e5_release_audit/extrinsic_primal_validate.log`，32 组差分及旋转检查已通过。下一项合并零开口承载、自然参考面、永久历史和接触去重。完整自然切割仍使用原损伤释放律。
 
 `e4-current` 的 6 mm 完整交叉、暂停续切及 4 mm 交叉窗口已通过，各四项自然差分的最大误差为 **0.03716%/0.005113%/0.009204%**；检查点状态重算差和暂停损伤增量均为 **0**。报告为 `runs/e4_ca90da9/{crossing,resume,crossing_h4_640ms}/report.json`。`continue_cases.py` 正在运行平行两刀，随后三刀后推块；状态在 `runs/e4_ca90da9/continue_status.json`。运行中工作树保持固定提交。
 
 E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20261022`，固定干净 `ca90da9`。启动命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/e3_queue.py`；状态 `runs/e3_ca90da9/status.json`，逐项日志和报告位于同目录。8 个队列项覆盖 6 mm 活跃释放完整 Tape、4 mm 活跃释放细化、6/4 mm 下刀和完整轨迹、6 mm 下刀与完整轨迹细化。6/4 mm 基准步长及 PIC 参考时间为 15.625/13.157895 μs，接触参考时间 25 μs；每次扰动自然重建事件，梯度保留 2% 标准，失败后队列停止并保留报告。细化报告的相邻梯度和状态趋势另行核对。
+
+`e3-current/runs/e3_ca90da9/release_h6/report.json` 已通过：12 组自然差分最大误差 0.61668%，4 个粒子释放，完整 Tape 与 16/32/128 步检查点状态重算差为 0。队列已转到 `release_h4_refine`。
+
+`ca283ec` 修复内聚近端核在零开口、零历史边界的导数；7 项新增解析与单侧差分通过，全量 **1083 passed、8 skipped、18 subtests passed**（286.64 s）。当前统一界面原型工作树为 `~/Projects/BladeMaster-Warp-e5-unified-20261023`，原型 `runs/e5_release_audit/extrinsic_semismooth{,_adjoint,_probe,_validate}.py`；它用近端固定点方程连接零开口承载和张开后的移动面，16 组正向/分裂尺度和 40 类局部输入方向已通过，160 行差分保存在 `extrinsic_semismooth_validate.json`（a7df3f4、dirty=true，对应 ca283ec 源码）。该工作树已核对源码并固定干净 ca283ec；`extrinsic_unified_{surface,trajectory}.py` 接入连续粒子轨迹，包含原有 160 步正历史算例及零历史承载/起裂。自然界面生成、历史接入和完整能量扫描仍待完成。
 
 完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。
 

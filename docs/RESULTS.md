@@ -1179,3 +1179,21 @@ OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extri
 PYTHONPATH=. .venv/bin/python -m pytest tests/test_displacement_correction.py -q
 PYTHONPATH=. .venv/bin/python -m pytest tests -q
 ```
+
+## 2026-10-23：当前公式的 E3 活跃释放与 E5 源码复跑
+
+干净 `ca90da9`，RTX 4090，6 mm、50 ms、G_c=7、dt/PIC 参考时间 15.625 μs：**4** 个粒子损伤释放，**12** 组刀路/初态/材料/摩擦/G_c 自然差分全部通过，最大误差 **0.61668%**。完整 Tape 与 16/32/128 步检查点的控制量/初始位置梯度最大差 **5.912e-15/7.704e-13**，状态重算差 **0**；CUDA 数组峰值 **13.710 GiB**。报告 `runs/e3_ca90da9/release_h6/report.json`；命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py release_h6`。4 mm 释放与后续完整轨迹继续运行。
+
+干净 `a7df3f4` 的 `extrinsic_primal_validate.py` 源码复跑完成：160 步、8 类输入共 32 组自然差分，各类至少两档相对误差 ≤**2e-5**，最差第二档 **1.5073e-5**；旋转归一化状态差 **5.6409e-11**。报告 `e5-correction` 工作树的 `runs/e5_release_audit/extrinsic_primal_validate.json`，命令同上一节。
+
+## 2026-10-23：内聚界面闭合时的卸载导数
+
+`ca283ec` 保留零开口卸载的解析增益 `κ/[κ+λσ(1−κ/δ_f)]`，并用同一有理式计算牵引与储能。原零长度分支在已损伤闭合状态返回开口导数 **0**，解析值分别为 **0.76923/1**（部分损伤/完全断裂）。新增 **6** 个闭合切线算例和 **1** 个零历史单侧导数算例通过；内聚近端核与移动面压力共 **25 passed**（1.37 s）。
+
+提交前的 `a7df3f4`、dirty=true 对应源码在 RTX 4090 全量 **1083 passed、8 skipped、18 subtests passed**（286.64 s）；8 项跳过为 CRESSim 上游构建。命令：`PYTHONPATH=. .venv/bin/python -m pytest tests/test_cohesive_proximal.py tests/test_cohesive_contact.py -q`、`PYTHONPATH=. .venv/bin/python -m pytest tests -q`。
+
+## 2026-10-23：初始刚性界面的统一局部求解与导数
+
+`a7df3f4`、dirty=true（对应 `ca283ec` 的内聚核修复），RTX 4090，闭合/零历史起裂/混合历史/已有损伤各 4 档载荷共 **16** 例通过；解析残差 Jacobian 的独立差分最大相对误差 **1.3821e-9**，数值分裂尺度 0.5/1/2 倍给出相同粒子解。4 类状态 × 10 类输入的 **40** 个方向各有至少两档自然差分相对误差 ≤**2e-5**，最差第二档 **1.3519e-7**；完整 **160** 行结果保存原始差分以及 `F_free+G u` 的基态/增量分开相减值。连续粒子轨迹随后核对。
+
+命令：`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_semismooth_probe.py`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_semismooth_validate.py`。报告为同名 `.json`，工作树见 HANDOFF。

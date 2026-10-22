@@ -184,3 +184,43 @@ def test_zero_friction_history_cancels_trial_force_and_its_derivative(damping):
         result = m.zeros(1, wp.vec3)
         m.launch(zero_cone_probe, 1, inputs=[m.array(values, float), damping], outputs=[result], device=m.device)
         np.testing.assert_allclose(37.5 * result.numpy()[0, 0] + damping * values[0], 0., atol=1e-15)
+
+
+@pytest.mark.parametrize('spacing', [.006, .004])
+def test_natural_blade_face_to_edge_trajectory_derivative(spacing):
+    m = model(spacing)
+    c = GeometryEventContact(m)
+    x = m.reference.copy() + [1, 1, 1]
+    x[0] = [m.config.blade_half_size[0] + .75 * spacing / 4,
+            m.config.blade_half_size[1] - 3.7e-5, .1]
+    v = np.zeros_like(x)
+    v[:, 1] = .2
+    tool = c.tool([0, 0, .1])
+    initial = m.state(x=x, v=v)
+    seed = np.zeros_like(v)
+    seed[0] = [1., .4, .2]
+
+    def rollout():
+        state, history = initial, c.history()
+        features = []
+        for _ in range(5):
+            state, history, _ = c.advance_segment(state, history, tool, m.duration, False)
+            features.append(int(history.rigid_modes.numpy()[2, 0]))
+        return state, features
+
+    with wp.Tape() as tape:
+        terminal, features = rollout()
+    assert len(set(features)) >= 2
+    tape.backward(grads={terminal.v: m.array(seed, wp.vec3, False)})
+    gradient = initial.x.grad.numpy()[0, 1]
+    assert abs(gradient) > 1e-3
+    tape.zero()
+    for epsilon in (1e-8, 3e-9):
+        values = []
+        for sign in (-1, 1):
+            shifted = x.copy()
+            shifted[0, 1] += sign * epsilon
+            initial.x.assign(shifted)
+            state, _ = rollout()
+            values.append(float(np.sum(state.v.numpy() * seed)))
+        np.testing.assert_allclose(gradient, (values[1] - values[0]) / (2 * epsilon), rtol=2e-5, atol=1e-7)

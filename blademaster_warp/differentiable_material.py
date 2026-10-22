@@ -35,7 +35,8 @@ def plastic_project_grad(f: wp.mat33, limit: float, adj_projected: wp.mat33, adj
 @wp.func
 def constitutive_response(F: wp.mat33, Fp: wp.mat33, mu: float, lam: float,
                           limit: float, branch: int):
-    U, s, V = wp.svd3(F * wp.inverse(Fp))
+    f = F * wp.inverse(Fp)
+    U, s, V = wp.svd3(f)
     next_Fp = Fp
     converged = int(1)
     for i in range(3):
@@ -46,7 +47,8 @@ def constitutive_response(F: wp.mat33, Fp: wp.mat33, mu: float, lam: float,
         s = wp.vec3(updated)
         projected = U * wp.diag(s) * wp.transpose(V)
         next_Fp = wp.inverse(projected) * F
-    stress = m.corotated_stress(U, s, V, wp.inverse(next_Fp), mu, lam)
+        f = projected
+    stress = m.corotated_stress(f, U, V, wp.inverse(next_Fp), mu, lam)
     return next_Fp, stress, converged
 
 

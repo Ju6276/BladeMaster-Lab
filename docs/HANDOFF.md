@@ -253,8 +253,10 @@ E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20
 - 切割真机数据：Jamdagni & Jia，IROS 2019、ICRA 2021、T-RO 2024（论文表里有 E、ν、断裂韧性，数据未公开）；Quantified Knife Project https://github.com/seattleultrasonics/Quantified-Knife-Project （公开，只有电子秤测的竖直力）
 - 网格依赖：Bažant & Oh 1983，裂纹带模型（断裂能随网格变化的经典问题）
 
-统一原型局部检查已在干净 `ca283ec` 复跑通过。反向 Jacobian 直接由 Warp 残差构建；CPU 手写 Jacobian 在零压力舍入边界与 Warp 的分支不一致，失败步使用 Warp 后伴随相对残差为 **3.210e-15**。当前连续轨迹 `extrinsic_unified_trajectory.py` 已结束并失败于 160 步初速度：4 档误差 **0.404484/0.649817/4.5917e-5/2.9373e-6**（要求至少两档 ≤2e-5）；旋转最大归一化状态差 **1.541e-11**。下一项对照原光滑 KKT 与统一近端解的逐步位移/压力及有限差分，定位弱导数的求解误差，保留原四档。
+统一原型局部检查在干净 `ca283ec` 上通过 40 个方向、160 行差分。共旋应力的浮点修正已完成：80 位参考核对的最大应力误差 6.9860e-12 Pa，256 组小形变两条调用路径通过，全量 1085 passed、8 skipped、18 subtests passed（304.68 s）。方法见 METHOD，实验命令与数字见 RESULTS。
 
-`extrinsic_unified_energy.py` 的闭合预载算例停止于冗余约束的浮点残差：开口输入最大 1.061e-9 m，偏离 B 值域 5.633e-23 m；归一化残差 **2.012e-20**、当前停止值 **1.926e-20**。补偿求和对照 `extrinsic_energy_debug.py` / `extrinsic_stable_flow.py` 失败于约束位移与网格冲量推进的应力对照，最大差 **1.0415e-10 Pa**、标准 `atol=1e-10, rtol=1e-12`。诊断状态为 `semismooth_{adjoint,primal}_failure.npz`；这些能量/轨迹进程均已结束，E3/E4 队列仍运行。下一项核对残差的浮点误差来源和应力对应的 F 误差，再复跑 12 例能量细化。自然参考面积/位置实现可参考 [Crook–Homel 的 MPM 界面定义与积分](https://www.osti.gov/servlets/purl/3003988)，论文与文本已下载至 `runs/e5_release_audit/crook_homel_2026.*`。
+`extrinsic_energy_state.py` 的统一界面 12 例能量细化已通过；闭合承载保持零开口/损伤，G_c=7/70 张开及旋转受压的能量残差随步长减半约减半。报告 `runs/e5_release_audit/extrinsic_unified_energy.json`，日志 `extrinsic_energy_stress_fixed.log`。应力对照的原标准保持 `atol=1e-10, rtol=1e-12`。
 
-E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已自动开始 `three-cuts-push`。E3 的 `release_h4_refine` 仍在最细一档；前两档各四项自然差分通过，两档侧码/释放/接触集合相同，最大刀路梯度变化 **0.2451%**。
+160 步轨迹差分仍失败，日志 `extrinsic_trajectory_stress_fixed.log`；统一初速度四档误差 0.404488/0.649819/4.62939e-5/2.21084e-5，0/4 档达到 2e-5，要求至少 2 档。`extrinsic_trace_solvers.py` 保存光滑与统一求解的基准/±1e-6/±1e-7 逐步状态到 `runs/e5_release_audit/solver_trace/`；光滑对照两档误差 2.9951e-5/1.4668e-5。下一项按约束矩阵的秩、零空间、接触活动集合、伴随残差定位最早偏差；保持原扰动和阈值。来源及参考路径见 METHOD。自然参考面积/位置参考 [Crook–Homel 的 MPM 界面定义与积分](https://www.osti.gov/servlets/purl/3003988)，接入永久历史、接触去重及完整能量扫描随后执行。
+
+E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已自动开始 `three-cuts-push`。E3 的 `release_h4_refine` 已完成，12 组自然差分最大误差 **0.00043623%**、检查点状态差 **0**；三档侧码/释放/接触集合相同。深度梯度相邻变化 **0.24505%/0.27433%**，补充更细步长和事件相位核对；队列已进入 `cut_h6`。

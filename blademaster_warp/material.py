@@ -79,18 +79,19 @@ def node_lists(
 
 @wp.func
 def corotated_stress(
-    U: wp.mat33, sigma: wp.vec3, V: wp.mat33, plastic_inverse: wp.mat33, mu: float, lam: float
+    f: wp.mat33, U: wp.mat33, V: wp.mat33, plastic_inverse: wp.mat33, mu: float, lam: float
 ):
     """First Piola stress of fixed corotated elasticity, from the SVD f = U diag(sigma) V^T
     of the elastic deformation f = F Fp^-1:
 
         P = (2 mu (f - R) + lam (J - 1) J f^-T) Fp^-T,  R = U V^T, J = det f.
     """
-    J = sigma[0] * sigma[1] * sigma[2]
-    diagonal = wp.vec3(0.0)
-    for i in range(3):
-        diagonal[i] = 2.0 * mu * (sigma[i] - 1.0) + lam * (J - 1.0) * J / sigma[i]
-    return U * wp.diag(diagonal) * wp.transpose(V) * wp.transpose(plastic_inverse)
+    rotation = U * wp.transpose(V)
+    # One polar Newton step removes SVD orthogonality error before subtracting f - R.
+    rotation = 0.5 * (rotation + wp.transpose(wp.inverse(rotation)))
+    J = wp.determinant(f)
+    elastic = 2.0 * mu * (f - rotation) + lam * (J - 1.0) * J * wp.transpose(wp.inverse(f))
+    return elastic * wp.transpose(plastic_inverse)
 
 
 @wp.func
@@ -111,7 +112,7 @@ def stress_at(
         stress[p] = wp.mat33(0.0)
         return
     U, sigma, V = wp.svd3(f)
-    stress[p] = corotated_stress(U, sigma, V, plastic_inverse, mu, lam)
+    stress[p] = corotated_stress(f, U, V, plastic_inverse, mu, lam)
 
 
 @wp.kernel
@@ -468,7 +469,8 @@ def update_F_plastic(
     if yield_stress > 0.0:
         U, sigma, V, valid = plastic_at(p, F, Fp, mu, yield_stress, errors)
         if valid:
-            stress[p] = corotated_stress(U, sigma, V, wp.inverse(Fp[p]), mu, lam)
+            plastic_inverse = wp.inverse(Fp[p])
+            stress[p] = corotated_stress(F[p] * plastic_inverse, U, V, plastic_inverse, mu, lam)
         else:
             stress[p] = wp.mat33(0.0)
     else:
@@ -529,7 +531,7 @@ def maxwell_at(
     kirchhoff = Um * wp.diag(2.0 * mu_maxwell * dev) * wp.transpose(Um)
     mu_eq = mu - mu_maxwell
     lam_eq = lam + 2.0 / 3.0 * mu_maxwell
-    equilibrium = corotated_stress(U, sigma, V, wp.inverse(Fp[p]), mu_eq, lam_eq)
+    equilibrium = corotated_stress(f, U, V, wp.inverse(Fp[p]), mu_eq, lam_eq)
     stress[p] = equilibrium + kirchhoff * wp.transpose(wp.inverse(F[p]))
 
 

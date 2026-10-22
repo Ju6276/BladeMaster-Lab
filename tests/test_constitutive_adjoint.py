@@ -5,6 +5,7 @@ import pytest
 import warp as wp
 
 from blademaster_warp.differentiable_material import MaterialTrajectory, constitutive_response
+from blademaster_warp.differentiable import elastic_stress
 from blademaster_warp.solver import Config
 from test_plasticity import reference_return
 
@@ -18,6 +19,54 @@ def response(F: wp.array(dtype=wp.mat33), Fp: wp.array(dtype=wp.mat33),
     next_Fp[p] = plastic
     stress[p] = force
     success[p] = converged
+
+
+@wp.kernel
+def elastic_response(F: wp.array(dtype=wp.mat33), mu: wp.array(dtype=float),
+                     lam: wp.array(dtype=float), stress: wp.array(dtype=wp.mat33)):
+    p = wp.tid()
+    stress[p] = elastic_stress(F[p], mu[p], lam[p])
+
+
+@pytest.mark.parametrize('path', ['elastic', 'constitutive'])
+def test_small_symmetric_strain_stress_roundoff(path):
+    model = MaterialTrajectory(Config(size=(.012, .012, .012), grid_spacing=.006), precision='float64')
+    rng = np.random.default_rng(842)
+    strain = rng.normal(scale=1e-4, size=(256, 3, 3))
+    F = np.eye(3) + .5 * (strain + strain.transpose(0, 2, 1))
+    count = len(F)
+    young, poisson = 20000., .35
+    mu = young / (2 * (1 + poisson))
+    lam = young * poisson / ((1 + poisson) * (1 - 2 * poisson))
+    a = model.array(F, wp.mat33)
+    b = model.array(np.full(count, mu), float)
+    c = model.array(np.full(count, lam), float)
+    stress = model.zeros(count, wp.mat33)
+    if path == 'elastic':
+        model.launch(elastic_response, count, inputs=[a, b, c], outputs=[stress], device=model.device)
+    else:
+        plastic = model.array(np.tile(np.eye(3), (count, 1, 1)), wp.mat33)
+        limit = model.array(np.full(count, .08), float)
+        updated = model.zeros(count, wp.mat33)
+        success = model.zeros(count, int, False)
+        model.launch(response, count, inputs=[a, plastic, b, c, limit],
+                     outputs=[updated, stress, success], device=model.device)
+        assert np.all(success.numpy())
+        np.testing.assert_array_equal(updated.numpy(), plastic.numpy())
+
+    # A symmetric positive deformation has polar rotation I; cofactor arithmetic
+    # in extended precision supplies the volumetric stress without an SVD.
+    value = F.astype(np.longdouble)
+    cofactor = np.empty_like(value)
+    for i in range(3):
+        for j in range(3):
+            minor = np.delete(np.delete(value, i, axis=1), j, axis=2)
+            cofactor[:, i, j] = (-1) ** (i+j) * (minor[:, 0, 0] * minor[:, 1, 1]
+                                                       - minor[:, 0, 1] * minor[:, 1, 0])
+    J = np.sum(value[:, 0] * cofactor[:, 0], axis=1)
+    expected = 2 * np.longdouble(mu) * (value - np.eye(3)) + np.longdouble(lam) * (J-1)[:, None, None] * cofactor
+    tolerance = 4 * np.finfo(float).eps * (2 * mu + lam)
+    np.testing.assert_allclose(stress.numpy(), expected, rtol=0., atol=tolerance)
 
 
 def reference(F, Fp, mu, lam, limit):

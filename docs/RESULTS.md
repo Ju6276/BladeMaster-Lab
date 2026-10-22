@@ -1209,3 +1209,25 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 干净 `ca283ec`，RTX 4090，隐式反向 Jacobian 直接由 Warp 残差构建，局部 **40** 个方向、**160** 行自然差分复跑通过；最差第二档 **1.3519e-7**。160 步旋转归一化状态差 **1.5409e-11**，通过 1e-10。初速度轨迹差分失败：四档相对误差 **0.404484/0.649817/4.5917e-5/2.9373e-6**，低于 2e-5 的档位为 **1/4**，要求至少 2 档；后续输入组合尚未运行。下一项对照约束位移/压力及自然差分的逐步精度。
 
 命令：`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_semismooth_validate.py`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_unified_trajectory.py`。报告/日志位于同目录；工作树见 HANDOFF。
+
+## 2026-10-23：共旋应力的浮点一致性与统一界面能量
+
+`ca283ec`、dirty=true，RTX 4090。两种等价粒子推进的 F 差 **1.6263e-19**；80 位十进制独立计算的应力差 **1.4055e-15 Pa**。原 SVD 主应力表达的状态差 **1.0415e-10 Pa**；直接使用 f、det(f) 并细化极旋转后为 **7.4735e-12 Pa**，相对高精度参考的最大绝对误差 **6.9860e-12 Pa**。256 组随机对称小形变分别覆盖初始弹性与材料更新路径；材料/能量/位移及导数 **96 passed**（57.11 s），全量 **1085 passed、8 skipped、18 subtests passed**（304.68 s）。
+
+统一界面使用补偿求和推进开口，64 粒子、16 界面积分点、200 μs，dt=2/1/0.5 μs。闭合承载、G_c=7/70 张开及已有损伤旋转受压共 **12** 例通过步长细化检查。四组相对能量残差（%）依次为 **0.019345/0.009671/0.004835**、**0.434820/0.217200/0.108840**、**−0.402324/−0.200999/−0.100459**、**−0.620727/−0.310450/−0.155245**。闭合开口/损伤均为 0，G_c=7 的断裂耗散为 **0.001008 J=G_c A₀**；全部步骤的位移/网格冲量状态对照通过原 `atol=1e-10, rtol=1e-12`。
+
+160 步旋转状态差 **7.8360e-11**，通过 1e-10。初速度轨迹差分失败：统一求解四档误差 **0.404488/0.649819/4.62939e-5/2.21084e-5**，低于 2e-5 的档位 **0/4**；光滑约束对照的 ε=1e-6/1e-7 误差 **2.9951e-5/1.4668e-5**，为 **1/2**。逐步状态已保存，下一项核对约束秩、零空间及反向残差。
+
+```bash
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/stress_roundoff.py
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_energy_state.py
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_unified_trajectory.py
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_trace_solvers.py
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
+```
+
+## 2026-10-23：当前公式的 E3 四毫米释放步长对照
+
+干净 `ca90da9`，RTX 4090，4 mm、4892 粒子、50 ms、G_c=7；dt=13.157895/6.578947/3.289474 μs，固定 PIC 参考时间 13.157895 μs、接触参考时间 25 μs。三档各释放 **5** 粒子，共 **12** 组刀路自然差分通过，最大相对误差 **0.00043623%**；32 步 CPU 检查点状态重算差 **0**。侧码、释放、接触及事件集合相同；最细两档位置差 **7.721e-10 m**、事件时刻差 **3.766e-9 s**，E/G_c 梯度变化 **0.037864%/0.021458%**。深度梯度的两次相邻变化为 **0.24505%/0.27433%**；继续核对更细步长及事件相位。
+
+命令：`PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py release_h4_refine`。报告：`runs/e3_ca90da9/release_h4_refine/report.json`；队列已进入 `cut_h6`。

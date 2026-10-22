@@ -13,7 +13,7 @@ from .solver import Config
 @wp.func
 def elastic_stress(F: wp.mat33, mu: float, lam: float):
     U, sigma, V = wp.svd3(F)
-    return m.corotated_stress(U, sigma, V, wp.identity(n=3, dtype=float), mu, lam)
+    return m.corotated_stress(F, U, V, wp.identity(n=3, dtype=float), mu, lam)
 
 
 @wp.func_grad(elastic_stress)

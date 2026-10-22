@@ -104,7 +104,7 @@ def p2g(
     if damage[p] > 0.0:
         shear = mu * damaged_shear
     U, sigma, V = wp.svd3(F[p])
-    P = corotated_stress(U, sigma, V, wp.identity(n=3, dtype=float), shear, lam)
+    P = corotated_stress(F[p], U, V, wp.identity(n=3, dtype=float), shear, lam)
     stress = (-dt * volume * 4.0 / (dx * dx)) * P * wp.transpose(F[p])
     affine = stress + mass * C[p]
     momentum = mass * v[p] + impulse[p]

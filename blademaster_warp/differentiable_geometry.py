@@ -82,6 +82,115 @@ def candidate_events(
     planes[p] = best_plane
 
 
+@wp.func
+def guard_polynomial(x0: wp.vec3, xm: wp.vec3, x1: wp.vec3,
+                     p0: wp.vec3, pm: wp.vec3, p1: wp.vec3,
+                     r0: wp.quat, rm: wp.quat, r1: wp.quat,
+                     half: wp.vec3, spacing: float, board: wp.vec2, kind: int, plane: int):
+    g0 = side_guard(x0, p0, r0, half, spacing, board, kind, plane)
+    gm = side_guard(xm, pm, rm, half, spacing, board, kind, plane)
+    g1 = side_guard(x1, p1, r1, half, spacing, board, kind, plane)
+    a = 2.0 * (g0 + g1 - 2.0 * gm)
+    return wp.vec3(a, g1 - g0 - a, g0)
+
+
+@wp.func
+def polynomial_roots(poly: wp.vec3, tolerance: float):
+    a, b, c = poly[0], poly[1], poly[2]
+    roots = wp.vec2(2.0)
+    if wp.abs(a) <= tolerance:
+        if wp.abs(b) > tolerance:
+            roots[0] = -c / b
+    else:
+        discriminant = b * b - 4.0 * a * c
+        if discriminant >= 0.0:
+            sign = float(1.0)
+            if b < 0.0:
+                sign = -1.0
+            q = -0.5 * (b + sign * wp.sqrt(discriminant))
+            if q != 0.0:
+                roots[0] = q / a
+                roots[1] = c / q
+            else:
+                roots[0] = -b / (2.0 * a)
+    return roots
+
+
+@wp.kernel
+def interpolate_position(start: wp.array(dtype=wp.vec3), middle: wp.array(dtype=wp.vec3),
+                         end: wp.array(dtype=wp.vec3), fraction: float, value: wp.array(dtype=wp.vec3)):
+    p = wp.tid()
+    t = fraction
+    value[p] = ((2.0 * t * t - 3.0 * t + 1.0) * start[p]
+                + (4.0 * t - 4.0 * t * t) * middle[p] + (2.0 * t * t - t) * end[p])
+
+
+@wp.kernel
+def curved_candidate_events(
+    before: wp.array(dtype=wp.vec3), middle: wp.array(dtype=wp.vec3), after: wp.array(dtype=wp.vec3),
+    codes: wp.array(dtype=wp.int64),
+    position0: wp.array(dtype=wp.vec3), rotation0: wp.array(dtype=wp.quat),
+    positionm: wp.array(dtype=wp.vec3), rotationm: wp.array(dtype=wp.quat),
+    position1: wp.array(dtype=wp.vec3), rotation1: wp.array(dtype=wp.quat),
+    half: wp.vec3, spacing: float, board: wp.vec2, label_board: int, digit: wp.int64, tolerance: float,
+    fractions: wp.array(dtype=float), kinds: wp.array(dtype=int), planes: wp.array(dtype=int),
+    lower: wp.array(dtype=float), upper: wp.array(dtype=float),
+):
+    p = wp.tid()
+    best, best_lo, best_hi = float(2.0), float(0.0), float(1.0)
+    best_kind, best_plane = int(-1), int(-1)
+    if (codes[p] // digit) % wp.int64(3) == wp.int64(0):
+        for kind in range(1 + label_board):
+            count = int(6)
+            if kind == 1:
+                count = 10
+            initial_inside = bool(True)
+            for plane in range(count):
+                initial_inside = initial_inside and side_guard(
+                    before[p], position0[0], rotation0[0], half, spacing, board, kind, plane) <= 0.0
+            if initial_inside and best > 0.0:
+                best, best_kind, best_plane = 0.0, kind, -1
+            else:
+                for plane in range(count):
+                    poly = guard_polynomial(before[p], middle[p], after[p],
+                                             position0[0], positionm[0], position1[0],
+                                             rotation0[0], rotationm[0], rotation1[0],
+                                             half, spacing, board, kind, plane)
+                    roots = polynomial_roots(poly, tolerance)
+                    for index in range(2):
+                        entry = roots[index]
+                        if entry > 0.0 and entry <= 1.0 and entry < best and 2.0 * poly[0] * entry + poly[1] < 0.0:
+                            leave = float(1.0)
+                            lower_bound = float(0.0)
+                            if poly[2] <= 0.0:
+                                lower_bound = 0.5 * (roots[1 - index] + entry)
+                            for other in range(count):
+                                test = guard_polynomial(before[p], middle[p], after[p],
+                                                         position0[0], positionm[0], position1[0],
+                                                         rotation0[0], rotationm[0], rotation1[0],
+                                                         half, spacing, board, kind, other)
+                                exits = polynomial_roots(test, tolerance)
+                                for j in range(2):
+                                    if exits[j] > entry:
+                                        leave = wp.min(leave, exits[j])
+                            probe = 0.5 * (entry + leave)
+                            inside = bool(True)
+                            for other in range(count):
+                                test = guard_polynomial(before[p], middle[p], after[p],
+                                                         position0[0], positionm[0], position1[0],
+                                                         rotation0[0], rotationm[0], rotation1[0],
+                                                         half, spacing, board, kind, other)
+                                inside = inside and (test[0] * probe + test[1]) * probe + test[2] <= tolerance
+                            if inside:
+                                best, best_kind, best_plane = entry, kind, plane
+                                best_lo, best_hi = lower_bound, probe
+    fractions[p] = best
+    kinds[p] = best_kind
+    planes[p] = best_plane
+    lower[p] = best_lo
+    upper[p] = best_hi
+
+
 @wp.kernel
 def evaluate_guard(x: wp.array(dtype=wp.vec3), position: wp.array(dtype=wp.vec3),
                    rotation: wp.array(dtype=wp.quat), half: wp.vec3, spacing: float, board: wp.vec2,
@@ -125,6 +234,12 @@ def advance_pose(position: wp.array(dtype=wp.vec3), velocity: wp.array(dtype=wp.
 @wp.kernel
 def clock_difference(end: wp.array(dtype=float), start: wp.array(dtype=float), duration: wp.array(dtype=float)):
     duration[0] = end[0] - start[0]
+
+
+@wp.kernel
+def bracket_time(start: wp.array(dtype=float), end: wp.array(dtype=float), fraction: float,
+                 time: wp.array(dtype=float)):
+    time[0] = start[0] + fraction * (end[0] - start[0])
 
 
 @wp.kernel
@@ -187,17 +302,61 @@ class GeometryEventContact(NaturalCutContact):
         self.model.launch(clock_difference, 1, inputs=[end, start], outputs=[duration], device=self.model.device)
         return duration
 
-    def candidates(self, state, trial, history, tool0, tool1, index):
+    def candidates(self, state, trial, history, tool0, tool1, index, trial_history=None, duration=None):
         m, cfg = self.model, self.model.config
         fractions, kinds, planes = m.zeros(m.n, float), m.zeros(m.n, int, False), m.zeros(m.n, int, False)
-        m.launch(candidate_events, m.n,
-                 inputs=[state.x, trial.x, history.codes, tool0.position, tool0.rotation,
-                         tool1.position, tool1.rotation, cfg.blade_half_size, cfg.grid_spacing,
-                         cfg.board_half_extent, int(cfg.label_board_layer), 3 ** index],
-                 outputs=[fractions, kinds, planes], device=m.device)
+        lower, upper = m.zeros(m.n, float, False), m.zeros(m.n, float, False)
+        if trial_history is not None and trial_history.path_midpoint is not None:
+            dt = float(duration.numpy()[0])
+            angular_span = float(np.linalg.norm(tool0.omega.numpy()[0])) * dt
+            # Query separate arcs so a revolution cannot collapse to equal endpoint poses.
+            intervals = max(1, int(np.ceil(angular_span / (np.pi / 2))))
+            for interval in range(intervals):
+                start_fraction = interval / intervals
+                fractions_in_step = [start_fraction, (interval + .5) / intervals, (interval + 1) / intervals]
+                positions, poses = [], []
+                for fraction in fractions_in_step:
+                    position = m.zeros(m.n, wp.vec3, False)
+                    m.launch(interpolate_position, m.n,
+                             inputs=[state.x, trial_history.path_midpoint, trial.x, fraction],
+                             outputs=[position], device=m.device)
+                    positions.append(position)
+                    poses.append(self.pose(tool0, m.array([dt * fraction], float, False)))
+                m.launch(curved_candidate_events, m.n,
+                         inputs=[*positions, history.codes, poses[0].position, poses[0].rotation,
+                                 poses[1].position, poses[1].rotation, poses[2].position, poses[2].rotation,
+                                 cfg.blade_half_size, cfg.grid_spacing, cfg.board_half_extent,
+                                 int(cfg.label_board_layer), 3 ** index, self.root_tolerance(state, tool0)],
+                         outputs=[fractions, kinds, planes, lower, upper], device=m.device)
+                values = fractions.numpy()
+                particle = int(np.argmin(values))
+                if values[particle] == 0 and interval > 0:
+                    m.launch(candidate_events, m.n,
+                             inputs=[state.x, positions[0], history.codes, tool0.position, tool0.rotation,
+                                     poses[0].position, poses[0].rotation, cfg.blade_half_size,
+                                     cfg.grid_spacing, cfg.board_half_extent, int(cfg.label_board_layer), 3 ** index],
+                             outputs=[fractions, kinds, planes], device=m.device)
+                    values = fractions.numpy()
+                    particle = int(np.argmin(values))
+                    return (particle, start_fraction * float(values[particle]),
+                            int(kinds.numpy()[particle]), int(planes.numpy()[particle]), 0., start_fraction)
+                if values[particle] <= 1:
+                    return (particle, start_fraction + float(values[particle]) / intervals,
+                            int(kinds.numpy()[particle]), int(planes.numpy()[particle]),
+                            start_fraction + float(lower.numpy()[particle]) / intervals,
+                            start_fraction + float(upper.numpy()[particle]) / intervals)
+            return particle, 2., -1, -1, 0., 1.
+        else:
+            upper.fill_(1.)
+            m.launch(candidate_events, m.n,
+                     inputs=[state.x, trial.x, history.codes, tool0.position, tool0.rotation,
+                             tool1.position, tool1.rotation, cfg.blade_half_size, cfg.grid_spacing,
+                             cfg.board_half_extent, int(cfg.label_board_layer), 3 ** index],
+                     outputs=[fractions, kinds, planes], device=m.device)
         values = fractions.numpy()
         particle = int(np.argmin(values))
-        return particle, float(values[particle]), int(kinds.numpy()[particle]), int(planes.numpy()[particle])
+        return (particle, float(values[particle]), int(kinds.numpy()[particle]), int(planes.numpy()[particle]),
+                float(lower.numpy()[particle]), float(upper.numpy()[particle]))
 
     def guard(self, state, tool, particle, kind, plane):
         m, cfg = self.model, self.model.config
@@ -221,11 +380,22 @@ class GeometryEventContact(NaturalCutContact):
         updated.codes, updated.pair_keys, updated.cut_index = history.codes, keys, history.cut_index
         return result, updated, force
 
-    def locate(self, state, history, tool, tool0, elapsed, end, trial, trial_tool, particle, kind, plane):
+    def locate(self, state, history, tool, tool0, elapsed, end, trial, trial_tool, particle, kind, plane,
+               lower_fraction=0., upper_fraction=1.):
         m = self.model
         lo, hi = elapsed, end
         glo = self.guard(state, tool0, particle, kind, plane)
         ghi = self.guard(trial, trial_tool, particle, kind, plane)
+        if lower_fraction > 0:
+            lo = m.zeros(1, float)
+            m.launch(bracket_time, 1, inputs=[elapsed, end, lower_fraction], outputs=[lo], device=m.device)
+            low_state, _, _ = self.advance_segment(state, history, tool0, self.interval(lo, elapsed), True)
+            glo = self.guard(low_state, self.pose(tool, lo), particle, kind, plane)
+        if upper_fraction < 1:
+            hi = m.zeros(1, float)
+            m.launch(bracket_time, 1, inputs=[elapsed, end, upper_fraction], outputs=[hi], device=m.device)
+            high_state, _, _ = self.advance_segment(state, history, tool0, self.interval(hi, elapsed), True)
+            ghi = self.guard(high_state, self.pose(tool, hi), particle, kind, plane)
         if float(glo.numpy()[0]) <= 0 or float(ghi.numpy()[0]) > 0:
             raise RuntimeError('Geometric event lost its outside/inside bracket')
         tolerance = self.root_tolerance(state, trial_tool)
@@ -280,10 +450,11 @@ class GeometryEventContact(NaturalCutContact):
             remaining = self.interval(end, elapsed)
             trial, trial_h, trial_force = self.advance_segment(state, history, start_tool, remaining,
                                                                instruction.cutting)
-            selected = (-1, 2., -1, -1)
+            selected = (-1, 2., -1, -1, 0., 1.)
             if instruction.cutting:
-                selected = self.candidates(state, trial, history, start_tool, end_tool, instruction.cut_index)
-            particle, fraction, kind, plane = selected
+                selected = self.candidates(state, trial, history, start_tool, end_tool, instruction.cut_index,
+                                           trial_h, remaining)
+            particle, fraction, kind, plane, lower, upper = selected
             if fraction > 1:
                 m.launch(accumulate_segment, m.n,
                          inputs=[trial_force, trial_h.damage_work, remaining, end],
@@ -296,12 +467,13 @@ class GeometryEventContact(NaturalCutContact):
                 for _ in range(m.n + 1):
                     time, before, h, force, event_tool, tolerance = self.locate(
                         state, history, tool, start_tool, elapsed, bound, bound_state, bound_tool,
-                        particle, kind, plane,
+                        particle, kind, plane, lower, upper,
                     )
-                    earlier = self.candidates(state, before, history, start_tool, event_tool, instruction.cut_index)
+                    earlier = self.candidates(state, before, history, start_tool, event_tool, instruction.cut_index,
+                                              h, self.interval(time, elapsed))
                     if earlier[0] == particle or earlier[1] >= 1.0:
                         break
-                    particle, _, kind, plane = earlier
+                    particle, _, kind, plane, lower, upper = earlier
                     bound, bound_state, bound_tool = time, before, event_tool
                 else:
                     raise RuntimeError('Geometric event ordering did not converge')

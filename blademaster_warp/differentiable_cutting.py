@@ -273,6 +273,7 @@ class CutHistory:
     cut_index: int = 0
     geometry_events: tuple = ()
     edge_departed: wp.array | None = None
+    path_midpoint: wp.array | None = None
 
 
 @dataclass

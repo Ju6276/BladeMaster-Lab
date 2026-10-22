@@ -14,6 +14,13 @@ def half_duration(duration: wp.array(dtype=float), half: wp.array(dtype=float)):
     half[0] = 0.5 * duration[0]
 
 
+@wp.kernel
+def position_midpoint(start: wp.array(dtype=wp.vec3), predictor: wp.array(dtype=wp.vec3),
+                      end: wp.array(dtype=wp.vec3), middle: wp.array(dtype=wp.vec3)):
+    p = wp.tid()
+    middle[p] = 0.25 * start[p] + 0.5 * predictor[p] + 0.25 * end[p]
+
+
 @wp.func
 def tangent(relative: wp.vec3, normal: wp.vec3):
     return relative - wp.dot(relative, normal) * normal
@@ -164,5 +171,8 @@ def advance_midpoint(contact, state, history, tool, duration, cutting):
     )
     updated = project_endpoint(contact, result, updated, mid, history, mid_tool, end_tool,
                                 duration, branch, departed)
+    updated.path_midpoint = m.zeros(m.n, wp.vec3, False)
+    m.launch(position_midpoint, m.n, inputs=[state.x, mid.x, result.x],
+             outputs=[updated.path_midpoint], device=m.device)
     updated.codes, updated.pair_keys, updated.cut_index = history.codes, keys, history.cut_index
     return result, updated, force

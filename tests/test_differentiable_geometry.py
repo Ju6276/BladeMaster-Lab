@@ -173,3 +173,66 @@ def test_simultaneous_edge_entries_use_post_event_damage_branch(shift_ulps):
     _, updated, _ = c.step(initial, history, tool)
     assert np.all(updated.codes.numpy()[top] != 0)
     np.testing.assert_allclose(updated.damage.numpy()[top], .99, rtol=0, atol=1e-10)
+
+
+def test_curved_particle_enters_and_leaves_between_outside_endpoints():
+    from dataclasses import replace
+
+    m0, _, _, _, _ = fixture()
+    cfg = replace(m0.config, dt=.00024, contact_reference_dt=.00024, flip_reference_dt=.00024, yield_stress=0)
+    m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
+    c = GeometryEventContact(m)
+    x = m.reference + [.02, 0, 0]
+    x[:, 2] = .03
+    initial = m.state(x=x, v=np.tile([0, 0, .001], (m.n, 1)))
+    history = c.history()
+    gap = 1e-8
+    tool = c.tool([0, 0, .03 + gap + cfg.blade_half_size[2]])
+    trial, _, _ = c.advance_segment(initial, history, tool, m.duration, True)
+    assert np.max(trial.x.numpy()[:, 2]) < .03 + gap
+    gap = float(tool.position.numpy()[0, 2]) - cfg.blade_half_size[2] - .03
+    expected = 2 * gap / (.001 + np.sqrt(.001**2 - 2 * 9.81 * gap))
+    with wp.Tape() as tape:
+        state, updated, _ = c.step(initial, history, tool)
+    assert len(updated.geometry_events) == m.n
+    time = updated.geometry_events[0][1]
+    np.testing.assert_allclose(time.numpy()[0], expected, rtol=1e-7, atol=1e-11)
+    np.testing.assert_allclose(state.x.numpy()[:, 2], .03 + .001 * cfg.dt - .5 * 9.81 * cfg.dt**2, atol=1e-12)
+    tape.backward(grads={time: m.array([1.], float, False)})
+    np.testing.assert_allclose(tool.position.grad.numpy()[0, 2], 1 / (.001 - 9.81 * expected), rtol=1e-6)
+
+
+@pytest.mark.parametrize('turns', [.5, 1.])
+def test_rotating_knife_sweeps_region_between_outside_endpoints(turns):
+    from dataclasses import replace
+    from scipy.optimize import brentq
+
+    m0, _, _, _, _ = fixture()
+    cfg = replace(m0.config, dt=.0001, contact_reference_dt=.0001, flip_reference_dt=.0001,
+                  yield_stress=0, label_board_layer=False)
+    m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
+    c = GeometryEventContact(m)
+    x = m.reference + [1, 1, 1]
+    x[0] = [-.03, 0, .5]
+    initial = m.state(x=x)
+    codes = np.ones(m.n, dtype=np.int64)
+    codes[0] = 0
+    history = c.history(codes=codes)
+    omega = 2 * np.pi * turns / cfg.dt
+    tool = c.tool([0, 0, .5], omega=[0, omega, 0])
+
+    def guard(t):
+        return (-.03 * np.sin(omega * t) - .5 * 9.81 * t*t * np.cos(omega * t)
+                + cfg.blade_half_size[2] - 2 * cfg.grid_spacing)
+
+    expected = brentq(guard, 0, np.pi / (2 * omega), xtol=1e-15)
+    with wp.Tape() as tape:
+        _, updated, _ = c.step(initial, history, tool)
+    assert [p for p, _ in updated.geometry_events] == [0]
+    time = updated.geometry_events[0][1]
+    np.testing.assert_allclose(time.numpy()[0], expected, rtol=1e-9, atol=1e-13)
+    tape.backward(grads={time: m.array([1.], float, False)})
+    dg_dw = -.03 * expected * np.cos(omega * expected) + .5 * 9.81 * expected**3 * np.sin(omega * expected)
+    dg_dt = (-.03 * omega * np.cos(omega * expected) - 9.81 * expected * np.cos(omega * expected)
+             + .5 * 9.81 * expected**2 * omega * np.sin(omega * expected))
+    np.testing.assert_allclose(tool.omega.grad.numpy()[0, 1], -dg_dw / dg_dt, rtol=1e-7, atol=1e-12)

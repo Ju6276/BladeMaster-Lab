@@ -41,6 +41,7 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 
 - 不要用 `pkill -f <模式>`：模式会匹配到你自己的 ssh 命令行，把会话杀掉。要停进程，先用 `ps -eo pid,args | grep -E "[r]ender_franka"` 找到 PID，再按 PID `kill`。
 - GPU 机器是共享的：不要杀别人的进程，开跑前用 `nvidia-smi` 看一眼占用。
+- 用反向计算的峰值显存安排任务。4090 上的 4 mm 完整切割反向验收单独运行；启动时的低占用不等于检查点重算时的峰值。
 - 不要在 GPU 机器上启动 `franka_run --live`，除非任务就是测试遥操作。
 - 同步流程：Mac 上提交，`git push origin sync-20261020`；然后在 4060 和 4090 上各执行一次 `git pull`（它们通过 HTTPS 拉取）。
 
@@ -64,6 +65,8 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 | `NOTICE.md` | 第三方代码来源与许可（DexLab Apache-2.0 的署名必须保留） |
 
 ### 工作规则（用户要求，必须遵守）
+
+可微分主线的长期要求保存在 [AGENTS.md](../AGENTS.md) 的“用户的长期要求”中。
 
 用户的规则 `algorithm-not-demo`：
 
@@ -147,15 +150,17 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 | M2 | 多步状态与分段重算 VJP | 两网格、32/128/512 步的梯度、耗时和显存扫描完成 |
 | M3 | 刀与砧板接触、摩擦、推压轨迹优化对照 | 接触分段重算及 8/16 控制量扩展；八控制量 AD/FD/CMA-ES 成功 5/2/5（各五组），长轨迹见 RESULTS |
 | M4 | 固定切割分支、多场、塑性和刀路梯度 | 已完成：12 个窗口的正向与梯度、活跃网格约束、完整检查点及 67200 步切割/退刀/推块通过 |
-| M5 | 损伤达阈值和切开事件的梯度 | 释放窗口和 E1 几何分侧的步长对照通过；84 项几何事件测试覆盖弯曲轨迹双穿越；接触切换 E2、完整自然轨迹 E3 继续验收 |
+| M5 | 损伤达阈值和切开事件的梯度 | E1 几何事件、E2 接触切换通过；E3 的 6/4 mm 初态释放短轨迹通过，长轨迹和时间步对照继续验收 |
 
-当前实现：`differentiable.py`、`differentiable_contact.py`、`differentiable_material.py`、`differentiable_cutting.py`、`differentiable_constraint.py`、`differentiable_events.py`。`precision.py` 从同一份 Warp 函数定义生成双精度核。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
+当前实现：`differentiable.py`、`differentiable_contact.py`、`differentiable_material.py`、`differentiable_cutting.py`、`differentiable_constraint.py`、`differentiable_events.py`；M5 自然事件与阶段积分位于 `differentiable_natural.py`、`differentiable_geometry.py`、`differentiable_midpoint.py`。`precision.py` 从同一份 Warp 函数定义生成双精度核。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
 
 M1–M3 算例是 24×18×18 mm 弹性方块的侧向推压。M4 已加入原求解器实际下刀产生的香蕉切割窗口，多场、Fp、刀/板/粒子对的接触进入梯度链，侧码与释放标记来自该次正向运行。目标由实际刀路决定切口。
 
 4090 可微实验工作树：`~/Projects/BladeMaster-Warp-diff-20261021`，环境复用主仓库的 `.venv`。基础报告在 `runs/diff_clean/report.json`；`32f0378` 的报告在 `runs/diff_32f0378_{horizon,contact,optimize}/report.json`。接触分段重算与扩展推压提交为 `023d30d`，报告在 `runs/diff_023d30d_{contact_horizon,optimize_q8,optimize_q16,optimize_q16_full_ad}/report.json`。数值见 RESULTS 的“可微 TLMPM”。
 
 E1 的 `runs/e1_0a8fd13_*` 报告在上述工作树；`runs/e1_7419b30_{materials,shapes,refine}` 在 `~/Projects/BladeMaster-Warp-e1-candidates-20261022`，本机 `runs/` 保存对应 `report.json`。
+
+E2/E3 数值报告：`~/Projects/BladeMaster-Warp-e23-20261022/runs/e23_fb379d4`；加入离散接触状态重算核对的版本在 `~/Projects/BladeMaster-Warp-e23-checkpoint-20261022/runs/e23_a062351`。这些工作树固定提交运行，修改在 Mac 和测试工作树完成。
 
 M4 数值验收提交 `fe6a422`，dirty=false。保留塑性投影应力、固定传递顺序、双精度原求解器对照、网格约束与完整检查点均已接入。`624dafe` 增加活跃网格约束接入粒子推进的完整 Tape/分段重算/差分检查；提交前全量 **662 passed、8 skipped、18 subtests passed**（227.52 s）。8 项跳过为 CRESSim 上游构建未配置。
 
@@ -171,9 +176,13 @@ M5 当前有三层：`EventCutContact` 按剩余断裂功积分释放冲量；`N
 
 M5 损伤释放的 **16/16** 窗口通过，最细两档刀路/G_c 梯度差 ≤**0.856%/0.261%**，损伤功平衡误差 ≤**1.29e-19 J**。8 个自然分侧窗口的局部差分通过，原七档 **112** 组扰动仍有 **49** 组误差 >2%、**6** 组符号相反。全部命令和数据见 RESULTS 的“M1–M5 代码复核”。
 
-M5 E1 已通过：`0a8fd13` 用显式中点 RK2 和摩擦历史终点投影推进事件分段；三材料、6/4 mm、三个时间网格相位共 **27** 档对照，最细相邻两档刀路/材料梯度差 ≤**0.1279%/0.06259%**，位置差 ≤**1.041 nm**、事件时刻差 ≤**0.2691 ns**，事件与最终侧码集合一致。`7419b30` 补充二次轨迹候选及旋转分段查询，抛物线粒子、半圈刀和整圈刀的步内进入再离开测试通过。全量 **820 passed、8 skipped、18 subtests passed**，201.68 s。方法和命令见 METHOD、RESULTS。下一步 E2 处理接触切换；随后验收完整自然轨迹、多刀、整体能量、网格泛化与切割优化。
+M5 E1 已通过：`0a8fd13` 用显式中点 RK2 和摩擦历史终点投影推进事件分段；三材料、6/4 mm、三个时间网格相位共 **27** 档对照，最细相邻两档刀路/材料梯度差 ≤**0.1279%/0.06259%**，位置差 ≤**1.041 nm**、事件时刻差 ≤**0.2691 ns**，事件与最终侧码集合一致。`7419b30` 补充二次轨迹候选及旋转分段查询，抛物线粒子、半圈刀和整圈刀的步内进入再离开测试通过。方法和命令见 METHOD、RESULTS。
 
-同一 `cut_index` 内损伤 D 累积；新刀重置本刀 D，旧侧码与塑性 Fp 保留。M4 使用记录的离散分支；M5 释放窗口固定初态、侧码和空粒子对集合，几何事件窗口自然更新侧码与接触集合。完整自然轨迹从 t=0 的前缀导数属于 E3。
+M5 E2 已通过：**18** 项接触、粘滑与刀缘检查；刀/板/粒子对、两网格、三相位、四档步长共 **72** 例解析碰撞，各有两档自然差分误差 ≤2%，最差第二档 **0.005707%**。`a062351` 的全量测试为 **850 passed、8 skipped、18 subtests passed**。
+
+M5 E3：6 mm、G_c=7 的 50 ms 初态释放通过完整 Tape/16/32/128 检查点及 12 组自然差分；4 mm、G_c=7 的三档时间步均释放 5 个粒子，最细相邻两档刀路/G_c 梯度差 ≤**0.468%/1.426%**。6 mm、G_c=700 的 0.24 s 自然下刀差分最大误差 **0.002260%**。继续完成长轨迹及时间步对照；多刀、整体能量、网格泛化和切割优化依次见 E4–E7。
+
+同一 `cut_index` 内损伤 D 累积；新刀重置本刀 D，旧侧码与塑性 Fp 保留。M4 使用记录的离散分支；M5 的自然流程在每条扰动轨迹上重新生成侧码、接触对和损伤释放。`scripts.diff_natural_validate --from-initial` 从未切割初态展开，默认窗口模式从原求解器选定的共同状态起步。
 
 完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。
 

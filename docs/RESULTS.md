@@ -880,10 +880,18 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
 
 刀位/行程/横推梯度为 **−0.00684463284 / −1.80985156 / −0.152145023**，G_c 梯度为 **−1.52513171e-5**。CPU 存储、每段 **32** 步的检查点连续状态重算差及损伤功平衡误差均为 **0**；初始位置梯度范数 **268.677**。独立正向 **665.00 s**，检查点正向/重算/反向为 **690.48/740.65/289.56 s**；进程 CUDA 数组内存池峰值 **5.431 GiB**。
 
+刀位/行程/横推/G_c 倍数的 `1e-7` 自然差分误差为 **0.005291% / 0.003057% / 0.00007528% / 0.07878%**，`1e-8` 为 **0.006858% / 0.0009211% / 0.001340% / 0.6647%**，八组全部通过。扰动后的末端侧码及释放集合一致；独立差分程序的未扰动末态核对通过，目标值差 **4.44e-16**。
+
 ```bash
 PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine --dt-divisors 1 \
   --output runs/e3_a55b185/initial_1050ms_h4_gc70 --geometry event --from-initial \
   --trajectory cut-withdraw-push --duration 1.05 --spacings .004 --cutting-energy 70 \
   --adjoint checkpoint --segment-steps 32 --checkpoint-device cpu --epsilons \
   --parameters knife_x_mm knife_depth_scale knife_lateral_scale
+for task_index in 0 1 2 3; do
+  PYTHONPATH=. .venv/bin/python runs/e3_a55b185/full_path_h4_fd.py "$task_index" &
+done
+wait
 ```
+
+E3 汇总：上述 `fb379d4`、`39741bf`、`a55b185` 的 **50 组自然差分全部 ≤2%**，最大误差 **0.9185%**；**17** 组检查点的连续状态重算差均为 **0**。完整轨迹、活跃损伤释放及时间步对照通过，下一项为 E4 多刀与永久历史。

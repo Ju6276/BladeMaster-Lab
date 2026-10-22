@@ -224,3 +224,65 @@ def test_natural_blade_face_to_edge_trajectory_derivative(spacing):
             state, _ = rollout()
             values.append(float(np.sum(state.v.numpy() * seed)))
         np.testing.assert_allclose(gradient, (values[1] - values[0]) / (2 * epsilon), rtol=2e-5, atol=1e-7)
+
+
+@wp.kernel
+def mean_tangent_velocity(v: wp.array(dtype=wp.vec3), loss: wp.array(dtype=float)):
+    wp.atomic_add(loss, 0, v[wp.tid()][0] / float(v.shape[0]))
+
+
+@pytest.mark.parametrize('dt', [.00005, .000025])
+def test_sliding_to_sticking_trajectory_gradient_and_checkpoint(dt):
+    from blademaster_warp.differentiable_natural import CutInstruction
+
+    m = model(dt=dt, friction_static=.2, friction_dynamic=.2)
+    c = GeometryEventContact(m)
+    x = m.reference.copy()
+    x[:, 2] = m.config.grid_spacing / 4 - 9.81 * dt**2 / m.config.contact_scales()[0]
+    v = np.zeros_like(x)
+    v[:, 0] = .01
+    initial, history = m.state(x=x, v=v), c.history()
+    tool = c.tool([1, 1, 1])
+    steps = round(.008 / dt)
+    instructions = [CutInstruction(cutting=False)] * steps
+    sn, gk = m.config.contact_scales()
+    kt = gk * m.mass / dt**2
+    damping = 2 * m.config.tangent_damping * np.sqrt(m.mass * kt)
+
+    def objective(step, state, h, force, loss):
+        if step == steps - 1:
+            m.launch(mean_tangent_velocity, m.n, inputs=[state.v], outputs=[loss], device=m.device)
+
+    def rollout():
+        state, h = initial, history
+        force_ratios = []
+        loss = m.zeros(1, float)
+        for step, instruction in enumerate(instructions):
+            state, h, force = c.step(state, h, tool, instruction)
+            objective(step, state, h, force, loss)
+            force_t = -kt * h.rigid.numpy()[0, :, 0] - damping * state.v.numpy()[:, 0]
+            normal_force = sn * m.mass / dt**2 * (m.config.grid_spacing / 4 - state.x.numpy()[:, 2])
+            force_ratios.append(float(np.mean(np.abs(force_t) / normal_force)))
+        return loss, np.asarray(force_ratios)
+
+    with wp.Tape() as tape:
+        loss, force_ratios = rollout()
+    capped = np.flatnonzero(np.isclose(force_ratios, m.config.friction_dynamic, rtol=0., atol=1e-9))
+    assert len(capped) > 3
+    assert np.min(force_ratios[capped[-1] + 1:]) < .5 * m.config.friction_static
+    tape.backward(loss)
+    gradient = float(np.sum(initial.v.grad.numpy()[:, 0]))
+    friction_gradient = c.friction.grad.numpy().copy()
+    assert abs(gradient) > 1e-3
+    tape.zero()
+    result = c.checkpoint_vjp(initial, history, instructions, 32, lambda _: tool, objective)
+    np.testing.assert_allclose(np.sum(result.initial_gradient.v.numpy()[:, 0]), gradient, atol=1e-11)
+    np.testing.assert_allclose(result.parameter_gradients[c.friction], friction_gradient, atol=1e-11)
+    for epsilon in (1e-8, 3e-9):
+        values = []
+        for sign in (-1, 1):
+            shifted = v.copy()
+            shifted[:, 0] += sign * epsilon
+            initial.v.assign(shifted)
+            values.append(float(rollout()[0].numpy()[0]))
+        np.testing.assert_allclose(gradient, (values[1] - values[0]) / (2 * epsilon), rtol=2e-5, atol=1e-7)

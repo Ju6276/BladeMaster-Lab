@@ -222,9 +222,9 @@ G_c=7/70/700/1400 与三档步长的 50 ms 扫描已完成，报告在 `e5-trans
 
 移动面压力核 `cohesive_contact_response` 与共享法向导数已实现，新增 4 项测试；全量 **1063 passed、8 skipped、18 subtests passed**（300.46 s）。`e5-cohesive/runs/e5_release_audit/extrinsic_surface.json` 的三档能量残差约随步长线性下降；`extrinsic_surface_short.json` 保存 160 步旋转一致性和闭合前 24 步八类输入导数。
 
-移动面 160 步自然差分在初速度扰动的第 46 步闭合时失败，ADMM 8192 次后残差仍为 **2.406e-8**。失败输入为 `extrinsic_surface_failure.npz`，独立同势能的 `surface_failed_primal.py` 得到 9 个承压点，平衡残差 **3.026e-19**；报告为 `surface_failed_primal.json`。下一项实现主动集全局求解及其导数，再接自然参考面、永久历史和接触去重。完整自然切割仍使用原损伤释放律。
+移动面联合约束与隐式反向原型为 `extrinsic_monolithic.py`，局部 10 类输入自然差分通过；`extrinsic_monolithic_seed8.json` 的原失败扰动已完整推进 160 步。当前整段检查失败：初速度四档差分相对误差 **0.4045/0.6498/5.704e-6/4.443e-5**，仅一档达到 **2e-5**；旋转归一化速度差 **2.464e-10** 超过 **1e-10**。日志为 `extrinsic_trajectory_gradients.log`、`extrinsic_rotation_audit.log`；`extrinsic_trajectory_scan.py` 继续扫描全部八类输入并逐项写入报告，保留原四档差分和通过标准。下一项核对接触集合、约束条件数及隐式导数，然后接自然参考面、永久历史和接触去重。完整自然切割仍使用原损伤释放律。
 
-`e4-current` 中 4 mm 交叉窗口也在运行，脚本/日志为 `runs/e4_ca90da9/crossing_window.py`、`crossing_h4.log`，报告目录 `crossing_h4_640ms`。6 mm 完整交叉已通过；`continue_cases.py` 核对报告后顺序复验暂停续切、平行两刀、三刀后推块；状态在 `runs/e4_ca90da9/continue_status.json`。运行中工作树保持固定提交。
+`e4-current` 的 6 mm 完整交叉、暂停续切及 4 mm 交叉窗口已通过，各四项自然差分的最大误差为 **0.03716%/0.005113%/0.009204%**；检查点状态重算差和暂停损伤增量均为 **0**。报告为 `runs/e4_ca90da9/{crossing,resume,crossing_h4_640ms}/report.json`。`continue_cases.py` 正在运行平行两刀，随后三刀后推块；状态在 `runs/e4_ca90da9/continue_status.json`。运行中工作树保持固定提交。
 
 完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。
 

@@ -1139,3 +1139,31 @@ PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_surface_validate.p
 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_surface_validate.py --steps 160
 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/surface_failed_primal.py
 ```
+
+
+## 2026-10-22：E4 当前公式的暂停续切与 4 mm 交叉窗口
+
+`ca90da9`，dirty=false，RTX 4090。6 mm 暂停续切为 1452 粒子、0.74 s、47360 步，横移 ε=1e-6/1e-7 mm 的自然差分误差 **0.0007693%/0.0051131%**，深度 **0.0024713%/0.0002709%**。32/127 步检查点的状态重算差 **0**，刀路梯度差 **1.960e-16**；暂停损伤增量 **0**，最终两块各 **726** 粒子。
+
+4 mm 交叉窗口为 4892 粒子、0.64 s、48640 步，包含第一刀、退刀、转向和第二刀前 80 ms。横移两档自然差分误差 **0.0069135%/0.0092038%**，深度 **0.0059460%/0.0088622%**；32 步 CPU 检查点状态重算差和暂停损伤增量均为 **0**，**2** 粒子释放，最大塑性变形量 **0.053064**，数组显存峰值 **5.198 GiB**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate --output runs/e4_ca90da9/resume --cases resume --spacings .006 --dt .000015625 --flip-reference-dt .000015625 --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
+PYTHONPATH=. .venv/bin/python runs/e4_ca90da9/crossing_window.py
+```
+
+## 2026-10-22：E5 移动面联合约束与轨迹核对
+
+`11fbbd5`，dirty=false，RTX 4090，原型位于 `runs/e5_release_audit/`。64 粒子、16 面积分点的移动面联合约束在一个承压点的局部算例中，对开口、面映射、参考法向、历史、材料、插值、面梯度、面积、质量和时长共 **10** 类输入各通过两档自然差分；最差第二档相对误差 **9.184e-9**。原第 46 步停滞的初速度扰动完整推进 **160** 步，最大动量平衡相对残差 **2.647e-19**。
+
+同一增量势采用代数等价的稳定能量差，SLSQP 提供初值、Newton 驻点保持 **1e-11** 的最终残差要求。该 160 步正向算例耗时 **11.70 s**，与直接能量相减版本的终态能量差 ≤**6.1e-18 J**。源代码全量测试 **1063 passed、8 skipped、18 subtests passed**（305.99 s）。
+
+整段梯度验收失败：160 步初速度方向 ε=1e-4/1e-5/1e-6/1e-7 的自然差分相对误差为 **0.40448/0.64981/5.704e-6/4.443e-5**，原标准要求至少两档 ≤**2e-5**。坐标旋转后的归一化速度差 **2.464e-10**，超过 **1e-10**。下一项逐步核对接触集合、约束条件数及隐式导数，再完成全部输入扫描；自然切口接入和完整能量扫描随后进行。
+
+```bash
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_monolithic_validate.py
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_monolithic_replay.py --steps 160 --initial-tolerance 1e-8 --output runs/e5_release_audit/extrinsic_monolithic_seed8.json
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_trajectory_gradients.py --steps 160 --solver monolithic --initial-tolerance 1e-8
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_rotation_audit.py
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
+```

@@ -873,3 +873,17 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
   --adjoint checkpoint --segment-steps 32 128 --epsilons 1e-7 1e-8 \
   --state-parameters initial_z_mm young_scale fracture_scale
 ```
+
+### 2026-10-22：M5 E3 细网格完整轨迹的 CPU 检查点
+
+`a55b185`，RTX 4090、dirty=false：**4 mm、4892 粒子、G_c=70、1.05 s / 79800 步**，从未切割初态完成下刀、退刀、推块和再次退刀。机械连通性得到 **2446/2446** 两块；新增 **2632** 个侧码，**5** 个粒子损伤释放，峰值候选接触对 **37**，峰值刀力 **11.3819 N**，`max|Fp−I|=0.192143`。
+
+刀位/行程/横推梯度为 **−0.00684463284 / −1.80985156 / −0.152145023**，G_c 梯度为 **−1.52513171e-5**。CPU 存储、每段 **32** 步的检查点连续状态重算差及损伤功平衡误差均为 **0**；初始位置梯度范数 **268.677**。独立正向 **665.00 s**，检查点正向/重算/反向为 **690.48/740.65/289.56 s**；进程 CUDA 数组内存池峰值 **5.431 GiB**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine --dt-divisors 1 \
+  --output runs/e3_a55b185/initial_1050ms_h4_gc70 --geometry event --from-initial \
+  --trajectory cut-withdraw-push --duration 1.05 --spacings .004 --cutting-energy 70 \
+  --adjoint checkpoint --segment-steps 32 --checkpoint-device cpu --epsilons \
+  --parameters knife_x_mm knife_depth_scale knife_lateral_scale
+```

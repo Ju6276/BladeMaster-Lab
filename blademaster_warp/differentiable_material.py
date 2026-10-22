@@ -366,6 +366,13 @@ def couple_fixed(
     result[a] = value
 
 
+@wp.kernel
+def add_grid_load(internal: wp.array(dtype=wp.vec3), external: wp.array(dtype=wp.vec3),
+                  result: wp.array(dtype=wp.vec3)):
+    i = wp.tid()
+    result[i] = internal[i] + external[i]
+
+
 class MaterialTrajectory(ElasticTrajectory):
     """Fixed reference stencils; discrete cut codes supplied for each step.
 
@@ -473,7 +480,8 @@ class MaterialTrajectory(ElasticTrajectory):
         return flow
 
     def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None,
-             grid_transform=None, duration=None, stage_base=None, trace=None):
+             grid_transform=None, duration=None, stage_base=None, trace=None, grid_load=None):
+        """grid_load is an impulse in N s per topology slot, applied before cut-field coupling."""
         cfg = self.config
         duration = self.duration if duration is None else duration
         grid = self.uncut if topology is None else topology
@@ -508,6 +516,13 @@ class MaterialTrajectory(ElasticTrajectory):
                       inputs=[state.v, stress, impulse, grid.slots, self.weights, self.gradients,
                               self.mass, self.volume, duration],
                       outputs=[grid_mass, momentum, grid_impulse], device=self.device)
+        if grid_load is not None:
+            if grid_load.shape != (grid.count,):
+                raise ValueError('Grid load must have one impulse per topology slot')
+            combined = self.zeros(grid.count, wp.vec3)
+            self.launch(add_grid_load, grid.count, inputs=[grid_impulse, grid_load],
+                        outputs=[combined], device=self.device)
+            grid_impulse = combined
         coupled_momentum = self.couple(grid, momentum)
         coupled_impulse = self.couple(grid, grid_impulse)
         self.launch(m.grid_vel, grid.count, inputs=[grid_mass, coupled_momentum, coupled_impulse],

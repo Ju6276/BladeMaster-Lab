@@ -69,6 +69,8 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 M5 中点阶段的 `MaterialTrajectory.flow_velocity` 对当前速度先 P2G，再按侧码耦合，最后插值回接触点。若 W 为粒子插值、M 为网格质量、C 为多场动量耦合，接触速度为 `u=W M⁻¹ C Wᵀ m v`。材料接触加速度使用相同传递，故 `Σm v·a_contact=Σf_contact·u`。刚体与粒子对的相对速度、切向历史增量和损伤推进都使用 u；PIC 阻尼仍作用于存储速度 v。未切开、部分切开和交叉侧码的虚功及转置导数用独立 NumPy 映射核对。
 
+`MaterialTrajectory.step(grid_load=...)` 接收每个逻辑网格槽的附加冲量（N·s），在相容场交换 C 之前与 P2G 冲量相加。网格力 `f_g` 对应粒子加速度 `a=W M⁻¹ C f_g`，与其共轭的网格速度为 `u_g=M⁻¹ C Wᵀ m v`；现有质量加权耦合满足 `Cᵀ M⁻¹=M⁻¹ C`，因此 `Σm v·a=Σf_g·u_g`。界面两侧用相同插值及其转置分别取得速度、散射等反作用力，可直接核对界面功。显式裂纹的双侧运动与牵引组织参考 [CRAMP 的裂纹牵引说明](https://osupdocs.forestry.oregonstate.edu/index.php?title=Traction_Laws)，这里的多场功配对由现有 C 推导。
+
 ## 可微弹性与固定接触
 
 `differentiable.ElasticTrajectory` 在未切割单场上复用 P2G、网格速度和共转应力；G2P 与 MUSL 写入下一步状态。每一步保存独立数组，分段 VJP 在反向时重算段内状态。E 使用可求导数组；参考采样、密度、ν 与步长保持固定。

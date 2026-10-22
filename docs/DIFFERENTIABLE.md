@@ -211,6 +211,8 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_energy_validate \
 
 报告保留原始能量残差、各项功差和相邻步长的状态差；若轨迹未接触刀具或切割轨迹未产生分侧，命令报错。
 
+E5 当前失败项是损伤释放后的能量配对：移除刃向冲量时，接触储能与摩擦历史仍按原接触律更新。下一项先用单接触核对释放前后的储能、实际力和耗散，再修复释放律、完成阈值扫描和自然梯度复验。参考 [DiSECt 的切割弹簧与独立接触力实现](https://github.com/NVlabs/DiSECt/blob/ff90165070335bb8033000373d2d20c6aac13edd/dflex/sim.py)及[界面损伤与压缩接触分开的 CZM](https://doc.comsol.com/6.4/doc/com.comsol.help.sme/sme_ug_modeling.05.147.html)，保持刀路自然生成切口。
+
 E4 执行计划：
 
 1. 方块/圆柱的短轨迹：核对同刀暂停、换编号后的损伤与旧侧码、塑性保留；只扰动第一刀，目标从第二刀开始累计。

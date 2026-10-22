@@ -1023,3 +1023,17 @@ RTX 4090，干净提交，6 mm 香蕉 1452 粒子，2.18 s / 139520 子步，最
 ```bash
 PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate --output runs/e4_f60a5c4/three-cuts-push --cases three-cuts-push --spacings .006 --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
 ```
+
+## 2026-10-22：E5 接触功配对与屈服边界修复（`ec7bcb4`）
+
+中点接触使用位置推进的插值速度，未切开/部分切开/交叉侧码的虚功和转置导数通过独立 NumPy 核对；非均匀速度场在 12.5/6.25/3.125 μs 下的能量误差逐档下降超过 **3.5 倍**。塑性初始线搜索保留原阈值和驻点容差，采用避免浮点抵消的等价能量差；1792 个近屈服状态从 **7** 个失败变为 **0**。全量 **1017 passed、8 skipped、18 subtests passed**（290.38 s）。
+
+RTX 4090、干净提交、50 ms 塑性方块：静置 dt=15.625/7.8125/3.90625 μs 的总能量残差分别为 **−6.687e-12/−4.252e-12/−1.385e-12 J**；压入前两档为 **1.770e-10/1.202e-10 J**（**0.001116%/0.000758%**）。`33a7001` 同参数压入的三档残差约 **−3.31e-7 J（−2.17%）**，主要来自摩擦计算与材料传递的速度功差。
+
+损伤释放能量核对失败：6 mm 香蕉 1452 粒子、G_c=7、50 ms、4 粒子释放，dt=15.625/7.8125 μs 的总残差分别为 **3.941532e-4/3.941602e-4 J（23.5995%/23.5999%）**。释放前后刃向冲量的功差为 **3.941671e-4/3.941648e-4 J**；几何分侧能量跳变约 **6.75e-16 J**。原因是刃向冲量移除后，接触储能和摩擦历史仍按移除前的接触律更新。下一项在单接触上统一释放后的实际力、储能与耗散，再复测自然梯度和阈值扫描。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
+PYTHONPATH=. .venv/bin/python -m scripts.diff_energy_validate --output runs/e5_current/block_plastic --shape block --material plastic --scenes rest press cut --duration .05 --dt-divisors 1 2 4 --cutting-energies 7 70 700 1400
+PYTHONPATH=. .venv/bin/python -m scripts.diff_energy_validate --output runs/e5_current/banana_release --shape banana --material banana --scenes cut --duration .05 --dt-divisors 1 2 4 --cutting-energies 7 70 700 1400
+```

@@ -184,9 +184,9 @@ M5 E3 已通过：6/4 mm 从未切割初态运行 50 ms 释放、0.24 s 下刀�
 
 4 mm、G_c=70 完整轨迹得到 **2446/2446** 两块，**5** 个粒子损伤释放；三项刀路与 G_c 各两档自然差分最大误差 **0.6647%**，CPU/32 步检查点峰值数组显存 **5.431 GiB**。4 mm、G_c=7 的释放短轨迹最细两档刀路/G_c 梯度差 ≤**0.468%/1.426%**。下一项是 E4 多刀与永久历史；整体能量、网格/场景泛化和切割优化分别为 E5–E7。
 
-E4 完整暂停续切、平行两刀和交叉两刀通过，报告在 `~/Projects/BladeMaster-Warp-e4-20261022/runs/e4_8d35d5c/`。交叉两刀的 4 组自然差分最大误差 **0.07377%**，32/127 步检查点状态重算差 **0**。4 mm、0.64 s 交叉窗口也通过：4 组差分最大误差 **0.02062%**、检查点重算差 **0**。三刀后推块正在完成自然差分，两者使用 `f60a5c4`，工作树为 `~/Projects/BladeMaster-Warp-e4-audit-20261022`。
+E4 完整暂停续切、平行两刀和交叉两刀通过，报告在 `~/Projects/BladeMaster-Warp-e4-20261022/runs/e4_8d35d5c/`。交叉两刀的 4 组自然差分最大误差 **0.07377%**，32/127 步检查点状态重算差 **0**。4 mm、0.64 s 交叉窗口也通过：4 组差分最大误差 **0.02062%**、检查点重算差 **0**。三刀后推块 4 项差分最大误差 **0.14894%**、检查点重算差 **0**；后两者使用 `f60a5c4`，工作树为 `~/Projects/BladeMaster-Warp-e4-audit-20261022`。
 
-当前任务状态统一看新工作树的 `runs/e4_f60a5c4/status.json`，后台监测每 15 s 更新进程、最新日志和结果；4 mm 对照已完成，三刀继续运行。日志为 `crossing_h4.log` 和 `three_cuts_h6.log`，已完成的 6 mm 交叉任务日志在旧目录 `crossing.log`。监测入口为 `runs/e4_f60a5c4/watch.py`；任务失败时查看 `state=failed` 和对应日志，修复复测后继续。
+旧版 E4 状态在 `runs/e4_f60a5c4/status.json`，日志为 `crossing_h4.log` 和 `three_cuts_h6.log`，均已完成。
 
 `f60a5c4` 全量 **900 passed、8 skipped、18 subtests passed**。验收拒绝非有限差分和检查点状态，多刀事件按切割编号导出；物理推进和梯度公式与 `8d35d5c` 相同。
 
@@ -196,11 +196,13 @@ E5 能量基准工作树为 `~/Projects/BladeMaster-Warp-e5-20261022`（`33a7001
 
 切向力与弹性历史共用 Kelvin–Voigt–滑动元件更新，θ=1/2 用于 M5 中点，θ=1 用于原求解器/M4。零摩擦同参数小例的虚增储能从 **5e-5 J** 降为 **0**，三档步长相同；随机能量恒等式残差 ≤**2e-18 J**。公式、来源与步长条件见 METHOD。旧 `lagged/projected` 选项已替换为 `implicit/midpoint`。
 
-公式更新后的自然窗口重验已完成，干净工作树 `~/Projects/BladeMaster-Warp-e5-friction-20261022`，日志 `runs/e5_109fe3f/banana_h6.log`。6 mm 香蕉、2 ms、三相位、dt=15.625/7.8125/3.90625 μs，固定 PIC 参考时间 15.625 μs，比较 32/127 步 CPU 检查点及两档自然差分。旧 E4 三刀已在 `e4-audit` 工作树完成，4 项差分最大误差 0.14894%、检查点重算差 0；`43a939a` 的塑性交叉轨迹在 `~/Projects/BladeMaster-Warp-e4-energy-20261022/runs/e4_43a939a`，队列先 6 mm 后 4 mm。
+公式更新后的自然窗口重验已完成，干净工作树 `~/Projects/BladeMaster-Warp-e5-friction-20261022`，日志 `runs/e5_109fe3f/banana_h6.log`。6 mm 香蕉、2 ms、三相位、dt=15.625/7.8125/3.90625 μs，固定 PIC 参考时间 15.625 μs，比较 32/127 步 CPU 检查点及两档自然差分。`43a939a` 的塑性交叉轨迹在 `~/Projects/BladeMaster-Warp-e4-energy-20261022/runs/e4_43a939a`；6 mm 交叉第一刀横移的两档差分误差 **8.03%/13.94%**，失败。剩余深度差分完成后检查事件变化、左右差分和约束迭代，按当前公式复测。队列遇失败退出。
 
 自然窗口的 36 项差分最大误差 **0.034311%**，32/127 步检查点重算状态差 **0**，刀路梯度差 ≤**7.61e-15**；最细两档梯度差 ≤**0.17884%**。
 
-E5 逐段能量账本已接入静置、压入和自然切割，包含接触储能、塑性/摩擦/PIC 分项和几何事件能量。新增 9 项测试通过，全量 **1012 passed、8 skipped、18 subtests passed**（294.90 s）。M5 中点接触已使用与材料推进共轭的插值速度，新增 4 项虚功/转置导数及非均匀速度场能量测试通过；全量 **1016 passed、8 skipped、18 subtests passed**（264.47 s）。塑性返回的初始线搜索能量差已改为代数等价的稳定计算；1792 个近屈服状态全部通过，原失败状态及 50 ms 受载切割复测通过；全量 **1017 passed、8 skipped、18 subtests passed**（290.38 s）。后续执行 G_c=7/70/700/1400、含损伤释放的切割和步长细化验收。E4 长实验保留固定版本，当前塑性/摩擦更新后重跑受影响的 E1–E4 轨迹与梯度检查。
+E5 逐段能量账本已接入静置、压入和自然切割，包含接触储能、塑性/摩擦/PIC 分项和几何事件能量。9 项账本测试、4 项虚功/转置导数及非均匀速度场能量测试通过。M5 中点接触使用与材料推进共轭的插值速度；塑性初始线搜索采用代数等价的稳定能量差，1792 个近屈服状态全部通过。当前数值提交 `ec7bcb4`，全量 **1017 passed、8 skipped、18 subtests passed**（290.38 s）。
+
+G_c=7/70/700/1400 和步长扫描在 `e5-transfer` 工作树的 `runs/e5_current/{block_plastic,banana_release}`，日志为 `runs/e5_current_{block,banana}.log`。香蕉 G_c=7、50 ms、4 粒子释放时总能量残差约 **+23.6%**，15.625/7.8125 μs 两档相同；差额对应移除刃向冲量后的功与原接触储能/摩擦历史不配套，几何分侧能量跳变约 **6.75e-16 J**。下一项先在单接触上推导并核对释放前后的储能、实际力和耗散，再修复释放律并重跑扫描和自然梯度。当前公式更新后重跑受影响的 E1–E4 轨迹。
 
 同一 `cut_index` 内损伤 D 累积；新刀重置本刀 D，旧侧码与塑性 Fp 保留。M4 使用记录的离散分支；M5 的自然流程在每条扰动轨迹上重新生成侧码、接触对和损伤释放。`scripts.diff_natural_validate --from-initial` 从未切割初态展开，默认窗口模式从原求解器选定的共同状态起步。
 
@@ -215,7 +217,7 @@ E5 逐段能量账本已接入静置、压入和自然切割，包含接触储�
 - MLS-MPM / CPIC：Hu 等，SIGGRAPH 2018，代码 https://github.com/yuanming-hu/taichi_mpm （MIT）
 - CRESSim-MPM：https://github.com/yafei-ou/CRESSim-MPM （BSD-3，本仓库固定 `09aa5009`）
 - TopoCut：https://arxiv.org/abs/2509.19712 （未找到官方代码；它基于 https://github.com/zhouxian/FluidLab ）
-- DiSECt：https://github.com/NVlabs/DiSECt （FEM 可微切割，切面预先给定；仓库内是 LS-DYNA 仿真数据）
+- DiSECt：https://github.com/NVlabs/DiSECt （FEM 可微切割，切面预先给定；含 `dflex/` 求解器、`cutting/` 接口及 `dataset/` 的 LS-DYNA 仿真数据）
 - RoboNinja：https://github.com/real-stanford/roboninja （Taichi 可微 MLS-MPM；分离由单场 MLS-MPM 隐式处理，没有切口标记；刀与核的碰撞用软化损失）
 - EMPM：https://github.com/rai-opensource/empm （同 BladeMaster 组，从 RGB-D 标定可微 MPM）
 - PhysTwin：https://github.com/jianghanxiao/phystwin （Warp 弹簧质点模型；拓扑参数用 CMA-ES，稠密参数用梯度）

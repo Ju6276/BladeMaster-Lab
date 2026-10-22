@@ -845,3 +845,17 @@ for storage in cuda cpu; do
     --checkpoint-device "$storage"
 done
 ```
+
+### 2026-10-22：M5 E3 细网格完整下刀
+
+`39741bf`，RTX 4090、dirty=false：**4 mm、4892 粒子、G_c=70、0.24 s / 18240 步**，新增 **2632** 个侧码，**5** 个粒子损伤释放，峰值刀力 **0.715172 N**。刀位、行程、初始高度、E 和 G_c 各两档自然差分共 **10** 组通过，最大相对误差 **0.1014%**；刀路及材料各自最大误差 **0.01648%/0.004101%**。
+
+32/128 步检查点的刀路/初始位置梯度最大差 **1.93e-14/1.36e-12**，连续状态重算差及损伤功平衡误差均为 **0**。进程 CUDA 数组内存池峰值 **15.02 GiB**。初始高度扰动 `1e-8 mm` 时，AD/左差分/右差分为 **−0.000710194/−0.000708936/−0.000710168**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/e3_39741bf/initial_240ms_h4_gc70 --geometry event --from-initial \
+  --trajectory cut-withdraw-push --duration .24 --spacings .004 --cutting-energy 70 \
+  --adjoint checkpoint --segment-steps 32 128 --epsilons 1e-7 1e-8 \
+  --state-parameters initial_z_mm young_scale fracture_scale
+```

@@ -932,3 +932,15 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate \
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest tests -q --tb=short
 ```
+
+### 2026-10-22：M5 E4 完整交叉两刀
+
+`8d35d5c`，RTX 4090、dirty=false，**6 mm、1452 粒子、G_c=700、1.04 s / 66560 步**。第二刀转动 **60°**；第一刀横移/深度各两档自然差分共 **4** 组，最大误差 **0.07377%**。最终分块粒子数 **726/354/372**，第二刀释放 **19** 个粒子，塑性变形 `max|Fp−I|=0.210871`。
+
+**32/127 步 CPU 检查点**连续状态重算差均为 **0**，刀路梯度最大差 **5.90e-15**，初态位置梯度最大差 **1.34e-11**。暂停损伤变化 **0**，损伤计功 **0.0203520 J**，计功平衡误差 **2.78e-17 J**。独立正向 **363.09 s**，峰值 CUDA 数组内存 **3.774 GiB**；报告与末态数组通过 `f60a5c4` 的有限数及差分判定复核。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate \
+  --output runs/e4_8d35d5c/crossing --cases crossing --spacings .006 \
+  --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
+```

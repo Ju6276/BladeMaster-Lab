@@ -150,7 +150,8 @@ def test_cut_pause_and_new_cut_preserve_codes_and_reset_only_damage():
 
 @pytest.mark.parametrize('segment_steps', [3, 7])
 @pytest.mark.parametrize('release', ['boundary', 'integrated'])
-def test_natural_rollout_gradient_and_checkpoint(segment_steps, release, monkeypatch):
+@pytest.mark.parametrize('checkpoint_device', [None, 'cpu'])
+def test_natural_rollout_gradient_and_checkpoint(segment_steps, release, checkpoint_device, monkeypatch):
     monkeypatch.setattr(wp.config, 'verify_autograd_array_access', True)
     m = MaterialTrajectory(configuration(), precision='float64', ordered_transfers=True)
     c = NaturalCutContact(m, release=release)
@@ -186,7 +187,8 @@ def test_natural_rollout_gradient_and_checkpoint(segment_steps, release, monkeyp
     tape.zero()
     timings = {}
     result = c.checkpoint_vjp(initial, history, [CutInstruction()] * steps, segment_steps,
-                              knife, objective, parameters=(q,), timings=timings)
+                              knife, objective, parameters=(q,), timings=timings,
+                              checkpoint_device=checkpoint_device)
     np.testing.assert_allclose(result.parameter_gradients[q], gradient, rtol=1e-9, atol=1e-10)
     np.testing.assert_allclose(result.initial_gradient.x.numpy(), initial_gradient, rtol=1e-9, atol=1e-9)
     assert max(timings['recompute_max_abs'].values()) == 0

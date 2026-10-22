@@ -57,6 +57,7 @@ def main():
     parser.add_argument('--epsilons', type=float, nargs='*', default=[5e-7, 5e-8],
                         help='Finite-difference perturbations; pass no values to compare refinement levels only')
     parser.add_argument('--segment-steps', type=int, nargs='+', default=[16, 32])
+    parser.add_argument('--checkpoint-device', choices=['cuda', 'cpu'], default='cuda')
     parser.add_argument('--adjoint', choices=['full', 'checkpoint'], default='full')
     parser.add_argument('--parameters', nargs='+', default=['knife_x_mm', 'knife_depth_scale'],
                         choices=['knife_x_mm', 'knife_depth_scale', 'knife_lateral_scale'])
@@ -105,7 +106,8 @@ def main():
                                                args.segment_steps, args.geometry, args.friction_update,
                                                initial_window=window, return_arrays=True, adjoint=args.adjoint,
                                                controls_to_check=args.parameters, integration=args.integration, phase=phase,
-                                               trajectory=args.trajectory, progress=True)
+                                               trajectory=args.trajectory, progress=True,
+                                               checkpoint_device='cpu' if args.checkpoint_device == 'cpu' else None)
                         name = f'{shape}_{material}_h{spacing:g}_dt{divisor}_phase{phase:g}'
                         row.update(name=name, divisor=divisor)
                         np.savez_compressed(args.output / f'{name}.npz', **arrays)

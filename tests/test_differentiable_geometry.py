@@ -78,7 +78,8 @@ def test_event_time_and_state_derivatives(angle, omega, parameter, spacing, shap
 
 
 @pytest.mark.parametrize('integration', ['symplectic', 'midpoint'])
-def test_geometry_event_checkpoint(integration):
+@pytest.mark.parametrize('checkpoint_device', [None, 'cpu'])
+def test_geometry_event_checkpoint(integration, checkpoint_device):
     m, c, initial, history, tool = fixture(.2, .5, friction_update='projected', integration=integration)
     steps = 3
 
@@ -101,7 +102,7 @@ def test_geometry_event_checkpoint(integration):
     tape.zero()
     timings = {}
     result = c.checkpoint_vjp(initial, history, [CutInstruction()] * steps, 2, knife, objective,
-                              parameters=(tool.position,), timings=timings)
+                              parameters=(tool.position,), timings=timings, checkpoint_device=checkpoint_device)
     np.testing.assert_allclose(result.parameter_gradients[tool.position], expected, rtol=1e-9, atol=1e-10)
     np.testing.assert_allclose(result.initial_gradient.x.numpy(), expected_initial, rtol=1e-9, atol=1e-10)
     assert max(timings['recompute_max_abs'].values()) == 0

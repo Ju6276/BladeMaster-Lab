@@ -178,7 +178,8 @@ def test_cutting_work_and_release_match_original(hold, initial_damage):
 
 
 @pytest.mark.parametrize('segment_steps', [1, 3, 8])
-def test_cut_checkpoint_preserves_plastic_and_contact_history(split, segment_steps):
+@pytest.mark.parametrize('checkpoint_device', [None, 'cpu'])
+def test_cut_checkpoint_preserves_plastic_and_contact_history(split, segment_steps, checkpoint_device):
     from scripts.diff_cut_validate import differentiable_tool, reaction_loss, terminal_loss
 
     cfg, origin, values, history, rows, controls = split
@@ -213,7 +214,7 @@ def test_cut_checkpoint_preserves_plastic_and_contact_history(split, segment_ste
     tape.zero()
     timings = {}
     result = contact.checkpoint_vjp(initial, initial_history, frozen, segment_steps, tool, objective,
-                                    parameters=(q,), timings=timings)
+                                    parameters=(q,), timings=timings, checkpoint_device=checkpoint_device)
     np.testing.assert_allclose(result.loss.numpy(), expected_loss, atol=2e-7)
     for a, expected in expected_parameters.items():
         np.testing.assert_allclose(result.parameter_gradients[a], expected, rtol=2e-4, atol=2e-6)

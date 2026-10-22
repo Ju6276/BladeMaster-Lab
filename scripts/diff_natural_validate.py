@@ -89,7 +89,7 @@ def time_edges(steps, dt, phase, start, trajectory):
 def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='projected',
              *, initial_window=None, return_arrays=False, adjoint='full',
              controls_to_check=('knife_x_mm', 'knife_depth_scale'), integration='midpoint', phase=0.,
-             trajectory='straight', progress=False, state_parameters=()):
+             trajectory='straight', progress=False, state_parameters=(), checkpoint_device=None):
     directions = dict(knife_x_mm=np.array([1., 0., 0.]),
                       knife_depth_scale=np.array([0., 1., 0.]),
                       knife_lateral_scale=np.array([0., 0., 1.]))
@@ -191,7 +191,8 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     for length in segment_steps:
         timings = {}
         result = c.checkpoint_vjp(initial, history, instructions, length,
-                                  knife, objective, parameters=(q,), timings=timings)
+                                  knife, objective, parameters=(q,), timings=timings,
+                                  checkpoint_device=checkpoint_device)
         np.testing.assert_allclose(result.loss.numpy(), loss.numpy(), rtol=1e-11, atol=1e-12)
         for name in values:
             np.testing.assert_allclose(getattr(result.terminal, name).numpy(),
@@ -214,7 +215,8 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                 actual, expected = result.parameter_gradients[array], parameter_gradients[name]
                 np.testing.assert_allclose(actual, expected, rtol=1e-8, atol=1e-10)
                 material_error[name] = float(np.max(np.abs(actual - expected)))
-        checkpoint.append(dict(segment_steps=length, controls_max_abs=error_q, initial_x_max_abs=error_x,
+        checkpoint.append(dict(segment_steps=length, device=timings['checkpoint_device'],
+                               controls_max_abs=error_q, initial_x_max_abs=error_x,
                                gradient_reference=gradient_reference,
                                material_max_abs=material_error,
                                recompute_max_abs=timings['recompute_max_abs'],
@@ -327,6 +329,7 @@ def main():
     parser.add_argument('--trajectory', choices=['straight', 'cut-withdraw-push'], default='straight')
     parser.add_argument('--cutting-energy', type=float)
     parser.add_argument('--segment-steps', type=int, nargs='+', default=[16, 32])
+    parser.add_argument('--checkpoint-device', choices=['cuda', 'cpu'], default='cuda')
     parser.add_argument('--adjoint', choices=['full', 'checkpoint'], default='full')
     parser.add_argument('--parameters', nargs='+', default=['knife_x_mm', 'knife_depth_scale'],
                         choices=['knife_x_mm', 'knife_depth_scale', 'knife_lateral_scale'])
@@ -365,7 +368,8 @@ def main():
                                args.geometry, args.friction_update, adjoint=args.adjoint,
                                controls_to_check=args.parameters, integration=args.integration,
                                initial_window=window, trajectory=args.trajectory, progress=True,
-                               state_parameters=args.state_parameters)
+                               state_parameters=args.state_parameters,
+                               checkpoint_device='cpu' if args.checkpoint_device == 'cpu' else None)
                 row.update(shape=shape, material=material)
                 report['cases'].append(row)
                 (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')

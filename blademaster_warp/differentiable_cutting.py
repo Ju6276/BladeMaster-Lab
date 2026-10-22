@@ -1,6 +1,6 @@
 """Prescribed cutting with recorded topology and optional within-step damage release."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from time import perf_counter
 
 import numpy as np
@@ -406,7 +406,7 @@ class FixedCutContact(PrescribedContact):
         return result, updated, reaction
 
     def checkpoint_vjp(self, initial, history, frozen, segment_steps, tool_at_step, objective,
-                       parameters=(), timings=None):
+                       parameters=(), timings=None, *, checkpoint_device=None):
         """Recompute segments with plastic stress and all continuous contact histories.
 
         frozen and tool_at_step use global step indices. The objective adds a
@@ -419,6 +419,21 @@ class FixedCutContact(PrescribedContact):
             raise ValueError("Cut checkpoint VJP requires gradients and positive step counts")
         parameters = tuple(dict.fromkeys((*parameters, m.young, m.yield_stress,
                                          self.friction, self.fracture_energy)))
+        storage_device = wp.get_device(checkpoint_device or m.device)
+
+        def copy_value(value, device):
+            if isinstance(value, wp.array):
+                return value if value.device == device else wp.clone(value, device=device)
+            if isinstance(value, tuple):
+                return tuple(copy_value(item, device) for item in value)
+            return value
+
+        def copy_state(value, device):
+            return replace(value, **{field.name: copy_value(getattr(value, field.name), device)
+                                     for field in fields(value)})
+
+        def snapshot(step, state, contact_history):
+            return step, copy_state(state, storage_device), copy_state(contact_history, storage_device)
 
         def arrays(state, contact_history):
             result = dict(x=state.x, v=state.v, F=state.F, Fp=state.Fp,
@@ -435,16 +450,17 @@ class FixedCutContact(PrescribedContact):
             wp.synchronize_device(m.device)
             return perf_counter()
 
-        measured = dict(forward_s=0.0, recompute_s=0.0, backward_s=0.0, recompute_max_abs={}, adjoint_trace=[])
+        measured = dict(forward_s=0.0, recompute_s=0.0, backward_s=0.0, recompute_max_abs={}, adjoint_trace=[],
+                        checkpoint_device=str(storage_device))
         begun = now()
         loss = m.zeros(1, float)
-        checkpoints = [(0, initial, history)]
+        checkpoints = [snapshot(0, initial, history)]
         current, h = initial, history
         for step in range(steps):
             current, h, reaction = self.step(current, h, tool_at_step(step), frozen[step])
             objective(step, current, h, reaction, loss)
             if (step + 1) % segment_steps == 0 or step + 1 == steps:
-                checkpoints.append((step + 1, current, h))
+                checkpoints.append(snapshot(step + 1, current, h))
         terminal, terminal_history = current, h
         measured['forward_s'] = now() - begun
         gradient = {name: m.zeros(a.shape, a.dtype, False) for name, a in arrays(current, h).items()}
@@ -453,6 +469,8 @@ class FixedCutContact(PrescribedContact):
             begun = now()
             first, start, start_history = checkpoints[index]
             last, expected, expected_history = checkpoints[index + 1]
+            start = copy_state(start, m.device)
+            start_history = copy_state(start_history, m.device)
             start_arrays = arrays(start, start_history)
             for a in (*start_arrays.values(), *parameters):
                 a.grad.zero_()
@@ -503,6 +521,7 @@ class FixedCutContact(PrescribedContact):
             tape.zero()
             measured['backward_s'] += now() - finished
             del tape
+            checkpoints.pop()
         if timings is not None:
             timings.update(measured)
         state_gradient = PlasticState(gradient['x'], gradient['v'], gradient['F'], gradient['Fp'],

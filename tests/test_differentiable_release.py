@@ -51,7 +51,8 @@ def test_release_impulse_work_and_momentum_balance():
 
 @pytest.mark.parametrize('segment_steps', [1, 3])
 @pytest.mark.parametrize('parameter', ['fracture_energy', 'knife_speed'])
-def test_natural_release_state_gradient_and_checkpoint(segment_steps, parameter):
+@pytest.mark.parametrize('checkpoint_device', [None, 'cpu'])
+def test_natural_release_state_gradient_and_checkpoint(segment_steps, parameter, checkpoint_device):
     m, c, initial, history, branch, active = fixture()
     q = m.array([0., 1., 0.], float)
     steps = 5
@@ -83,7 +84,7 @@ def test_natural_release_state_gradient_and_checkpoint(segment_steps, parameter)
     tape.zero()
     timings = {}
     result = c.checkpoint_vjp(initial, history, [branch] * steps, segment_steps, tool, objective,
-                              parameters=(q,), timings=timings)
+                              parameters=(q,), timings=timings, checkpoint_device=checkpoint_device)
     np.testing.assert_allclose(result.loss.numpy(), expected_loss, atol=1e-14)
     np.testing.assert_allclose(result.parameter_gradients[array], expected, rtol=1e-12, atol=1e-14)
     np.testing.assert_allclose(result.initial_gradient.x.numpy(), expected_x_gradient, rtol=1e-11, atol=1e-11)

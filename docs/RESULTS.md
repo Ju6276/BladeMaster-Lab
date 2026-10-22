@@ -767,3 +767,25 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
   --trajectory cut-withdraw-push --duration .24 --spacings .006 \
   --adjoint checkpoint --segment-steps 32 --epsilons 1e-7
 ```
+
+### 2026-10-22：M5 E2 接触验收
+
+`fb379d4`，RTX 4090、dirty=false：刀/板/粒子对 × 6/4 mm × 时间相位 0/1⁄4/1⁄2 × 步长 50/6.25/1.5625/0.78125 μs，共 **72** 例弹性碰撞。每例位置、速度对初始间隙的导数均有两档自然差分误差 ≤2%，最差第二档 **0.005707%**。`1e-8 m` 扰动中 **12** 例跨过离散接触切换，中央差分最大偏差 **63.87%**；这些例子的 `1e-10/3e-10 m` 局部差分通过。
+
+50→0.78125 μs 时，解析位置误差最大值 **498.3→0.1249 nm**，速度误差 **8.496e-5→3.715e-8 m/s**。最细步长的位置梯度相对误差 ≤**0.4461%**；板接触速度梯度误差 **1.410 s⁻¹ / 0.9213%**，刀/粒子对的解析速度梯度为 0，绝对误差分别 ≤**1.458/2.533 s⁻¹**。接触切换的时间网格相位使梯度误差非单调：板接触 dt/32→dt/64 的最大速度梯度误差为 **0.5386→1.4098 s⁻¹**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_contact_convergence \
+  --output runs/e23_fb379d4/contact --spacings .006 .004 \
+  --dt-divisors 1 8 32 64 --phases 0 .25 .5
+PYTHONPATH=. .venv/bin/python - <<'PY'
+from scripts.diff_contact_convergence import evaluate
+cases = [('blade', .25, 64), ('blade', .5, 32), ('blade', .5, 64),
+         ('pair', 0., 32), ('pair', .25, 64), ('pair', .5, 64)]
+for surface, phase, divisor in cases:
+    for spacing in (.006, .004):
+        print(evaluate(surface, spacing, .00005 / divisor, .004, phase, [3e-10]))
+PY
+```
+
+`a062351` 增加检查点的刀面进入侧、接触模式和网格求解批数核对。全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**850 passed、8 skipped、18 subtests passed**，477.88 s；8 项跳过为 CRESSim 上游构建。

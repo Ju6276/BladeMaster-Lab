@@ -789,3 +789,16 @@ PY
 ```
 
 `a062351` 增加检查点的刀面进入侧、接触模式和网格求解批数核对。全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**850 passed、8 skipped、18 subtests passed**，477.88 s；8 项跳过为 CRESSim 上游构建。
+
+### 2026-10-22：M5 E3 细网格初态释放的时间步对照
+
+`fb379d4`，RTX 4090、dirty=false：**4 mm、4892 粒子、G_c=7、50 ms**，步长 **13.1579/6.57895/3.28947 μs**。三档均新增 **98** 个侧码并释放 **5** 个粒子；六组刀路自然差分最大误差 **0.00001197%**，32 步检查点的全部连续状态重算差 **0**，损伤功平衡误差 ≤**3.05e-20 J**，进程 CUDA 数组内存池峰值 **2.609 GiB**。
+
+最细相邻两档的刀位/行程梯度差为 **0.04425%/0.4679%**，E/摩擦/G_c 梯度差为 **0.08733%/0.001695%/1.4252%**；位置差 **41.23 nm**、速度差 **10.88 μm/s**、事件时刻差 **18.48 ns**、刀冲量差 **1.57e-8 N·s**。侧码、释放、接触对和几何事件粒子集合一致。行程梯度差从粗两档的 **2.869%** 降到 **0.4679%**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
+  --output runs/e23_fb379d4/refine_50ms_h4_gc7 --from-initial \
+  --trajectory cut-withdraw-push --duration .05 --spacings .004 --cutting-energy 7 \
+  --dt-divisors 1 2 4 --adjoint checkpoint --segment-steps 32 --epsilons 1e-7
+```

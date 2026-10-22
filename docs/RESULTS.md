@@ -758,3 +758,12 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
   --adjoint full --segment-steps 16 32 128 --epsilons 1e-6 1e-7 \
   --state-parameters initial_z_mm young_scale friction_scale fracture_scale
 ```
+
+同提交的 **6 mm、G_c=700、0.24 s / 15360 步** 自然下刀，侧码新增 **1096**，损伤释放 **0**，峰值刀力 **1.0963 N**。32 步检查点的全部状态重算差 **0**；刀位/行程梯度为 **−0.00949831376 / 0.111050458**，`1e-7` 自然差分的相对误差为 **0.00001653% / 0.002260%**。行程负向扰动改变一个粒子的分侧步号。损伤功平衡误差 **2.17e-19 J**，进程 CUDA 数组内存池峰值 **2.74 GiB**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/e23_fb379d4/initial_240ms_gc700 --geometry event --from-initial \
+  --trajectory cut-withdraw-push --duration .24 --spacings .006 \
+  --adjoint checkpoint --segment-steps 32 --epsilons 1e-7
+```

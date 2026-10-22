@@ -170,15 +170,18 @@ def main():
     parser.add_argument('--spacings', nargs='+', type=float, default=[.006])
     parser.add_argument('--materials', nargs='+', default=['banana'], choices=['banana', 'soft', 'plastic'])
     parser.add_argument('--cutting-energy', type=float)
+    parser.add_argument('--dt', type=float, help='Material step in seconds; defaults to the stability estimate')
+    parser.add_argument('--flip-reference-dt', type=float,
+                        help='PIC reference time in seconds; keep fixed during time-step comparisons')
     parser.add_argument('--segment-steps', nargs='+', type=int, default=[32, 127])
     parser.add_argument('--checkpoint-device', choices=['cpu', 'cuda'], default='cpu')
     parser.add_argument('--epsilons', nargs='+', type=float, default=[1e-6, 1e-7])
     args = parser.parse_args()
     numbers = [*args.spacings, *args.segment_steps, *args.epsilons]
-    if args.cutting_energy is not None:
-        numbers.append(args.cutting_energy)
+    numbers.extend(value for value in (args.cutting_energy, args.dt, args.flip_reference_dt)
+                   if value is not None)
     if not np.isfinite(numbers).all() or min(numbers) <= 0:
-        parser.error('Spacings, segment lengths, perturbations and fracture energy must be positive and finite')
+        parser.error('Spacings, times, segment lengths, perturbations and fracture energy must be positive and finite')
     if len(set(args.epsilons)) < 2:
         parser.error('Provide at least two distinct finite-difference perturbations')
     args.output.mkdir(parents=True, exist_ok=True)
@@ -186,13 +189,16 @@ def main():
     for spacing in args.spacings:
         for material in args.materials:
             cfg = replace(configuration(spacing, material), blade_grid_constraint=True)
-            dt = tangent_history_dt(cfg, banana_dt(cfg, spacing))
-            cfg = replace(cfg, dt=dt, flip_reference_dt=dt)
+            dt = args.dt if args.dt is not None else tangent_history_dt(cfg, banana_dt(cfg, spacing))
+            reference_dt = dt if args.flip_reference_dt is None else args.flip_reference_dt
+            cfg = replace(cfg, dt=dt, flip_reference_dt=reference_dt)
             if args.cutting_energy is not None:
                 cfg = replace(cfg, cutting_energy=args.cutting_energy)
             for name in args.cases:
                 path = multicut_path(cfg, name)
                 steps = round(path.times[-1] / dt)
+                if steps < 1 or abs(steps * dt - path.times[-1]) > 1e-12:
+                    parser.error('The trajectory duration must be an integer number of material steps')
                 row, arrays = evaluate(cfg, steps, 'integrated', args.epsilons, args.segment_steps,
                     'event', 'midpoint', initial_window=intact_initial(cfg), return_arrays=True,
                     adjoint='checkpoint', controls_to_check=path.control_names,

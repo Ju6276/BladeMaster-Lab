@@ -231,6 +231,7 @@ E4 完整轨迹使用同一自然事件求解器，控制量为第一刀横向�
 PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate \
   --output runs/e4_multicut --spacings .006 \
   --cases resume two-cuts crossing three-cuts-push \
+  --dt .000015625 --flip-reference-dt .000015625 \
   --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
 ```
 

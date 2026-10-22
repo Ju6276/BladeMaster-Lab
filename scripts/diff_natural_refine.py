@@ -54,7 +54,8 @@ def main():
     parser.add_argument('--trajectory', choices=['straight', 'cut-withdraw-push'], default='straight')
     parser.add_argument('--cutting-energy', type=float)
     parser.add_argument('--dt-divisors', type=int, nargs='+', default=[1, 2, 4, 8])
-    parser.add_argument('--epsilons', type=float, nargs='+', default=[5e-7, 5e-8])
+    parser.add_argument('--epsilons', type=float, nargs='*', default=[5e-7, 5e-8],
+                        help='Finite-difference perturbations; pass no values to compare refinement levels only')
     parser.add_argument('--segment-steps', type=int, nargs='+', default=[16, 32])
     parser.add_argument('--adjoint', choices=['full', 'checkpoint'], default='full')
     parser.add_argument('--parameters', nargs='+', default=['knife_x_mm', 'knife_depth_scale'],
@@ -71,7 +72,7 @@ def main():
     numbers = [*args.spacings, args.duration, *args.dt_divisors, *args.epsilons, *args.segment_steps]
     if args.flip_reference_dt is not None:
         numbers.append(args.flip_reference_dt)
-    if not np.isfinite(numbers).all() or min(numbers) <= 0 or max(args.epsilons) >= 1:
+    if not np.isfinite(numbers).all() or min(numbers) <= 0 or max(args.epsilons, default=0.) >= 1:
         parser.error('Sizes, times, steps and perturbations must be positive and finite; perturbations must be <1')
     if not np.isfinite(args.phases).all() or min(args.phases) < 0 or max(args.phases) >= 1:
         parser.error('Time-grid phases must be in [0, 1)')

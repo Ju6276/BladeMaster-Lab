@@ -382,8 +382,9 @@ def test_von_mises_projection_preserves_total_and_volume():
     np.testing.assert_array_equal(s.F.numpy(), total)
     np.testing.assert_allclose(np.linalg.det(fp), 1, atol=3e-6)
     fe = total @ np.linalg.inv(fp)
-    logs = np.log(np.linalg.svd(fe, compute_uv=False))
-    dev = logs - logs.mean(1)[:, None]
+    stretches = np.linalg.svd(fe, compute_uv=False)
+    stress = stretches * (stretches - 1)
+    dev = stress - stress.mean(1)[:, None]
     np.testing.assert_allclose(np.linalg.norm(dev, axis=1), 100 / (2 * s.mu) * np.sqrt(2 / 3), atol=2e-6)
 
 

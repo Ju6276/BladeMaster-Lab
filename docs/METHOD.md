@@ -7,7 +7,7 @@
 | 论文 | 内容 | 代码 |
 |---|---|---|
 | 式 1–2 | 参考构型 TLMPM P2G，固定三线性权重 | `geometry.stencil`，`material.p2g` |
-| §III-B | fixed-corotated + von Mises 塑性（Hencky 返回映射），可选牛顿黏性、Maxwell 黏弹性 | `material.p2g`，`material.plastic_at`，`material.viscous_impulse`，`material.maxwell_at` |
+| §III-B | fixed-corotated + von Mises 塑性（等容增量变分返回映射），可选牛顿黏性、Maxwell 黏弹性 | `material.p2g`，`material.plastic_at`，`plasticity.py`，`material.viscous_impulse`，`material.maxwell_at` |
 | 式 3–6 | 切割带、方向接触功、侧标签 | `contact.rigid_at`（D 更新），`contact.assign`（标签） |
 | 式 7 | 三进制切割码 | `Solver._set_cut`，`material.compatible` |
 | 式 8–9 | 逻辑网格反对称交换、网格速度 | `material.couple_and_velocity_at`，`material.couple_at` |
@@ -53,7 +53,7 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 ## Maxwell 黏弹性
 
-`Config.maxwell_tau` \(\tau\) > 0 且 `maxwell_fraction` \(\beta\) > 0 时启用（广义标准线性固体）。弹性变形 \(f = F F_p^{-1}\) 分两支：平衡支为共旋弹性，\(\mu_\infty = (1-\beta)\mu\)、\(\lambda + \tfrac23\beta\mu\)；Maxwell 支 \(f_m = f F_v^{-1}\)，Kirchhoff 应力 \(2\beta\mu\,\mathrm{dev}\log V_m\)。两支之和的小应变剪切、体积模量与关闭时相同，长期剪切模量为 \((1-\beta)\mu\)，体积部分不松弛。每步在塑性投影之后把 \(f_m\) 的偏 Hencky 应变乘以 \(e^{-\Delta t/\tau}\)（应变保持不变时是精确解，对任意 \(\Delta t/\tau\) 稳定；\(\tau \ll \Delta t\) 时该支每步归零），\(F_v\) 按等容增量更新。每步增量 \((\Delta t/\tau)\,\varepsilon\) 远小于 \(F_v\) 在 float32 下的分辨率，所以 \(F_v - I\) 存为 float64。屈服仍按瞬时模量的 Hencky 应变判定，加载慢于 \(\tau\) 时流动应力为 \((1-\beta)\sigma_y\)。关闭时调用原来的 kernel。
+`Config.maxwell_tau` \(\tau\) > 0 且 `maxwell_fraction` \(\beta\) > 0 时启用（广义标准线性固体）。弹性变形 \(f = F F_p^{-1}\) 分两支：平衡支为共旋弹性，\(\mu_\infty = (1-\beta)\mu\)、\(\lambda + \tfrac23\beta\mu\)；Maxwell 支 \(f_m = f F_v^{-1}\)，Kirchhoff 应力 \(2\beta\mu\,\mathrm{dev}\log V_m\)。两支之和的小应变剪切、体积模量与关闭时相同，长期剪切模量为 \((1-\beta)\mu\)，体积部分不松弛。每步在塑性投影之后把 \(f_m\) 的偏 Hencky 应变乘以 \(e^{-\Delta t/\tau}\)（应变保持不变时是精确解，对任意 \(\Delta t/\tau\) 稳定；\(\tau \ll \Delta t\) 时该支每步归零），\(F_v\) 按等容增量更新。每步增量 \((\Delta t/\tau)\,\varepsilon\) 远小于 \(F_v\) 在 float32 下的分辨率，所以 \(F_v - I\) 存为 float64。塑性返回使用瞬时模量对应的共旋应力；小应变、加载慢于 \(\tau\) 时流动应力趋于 \((1-\beta)\sigma_y\)。关闭时调用原来的 kernel。
 
 ## 材料能量统计
 
@@ -75,7 +75,11 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 `scripts.diff_optimize` 将分段刀速作为优化量，并在 Warp kernel 中积分刀位，使位姿与速度同时进入梯度链。目标是指定粒子区域的末端位置，刀速用变量边界约束，反力超限用平方罚项。每条最优刀路都交给原 `Solver` 重放。接触核扫描分别记录接触建立处的导数折点、静动摩擦切换的力跳变；整段轨迹差分同时统计接触/摩擦分支变化。
 
-`differentiable_material.MaterialTrajectory` 逐步保存 Fp 和投影后的应力，复用原 Hencky von Mises 投影的正向公式。投影后伸长为 t、投影前为 s；伴随对称项使用 `(t_i-t_j)/(s_i-s_j)`，相对伸长差 ≤1e-4 时使用对称极限形式，在相等处为 `a*t_i/s_i`，其中 `a=屈服半径/偏应变范数`。非屈服分支原样传回弹性变形并保持 Fp。E、屈服应力、F 和 Fp 均进入梯度链。
+`differentiable_material.MaterialTrajectory` 逐步保存 Fp 和投影后的应力，与原求解器共用 `plasticity.corotated_return`。设试算弹性主伸长为 s，等容对数增量为 d，更新后伸长为 `t=exp(log(s)+d)`；返回映射求解 `min Σ(t_i−1)²/2+r‖d‖`、`Σd_i=0`，其中 `r=√(2/3)σ_y/(2μ)`。等容约束使体积储能项保持不变。弹性分支条件为 `‖dev(s(s−1))‖≤r`，塑性分支满足 `dev(t(t−1))+r d/‖d‖=0`，并更新 `Fp=inv(U diag(t) Vᵀ)F`。
+
+返回映射以 float64 求解，使用带 Armijo 回溯的修正 Newton 方向；在塑性增量的径向/正交基中求逆，避免增量趋于零时丢失径向曲率。方向中的正定化只用于寻找下降步，最终检查原驻点方程，残差目标为 `2e-13 max(1,‖dev(s(s−1))‖)`，最多 80 次。未收敛时报错。`Ψ_trial−Ψ_new≥√(2/3)σ_y‖d‖` 与 `det(Fp_new)=det(Fp_old)` 分别检查塑性耗散和体积保持。
+
+伴随由驻点方程的隐式导数计算；对称谱项 `(t_i−t_j)/(s_i−s_j)` 用两条驻点方程相减得到的等价式计算，重复伸长处使用对数差商的连续极限。E、屈服应力、F 和 Fp 均进入梯度链。
 
 固定侧码下，式 8 的相容场交换是常系数线性映射。`FixedTopology` 根据参考质量与相容关系生成稀疏行，动量、冲量和 MUSL 重映射共用该映射；反向通过同一系数的转置传播。参考采样、粒子质量及侧码在一段求导中保持固定。
 
@@ -123,7 +127,7 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 ## 应力与塑性伴随核对
 
-应力和 Hencky 返回映射使用本仓库的解析 VJP，其余连续算子由 Warp Tape 生成反向。旋转导数的分母取正奇异值之和；Hencky 谱导数在相对奇异值差 ≤1e-4 时使用重复伸长的有限极限近似，避免相近数相减。`tests/test_constitutive_adjoint.py` 独立用 NumPy SVD、返回映射和第一 Piola 应力检查 24 组旋转、重复/近重复伸长及非对称 Fp，并以两档差分核对 F、Fp、μ、λ、屈服半径的 VJP（rtol=2e-6、atol=1e-7）。
+应力使用本仓库的解析 VJP，塑性返回映射使用驻点方程的隐式 VJP，其余连续算子由 Warp Tape 生成反向。旋转导数的分母取正奇异值之和；塑性谱导数通过稳定对数差商处理重复主伸长。`tests/test_constitutive_adjoint.py` 独立用 NumPy SVD、SciPy 增量能量最小化和第一 Piola 应力检查 24 组旋转、重复/近重复伸长及非对称 Fp，并以两档差分核对 F、Fp、μ、λ、屈服半径的 VJP（rtol=2e-6、atol=1e-7）。`tests/test_plasticity.py` 另检查 400 组随机体积/偏形变的驻点、耗散与塑性体积，以及屈服边界和强压缩的矩阵方向导数。
 
 时间展开参考 DiffTaichi，塑性组织参考 PlasticineLab，分段反向参考 Warp 的 checkpoint 示例；对应链接见 DIFFERENTIABLE 的方法来源。TLMPM 传递、专用伴随和切割事件积分均在本仓库实现；双精度验证使用相同公式生成的内核。
 
@@ -166,7 +170,7 @@ PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定�
 | 刀身穿透处理 | 粒子罚接触 | 外部 `hold` 模式补充固定刀面的网格法向约束；M5 中点阶段按相对运动刀面速度约束，见上节 |
 | 事件间时间积分 | MUSL 单步推进、预测步末接触间隙 | M5 `GeometryEventContact` 默认显式中点 RK2，在阶段实际间隙上取罚力，并在终点对切向历史返回映射，以改善事件分段的状态和梯度收敛 |
 | 接触刚度 | 每步常数 \(s_n\) | 默认按参考步长固定物理刚度，见上节 |
-| 塑性返回映射 | 共旋弹性与 von Mises 型投影，具体返回映射未给出 | 当前为对数主应变的径向返回，与 PlasticineLab 同类投影一致；E5 正在核对与共旋储能配套的增量变分更新，结果见 RESULTS |
+| 塑性返回映射 | 共旋弹性与 von Mises 型投影，具体返回映射未给出 | 保留共旋储能，使用与其功共轭应力一致的等容增量变分返回；参考 [Miehe、Apel、Lambrecht 的增量最小化框架](https://doi.org/10.1016/S0045-7825(02)00438-3)，本地推导共旋势的驻点、Newton 求解和隐式 VJP。原因是对数应变径向返回在强压缩下会增加共旋储能，数字见 RESULTS |
 | 摩擦历史积分 | 用当前历史计算试力，粘住时累加位移，滑动时回算历史 | 原 `Solver` 和 M4 使用 `lagged`；M5 几何事件默认 `projected`，先累加位移再投影到库仑界限，使相等静动摩擦系数下的分支历史连续，见上节 |
 | 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |
 | 可微求解 | 正向 TLMPM 切割与工具双向耦合 | 增加粒子、材料、接触历史、切割事件和刀路的自动微分与伴随；当前可微刀路由外部给定 |

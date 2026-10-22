@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import warp as wp
 
-from blademaster_warp.differentiable_material import MaterialTrajectory, compute_stress
+from blademaster_warp.differentiable_material import MaterialTrajectory, compute_stress, project_plastic
 from blademaster_warp.differentiable_geometry import GeometryEventContact
 from blademaster_warp.differentiable_natural import CutInstruction
 from blademaster_warp.energy import elastic_density, energy_snapshot, material_energy
@@ -108,3 +108,29 @@ def test_energy_rejects_nonfinite_inputs(field):
 def test_energy_rejects_inverted_or_singular_deformation(F, Fp):
     with pytest.raises(ValueError, match='determinants'):
         elastic_density(F, Fp, 20000., .35)
+
+
+@pytest.mark.parametrize('stretches', [[1.1, .95, .95], [.55, .4, .3], [.2, .1, .05]])
+def test_material_plastic_update_decreases_energy(stretches):
+    model = MaterialTrajectory(Config(size=(.012, .012, .012), grid_spacing=.006,
+                                      young_modulus=20000, poisson_ratio=.35, yield_stress=200),
+                               precision='float64', requires_grad=False)
+    F = np.tile(np.diag(stretches), (model.n, 1, 1))
+    initial = model.state(F=F)
+    updated = model.zeros(model.n, wp.mat33, False)
+    yielded = model.zeros(model.n, int, False)
+    stress = model.zeros(model.n, wp.mat33, False)
+    errors = model.zeros(1, int, False)
+    branch = model.array(np.full(model.n, -1), int, False)
+    model.launch(project_plastic, model.n,
+                 inputs=[initial.F, initial.Fp, model.young, model.yield_stress, .35, branch],
+                 outputs=[updated, yielded, stress, errors], device=model.device)
+    assert errors.numpy()[0] == 0
+    before = elastic_density(F, initial.Fp.numpy(), 20000, .35)
+    after = elastic_density(F, updated.numpy(), 20000, .35)
+    assert np.all(before > after)
+    elastic = F @ np.linalg.inv(updated.numpy())
+    plastic_increment = np.log(np.linalg.svd(elastic, compute_uv=False) / np.sort(stretches)[::-1])
+    dissipation_distance = 200 * np.sqrt(2 / 3) * np.linalg.norm(plastic_increment, axis=1)
+    assert np.min(before - after - dissipation_distance) >= -1e-9
+    np.testing.assert_allclose(np.linalg.det(updated.numpy()), 1., rtol=1e-12, atol=1e-12)

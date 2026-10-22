@@ -6,23 +6,23 @@ import numpy as np
 import pytest
 import warp as wp
 
-from blademaster_warp.differentiable_material import MaterialTrajectory, hencky_project
+from blademaster_warp.differentiable_material import MaterialTrajectory, plastic_project
 from blademaster_warp.differentiable_cutting import FixedCutContact
 from blademaster_warp.solver import Config, Solver
+from test_plasticity import reference_return
 from blademaster_warp.coupling import ExternalToolPort, ToolState
 
 
 @wp.kernel
-def project64_input(f: wp.array(dtype=wp.mat33), limit: wp.array(dtype=float), out: wp.array(dtype=wp.mat33)):
-    out[0] = hencky_project(f[0], limit[0])
+def project64_input(f: wp.array(dtype=wp.mat33), limit: wp.array(dtype=float), out: wp.array(dtype=wp.mat33), success: wp.array(dtype=int)):
+    value, converged = plastic_project(f[0], limit[0])
+    out[0] = value
+    success[0] = converged
 
 
 def numpy_projection(f, limit):
-    u, s, vt = np.linalg.svd(f)
-    e = np.log(s)
-    dev = e - e.mean()
-    radius = np.linalg.norm(dev)
-    return f if radius <= limit else (u * np.exp(e - (1 - limit / radius) * dev)) @ vt
+    u, stretch, vt = np.linalg.svd(f)
+    return (u * reference_return(stretch, limit)) @ vt
 
 
 @pytest.mark.parametrize('f', [np.eye(3), np.diag([1.25, 1.25, .8]),
@@ -34,8 +34,10 @@ def test_float64_projection_matches_numpy(f):
     assert a.dtype == wp.mat33d and limit.dtype == wp.float64
     seed = np.random.default_rng(8).normal(size=(3, 3))
     direction = np.random.default_rng(9).normal(size=(3, 3))
+    success = model.zeros(1, int, False)
     with wp.Tape() as tape:
-        model.launch(project64_input, 1, inputs=[a, limit], outputs=[output], device=model.device)
+        model.launch(project64_input, 1, inputs=[a, limit], outputs=[output, success], device=model.device)
+    assert success.numpy()[0] == 1
     tape.backward(grads={output: model.array([seed], wp.mat33, False)})
     np.testing.assert_allclose(output.numpy()[0], numpy_projection(f, .08), atol=5e-12)
     ad = np.sum(a.grad.numpy()[0] * direction)

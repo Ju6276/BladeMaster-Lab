@@ -6,26 +6,27 @@ import warp as wp
 
 from blademaster_warp.differentiable_material import MaterialTrajectory, constitutive_response
 from blademaster_warp.solver import Config
+from test_plasticity import reference_return
 
 
 @wp.kernel
 def response(F: wp.array(dtype=wp.mat33), Fp: wp.array(dtype=wp.mat33),
              mu: wp.array(dtype=float), lam: wp.array(dtype=float), limit: wp.array(dtype=float),
-             next_Fp: wp.array(dtype=wp.mat33), stress: wp.array(dtype=wp.mat33)):
+             next_Fp: wp.array(dtype=wp.mat33), stress: wp.array(dtype=wp.mat33), success: wp.array(dtype=int)):
     p = wp.tid()
-    plastic, force = constitutive_response(F[p], Fp[p], mu[p], lam[p], limit[p], -1)
+    plastic, force, converged = constitutive_response(F[p], Fp[p], mu[p], lam[p], limit[p], -1)
     next_Fp[p] = plastic
     stress[p] = force
+    success[p] = converged
 
 
 def reference(F, Fp, mu, lam, limit):
     u, stretch, vt = np.linalg.svd(F @ np.linalg.inv(Fp))
-    strain = np.log(stretch)
-    deviation = strain - strain.mean()
-    radius = np.linalg.norm(deviation)
+    trial_stress = stretch * (stretch - 1)
+    deviation = trial_stress - trial_stress.mean()
     plastic = Fp
-    if radius > limit:
-        stretch = np.exp(strain - (1 - limit / radius) * deviation)
+    if np.linalg.norm(deviation) > limit:
+        stretch = reference_return(stretch, limit)
         elastic = (u * stretch) @ vt
         plastic = np.linalg.solve(elastic, F)
     else:
@@ -58,10 +59,12 @@ def test_constitutive_vjp_against_numpy(parameter, monkeypatch):
     count = len(base[0])
     arrays = [model.array(value, wp.mat33 if i < 2 else float) for i, value in enumerate(base)]
     plastic, stress = model.zeros(count, wp.mat33), model.zeros(count, wp.mat33)
+    success = model.zeros(count, int, False)
     rng = np.random.default_rng(478)
     seeds = [rng.normal(size=(count, 3, 3)), rng.normal(size=(count, 3, 3)) / 3000]
     with wp.Tape() as tape:
-        model.launch(response, count, inputs=arrays, outputs=[plastic, stress], device=model.device)
+        model.launch(response, count, inputs=arrays, outputs=[plastic, stress, success], device=model.device)
+    assert np.all(success.numpy())
     tape.backward(grads={out: model.array(seed, wp.mat33, False)
                          for out, seed in zip((plastic, stress), seeds)})
     expected = [reference(*args) for args in zip(*base)]

@@ -2,6 +2,8 @@
 
 import warp as wp
 
+from . import plasticity
+
 
 @wp.kernel
 def validate_interval(
@@ -410,22 +412,20 @@ def plastic_at(
     yield_stress: float,
     errors: wp.array(dtype=int),
 ):
-    """Hencky-strain von Mises return map.
-
-    Returns the SVD (U, sigma, V) of the elastic deformation after projection,
-    and False if the material is inverted.
-    """
     U, s, V = wp.svd3(F[p] * wp.inverse(Fp[p]))
     if wp.min(s) <= 0.0:
         wp.atomic_add(errors, 1, 1)
         return U, s, V, False
-    e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
-    dev = e - wp.vec3((e[0] + e[1] + e[2]) / 3.0)
+    tau = wp.cw_mul(s, s - wp.vec3(1.0))
+    dev = tau - wp.vec3((tau[0] + tau[1] + tau[2]) / 3.0)
     norm = wp.length(dev)
     limit = yield_stress / (2.0 * mu) * wp.sqrt(2.0 / 3.0)
     if norm > limit:
-        ep = e - (1.0 - limit / norm) * dev
-        s = wp.vec3(wp.exp(ep[0]), wp.exp(ep[1]), wp.exp(ep[2]))
+        updated, converged = plasticity.corotated_return(wp.vec3d(s), wp.float64(limit))
+        if converged == 0:
+            wp.atomic_add(errors, 1, 1)
+            return U, s, V, False
+        s = wp.vec3(updated)
         next_f = U * wp.diag(s) * wp.transpose(V)
         Fp[p] = wp.inverse(next_f) * F[p]
     return U, s, V, True

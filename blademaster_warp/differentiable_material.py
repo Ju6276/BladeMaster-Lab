@@ -1,4 +1,4 @@
-"""Hencky plasticity and fixed cut-field transfers with independent step states."""
+"""Variational plasticity and fixed cut-field transfers with independent step states."""
 
 from dataclasses import dataclass, replace
 
@@ -6,95 +6,61 @@ import numpy as np
 import warp as wp
 
 from . import material as m
+from . import plasticity
 from .differentiable import ElasticTrajectory, State, elastic_stress
 
 
 @wp.func
-def hencky_branch(f: wp.mat33, limit: float, branch: int):
-    U, s, V = wp.svd3(f)
-    e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
-    mean = (e[0] + e[1] + e[2]) / 3.0
-    dev = e - wp.vec3(mean)
-    norm = wp.length(dev)
-    if branch == 0 or (branch < 0 and norm <= limit):
-        return f
-    projected = e - (1.0 - limit / norm) * dev
-    t = wp.vec3(wp.exp(projected[0]), wp.exp(projected[1]), wp.exp(projected[2]))
-    return U * wp.diag(t) * wp.transpose(V)
+def yield_active(stretches: wp.vec3, limit: float, branch: int):
+    stress = wp.cw_mul(stretches, stretches - wp.vec3(1.0))
+    dev = stress - wp.vec3((stress[0] + stress[1] + stress[2]) / 3.0)
+    return branch == 1 or (branch < 0 and wp.length(dev) > limit)
 
 
 @wp.func
-def hencky_vjp(f: wp.mat33, limit: float, branch: int, adj: wp.mat33):
+def plastic_project(f: wp.mat33, limit: float):
     U, s, V = wp.svd3(f)
-    e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
-    mean = (e[0] + e[1] + e[2]) / 3.0
-    dev = e - wp.vec3(mean)
-    norm = wp.length(dev)
-    if branch == 0 or (branch < 0 and norm <= limit):
-        return adj, 0.0
-    else:
-        a = limit / norm
-        projected = e - (1.0 - a) * dev
-        t = wp.vec3(wp.exp(projected[0]), wp.exp(projected[1]), wp.exp(projected[2]))
-        local = wp.transpose(U) * adj * V
-        result = wp.mat33(0.0)
-        limit_gradient = float(0.0)
-        for i in range(3):
-            for j in range(3):
-                delta = float(0.0)
-                if i == j:
-                    delta = 1.0
-                derivative = 1.0 / 3.0 + a * (delta - 1.0 / 3.0 - dev[i] * dev[j] / (norm * norm))
-                result[j, j] += local[i, i] * t[i] * derivative / s[j]
-                if i != j:
-                    # The divided difference has a finite limit at repeated stretches.
-                    symmetric = a * (t[i] + t[j]) / (s[i] + s[j])
-                    if wp.abs(s[i] - s[j]) > 1.0e-4 * wp.max(s[i], s[j]):
-                        symmetric = (t[i] - t[j]) / (s[i] - s[j])
-                    skew = (t[i] + t[j]) / (s[i] + s[j])
-                    result[i, j] = 0.5 * (symmetric * (local[i, j] + local[j, i])
-                                          + skew * (local[i, j] - local[j, i]))
-            limit_gradient += local[i, i] * t[i] * dev[i] / norm
-        return U * result * wp.transpose(V), limit_gradient
+    projected, converged = plasticity.corotated_return(wp.vec3d(s), wp.float64(limit))
+    return U * wp.diag(wp.vec3(projected)) * wp.transpose(V), converged
 
 
-@wp.func_grad(hencky_branch)
-def hencky_branch_grad(f: wp.mat33, limit: float, branch: int, adj: wp.mat33):
-    df, dl = hencky_vjp(f, limit, branch, adj)
-    wp.adjoint[f] += df
-    wp.adjoint[limit] += dl
+@wp.func_grad(plastic_project)
+def plastic_project_grad(f: wp.mat33, limit: float, adj_projected: wp.mat33, adj_converged: int):
+    derivative, radius_derivative = plasticity.projection_vjp(wp.mat33d(f), wp.float64(limit),
+                                                              wp.mat33d(adj_projected))
+    wp.adjoint[f] += wp.mat33(derivative)
+    wp.adjoint[limit] += float(radius_derivative)
 
 
 @wp.func
 def constitutive_response(F: wp.mat33, Fp: wp.mat33, mu: float, lam: float,
                           limit: float, branch: int):
     U, s, V = wp.svd3(F * wp.inverse(Fp))
-    e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
-    dev = e - wp.vec3((e[0] + e[1] + e[2]) / 3.0)
-    norm = wp.length(dev)
     next_Fp = Fp
-    if branch == 1 or (branch < 0 and norm > limit):
-        ep = e - (1.0 - limit / norm) * dev
-        s = wp.vec3(wp.exp(ep[0]), wp.exp(ep[1]), wp.exp(ep[2]))
+    converged = int(1)
+    for i in range(3):
+        if s[i] <= 0.0 or not wp.isfinite(s[i]):
+            converged = int(0)
+    if yield_active(s, limit, branch):
+        updated, converged = plasticity.corotated_return(wp.vec3d(s), wp.float64(limit))
+        s = wp.vec3(updated)
         projected = U * wp.diag(s) * wp.transpose(V)
         next_Fp = wp.inverse(projected) * F
     stress = m.corotated_stress(U, s, V, wp.inverse(next_Fp), mu, lam)
-    return next_Fp, stress
+    return next_Fp, stress, converged
 
 
 @wp.func_grad(constitutive_response)
 def constitutive_response_grad(F: wp.mat33, Fp: wp.mat33, mu: float, lam: float,
-                               limit: float, branch: int, adj_Fp: wp.mat33, adj_stress: wp.mat33):
+                               limit: float, branch: int, adj_Fp: wp.mat33, adj_stress: wp.mat33, adj_converged: int):
     old_inverse = wp.inverse(Fp)
     f = F * old_inverse
     U, s, V = wp.svd3(f)
-    e = wp.vec3(wp.log(s[0]), wp.log(s[1]), wp.log(s[2]))
-    dev = e - wp.vec3((e[0] + e[1] + e[2]) / 3.0)
-    active = branch == 1 or (branch < 0 and wp.length(dev) > limit)
+    active = yield_active(s, limit, branch)
     projected = f
     next_Fp = Fp
     if active:
-        projected = hencky_branch(f, limit, 1)
+        projected, converged = plastic_project(f, limit)
         next_Fp = wp.inverse(projected) * F
     inverse = wp.inverse(next_Fp)
     inverse_t = wp.transpose(inverse)
@@ -122,18 +88,15 @@ def constitutive_response_grad(F: wp.mat33, Fp: wp.mat33, mu: float, lam: float,
     if active:
         wp.adjoint[F] += projected_inverse_t * adj_plastic
         adj_projected -= projected_inverse_t * adj_plastic * wp.transpose(F) * projected_inverse_t
-        adj_f, adj_limit = hencky_vjp(f, limit, 1, adj_projected)
-        wp.adjoint[limit] += adj_limit
+        derivative, adj_limit = plasticity.projection_vjp(wp.mat33d(f), wp.float64(limit),
+                                                          wp.mat33d(adj_projected))
+        adj_f = wp.mat33(derivative)
+        wp.adjoint[limit] += float(adj_limit)
         wp.adjoint[F] += adj_f * wp.transpose(old_inverse)
         wp.adjoint[Fp] -= wp.transpose(old_inverse) * wp.transpose(F) * adj_f * wp.transpose(old_inverse)
     else:
         wp.adjoint[F] += adj_projected * wp.transpose(old_inverse)
         wp.adjoint[Fp] += adj_plastic - wp.transpose(old_inverse) * wp.transpose(F) * adj_projected * wp.transpose(old_inverse)
-
-
-@wp.func
-def hencky_project(f: wp.mat33, limit: float):
-    return hencky_branch(f, limit, -1)
 
 
 @wp.kernel
@@ -163,6 +126,7 @@ def project_plastic(
     next_Fp: wp.array(dtype=wp.mat33),
     yielded: wp.array(dtype=int),
     next_stress: wp.array(dtype=wp.mat33),
+    errors: wp.array(dtype=int),
 ):
     p = wp.tid()
     mu = float(wp.float64(young[0]) / (wp.float64(2.0) * (wp.float64(1.0) + poisson)))
@@ -172,7 +136,9 @@ def project_plastic(
     branch = fixed_yielded[p]
     if yield_stress[0] <= 0.0:
         branch = 0
-    plastic, stress = constitutive_response(F[p], Fp[p], mu, lam, limit, branch)
+    plastic, stress, converged = constitutive_response(F[p], Fp[p], mu, lam, limit, branch)
+    if converged == 0:
+        wp.atomic_add(errors, 0, 1)
     next_Fp[p] = plastic
     next_stress[p] = stress
     yielded[p] = int(wp.ddot(plastic - Fp[p], plastic - Fp[p]) > 0.0)
@@ -543,9 +509,12 @@ class MaterialTrajectory(ElasticTrajectory):
         self.launch(timed_deformation, self.n,
                   inputs=[base.F, grid.slots, self.gradients, grid_mass, coupled, duration],
                   outputs=[result.F], device=self.device)
+        plastic_errors = self.zeros(1, int, False)
         self.launch(project_plastic, self.n,
                   inputs=[result.F, base.Fp, self.young, self.yield_stress, cfg.poisson_ratio, fixed_yielded],
-                  outputs=[result.Fp, result.yielded, result.stress], device=self.device)
+                  outputs=[result.Fp, result.yielded, result.stress, plastic_errors], device=self.device)
+        if int(plastic_errors.numpy()[0]):
+            raise FloatingPointError('Plastic return mapping failed to converge')
         return result
 
     def checkpoint_vjp(self, *args, **kwargs):

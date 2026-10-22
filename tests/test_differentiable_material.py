@@ -6,14 +6,17 @@ import numpy as np
 import pytest
 import warp as wp
 
-from blademaster_warp.differentiable_material import MaterialTrajectory, hencky_project
+from blademaster_warp.differentiable_material import MaterialTrajectory, plastic_project
 from blademaster_warp.differentiable_contact import PrescribedContact
 from blademaster_warp.solver import Config, Solver
+from test_plasticity import reference_return
 
 
 @wp.kernel
-def projection(f: wp.array(dtype=wp.mat33), limit: wp.array(dtype=float), out: wp.array(dtype=wp.mat33)):
-    out[0] = hencky_project(f[0], limit[0])
+def projection(f: wp.array(dtype=wp.mat33), limit: wp.array(dtype=float), out: wp.array(dtype=wp.mat33), success: wp.array(dtype=int)):
+    value, converged = plastic_project(f[0], limit[0])
+    out[0] = value
+    success[0] = converged
 
 
 @wp.kernel
@@ -23,17 +26,12 @@ def material_loss(v: wp.array(dtype=wp.vec3), Fp: wp.array(dtype=wp.mat33), loss
 
 
 def reference_projection(f, limit):
-    U, s, Vt = np.linalg.svd(f)
-    e = np.log(s)
-    dev = e - e.mean()
-    norm = np.linalg.norm(dev)
-    if norm <= limit:
-        return f
-    return (U * np.exp(e - (1 - limit / norm) * dev)) @ Vt
+    u, stretch, vt = np.linalg.svd(f)
+    return (u * reference_return(stretch, limit)) @ vt
 
 
 @pytest.mark.parametrize("kind", ["identity", "isotropic", "rotation", "repeated", "near", "shear"])
-def test_hencky_projection_derivatives(kind):
+def test_plastic_projection_derivatives(kind):
     rotation = np.array([[0.8, -0.6, 0], [0.6, 0.8, 0], [0, 0, 1]])
     matrices = {
         "identity": np.eye(3), "isotropic": np.eye(3) * 1.08,
@@ -49,8 +47,10 @@ def test_hencky_projection_derivatives(kind):
     a = wp.array([f], dtype=wp.mat33, device="cuda:0", requires_grad=True)
     b = wp.array([limit], dtype=float, device="cuda:0", requires_grad=True)
     out = wp.zeros(1, dtype=wp.mat33, device="cuda:0", requires_grad=True)
+    success = wp.zeros(1, dtype=int, device="cuda:0")
     with wp.Tape() as tape:
-        wp.launch(projection, 1, inputs=[a, b], outputs=[out], device="cuda:0")
+        wp.launch(projection, 1, inputs=[a, b], outputs=[out, success], device="cuda:0")
+    assert success.numpy()[0] == 1
     tape.backward(grads={out: wp.array([seed], dtype=wp.mat33, device="cuda:0")})
     np.testing.assert_allclose(out.numpy()[0], reference_projection(f, limit), atol=3e-6)
     ad_f = float(np.sum(a.grad.numpy()[0] * direction))

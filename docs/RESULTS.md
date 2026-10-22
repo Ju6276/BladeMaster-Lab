@@ -970,3 +970,25 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 PYTHONPATH=. .venv/bin/python runs/e5_plastic_probe.py
 PYTHONPATH=. .venv/bin/python runs/e5_variational_probe.py
 ```
+
+### 2026-10-22：M5 E4 从初态展开的 4 mm 交叉窗口
+
+`f60a5c4`，RTX 4090、dirty=false，**4 mm、4892 粒子、G_c=700、0.64 s / 48640 步**。完整第一刀、退刀与 60° 转动后，推进第二刀前 **80 ms**；第一刀横移/深度各两档自然差分共 **4** 组，最大误差 **0.02062%**。两刀分侧事件分别 **2632/162** 个；CPU/32 步检查点连续状态重算差 **0**。
+
+暂停损伤变化 **0**；第二刀末累计损伤 **1.989058**、释放 **1** 个粒子，`max|Fp−I|=0.033190`。损伤计功 **0.000909503 J**，计功平衡误差 **2.17e-18 J**；独立正向 **511.85 s**，峰值 CUDA 数组内存 **5.046 GiB**。报告有限数、四组差分及逐刀事件与最终侧码对应关系复核通过。
+
+```bash
+PYTHONPATH=. .venv/bin/python runs/e4_f60a5c4/crossing_window.py
+```
+
+### 2026-10-22：M5 E5 共旋能量一致的塑性返回
+
+`43a939a`，RTX 4090：原求解器与可微流程共用等容增量变分返回；以驻点方程隐式求导。新增 **27** 项返回映射检查及 **3** 项实际材料更新能量检查通过。400 组随机体积/偏形变检查耗散、屈服和体积保持；3 组屈服边界的扰动从 **1e-6** 到 **1e-12**；旋转、重复/近重复伸长及强压缩的矩阵 VJP 用两档自然差分核对。原/可微求解器状态对照、塑性切割事件梯度和可选 Maxwell 压入回归通过。
+
+干净提交上的 E=20 kPa、ν=0.35、屈服=200 Pa 材料更新：主伸长 **[0.55,0.4,0.3] / [0.2,0.1,0.05]** 的储能下降 **1399.9545 / 10030.5700 J/m³**；**[1.1,0.95,0.95]** 下降 **110.0823 J/m³**，与独立 SciPy 最小化一致。全量 **973 passed、8 skipped、18 subtests passed**，**300.35 s**；8 项跳过为 CRESSim 上游构建。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_plasticity.py tests/test_energy.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests -q --tb=short
+PYTHONPATH=. .venv/bin/python runs/e5_plastic_probe.py
+```

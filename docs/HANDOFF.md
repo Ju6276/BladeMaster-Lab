@@ -184,35 +184,14 @@ M5 E3 已通过：6/4 mm 从未切割初态运行 50 ms 释放、0.24 s 下刀�
 
 4 mm、G_c=70 完整轨迹得到 **2446/2446** 两块，**5** 个粒子损伤释放；三项刀路与 G_c 各两档自然差分最大误差 **0.6647%**，CPU/32 步检查点峰值数组显存 **5.431 GiB**。4 mm、G_c=7 的释放短轨迹最细两档刀路/G_c 梯度差 ≤**0.468%/1.426%**。下一项是 E4 多刀与永久历史；整体能量、网格/场景泛化和切割优化分别为 E5–E7。
 
-E4 完整暂停续切、平行两刀和交叉两刀通过，报告在 `~/Projects/BladeMaster-Warp-e4-20261022/runs/e4_8d35d5c/`。交叉两刀的 4 组自然差分最大误差 **0.07377%**，32/127 步检查点状态重算差 **0**。三刀后推块和从初态展开的 4 mm、0.64 s 交叉对照使用修复验收入口后的 `f60a5c4`，工作树为 `~/Projects/BladeMaster-Warp-e4-audit-20261022`。
+E4 完整暂停续切、平行两刀和交叉两刀通过，报告在 `~/Projects/BladeMaster-Warp-e4-20261022/runs/e4_8d35d5c/`。交叉两刀的 4 组自然差分最大误差 **0.07377%**，32/127 步检查点状态重算差 **0**。4 mm、0.64 s 交叉窗口也通过：4 组差分最大误差 **0.02062%**、检查点重算差 **0**。三刀后推块正在完成自然差分，两者使用 `f60a5c4`，工作树为 `~/Projects/BladeMaster-Warp-e4-audit-20261022`。
 
 当前任务状态统一看新工作树的 `runs/e4_f60a5c4/status.json`，后台监测每 15 s 更新进程、最新日志和结果；三刀与 4 mm 对照同时运行。日志为 `crossing_h4.log` 和 `three_cuts_h6.log`，已完成的 6 mm 交叉任务日志在旧目录 `crossing.log`。监测入口为 `runs/e4_f60a5c4/watch.py`；任务失败时查看 `state=failed` 和对应日志，修复复测后继续。
 
 `f60a5c4` 全量 **900 passed、8 skipped、18 subtests passed**。验收拒绝非有限差分和检查点状态，多刀事件按切割编号导出；物理推进和梯度公式与 `8d35d5c` 相同。
 
-E5 开发工作树为 `~/Projects/BladeMaster-Warp-e5-20261022`，当前数值代码 `76f9a23`。材料能量 **25** 项检查、刀具计功 **18** 项检查通过；全量 **943 passed、8 skipped、18 subtests passed**。自然报告保存起终点动能、重力势能和弹性储能，以及包含旋转与网格约束的 `knife_work_j`。
+E5 开发工作树为 `~/Projects/BladeMaster-Warp-e5-20261022`，当前数值代码 `43a939a`。材料能量 **28** 项、刀具计功 **18** 项、塑性返回 **27** 项检查通过；全量 **973 passed、8 skipped、18 subtests passed**。自然报告保存起终点动能、重力势能和弹性储能，以及包含旋转与网格约束的 `knife_work_j`。
 
-E5 下一项：修复强体积压缩下 Hencky 径向塑性投影增加共旋储能的问题，并完成接触储能与分项耗散。`runs/e5_plastic_probe.py` 的两组正行列式形变分别增能 **94.0385/574.0021 J/m³**；独立增量能量最小化对照已消除这两组增能并保持塑性体积。接着按同一共旋储能实现返回映射，核对屈服边界、重复主伸长、耗散及隐式导数。E4 仍在固定版本工作树运行；公式变化后按影响范围重跑 E4。数字和命令见 RESULTS。
+共旋储能配套的增量变分返回已接入原求解器和可微流程；驻点求导使用隐式 VJP。强压缩两例的储能分别下降 **1399.9545/10030.5700 J/m³**；400 组随机形变的耗散、屈服与塑性体积核对通过，屈服边界测试扰动到 **1e-12**。方法、公式与来源见 METHOD，数字和命令见 RESULTS。
 
-同一 `cut_index` 内损伤 D 累积；新刀重置本刀 D，旧侧码与塑性 Fp 保留。M4 使用记录的离散分支；M5 的自然流程在每条扰动轨迹上重新生成侧码、接触对和损伤释放。`scripts.diff_natural_validate --from-initial` 从未切割初态展开，默认窗口模式从原求解器选定的共同状态起步。
-
-完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。
-
-## 6. 参考资料
-
-论文与项目：
-
-- BladeMaster：https://arxiv.org/html/2609.27342v2 ，项目页 https://jango6324.github.io/blademaster/ （代码未开源）
-- TLMPM：de Vaucorbeil, Nguyen, Hutchinson 2020（本仓库粒子更新沿用其式 13）
-- MLS-MPM / CPIC：Hu 等，SIGGRAPH 2018，代码 https://github.com/yuanming-hu/taichi_mpm （MIT）
-- CRESSim-MPM：https://github.com/yafei-ou/CRESSim-MPM （BSD-3，本仓库固定 `09aa5009`）
-- TopoCut：https://arxiv.org/abs/2509.19712 （未找到官方代码；它基于 https://github.com/zhouxian/FluidLab ）
-- DiSECt：https://github.com/NVlabs/DiSECt （FEM 可微切割，切面预先给定；仓库内是 LS-DYNA 仿真数据）
-- RoboNinja：https://github.com/real-stanford/roboninja （Taichi 可微 MLS-MPM；分离由单场 MLS-MPM 隐式处理，没有切口标记；刀与核的碰撞用软化损失）
-- EMPM：https://github.com/rai-opensource/empm （同 BladeMaster 组，从 RGB-D 标定可微 MPM）
-- PhysTwin：https://github.com/jianghanxiao/phystwin （Warp 弹簧质点模型；拓扑参数用 CMA-ES，稠密参数用梯度）
-- Newton：https://github.com/newton-physics/newton （基于 Warp，Apache-2.0；有可微 FEM 示例，MPM 示例只有正向）
-- Warp 自动微分：https://nvidia.github.io/warp/stable/user_guide/differentiability.html
-- 梯度质量：Suh 等，*Do Differentiable Simulators Give Better Policy Gradients?*，ICML 2022
-- 切割真机数据：Jamdagni & Jia，IROS 2019、ICRA 2021、T-RO 2024（论文表里有 E、ν、断裂韧性，数据未公开）；Quantified Knife Project https://github.com/seattleultrasonics/Quantified-Knife-Project （公开，只有电子秤测的竖直力）
-- 网格依赖：Bažant & Oh 1983，裂纹带模型（断裂能随网格变化的经典问题）
+E5 下一项：完成接触储能、塑性/摩擦/接触阻尼/PIC 分项收支和几何事件能量，按静置、压入、切割以及 G_c=7/70/700/1400 和步长细化验收。E4 长实验继续保留固定版本，塑性公式更新后重跑受影响的轨迹与梯度检查。

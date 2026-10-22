@@ -129,3 +129,55 @@ def test_activation_traction_is_continuous_with_correct_one_sided_tangents():
         np.testing.assert_allclose((base[1].numpy() - minus[1].numpy())[0, 0] / epsilon, 1 / compliance, rtol=1e-8)
         np.testing.assert_allclose((plus[1].numpy() - base[1].numpy())[0, 0] / epsilon,
                                    -strength / failure / .7, rtol=1e-8)
+
+
+@pytest.mark.parametrize('history_fraction', [.25, 1., 1.2])
+@pytest.mark.parametrize('normal_gap', [-1e-4, 0.])
+def test_closed_damaged_interface_retains_unloading_tangent(history_fraction, normal_gap):
+    strength, gc = 5e4, 70.
+    failure = 2 * gc / strength
+    compliance = .1 * failure / strength
+    parameters = ExtrinsicCohesiveParameters(strength, gc).proximal_parameters(compliance)
+    history = history_fraction * failure
+    stiffness = strength * (1 - history / failure) / history if history < failure else 0.
+    gain = 1 / (1 + compliance * stiffness)
+    inputs, _ = response([[normal_gap, 0., 0.]], history, parameters)
+    for output_index, expected in [(0, gain), (1, stiffness * gain)]:
+        with wp.Tape() as tape:
+            outputs = evaluate(inputs)
+        tape.backward(grads={outputs[output_index]: array([[0., 1., 0.]], True)})
+        ad = inputs[0].grad.numpy()[0, 1]
+        np.testing.assert_allclose(ad, expected, rtol=1e-12, atol=1e-12)
+        tape.zero()
+        for epsilon in [1e-8, 1e-9]:
+            _, minus = response([[normal_gap, -epsilon, 0.]], history, parameters)
+            _, plus = response([[normal_gap, epsilon, 0.]], history, parameters)
+            fd = (plus[output_index].numpy()[0, 1] - minus[output_index].numpy()[0, 1]) / (2 * epsilon)
+            np.testing.assert_allclose(ad, fd, rtol=1e-12, atol=1e-12)
+
+
+def test_virgin_loaded_interface_history_has_right_sided_derivative():
+    strength, gc = 5e4, 70.
+    failure = 2 * gc / strength
+    compliance = .1 * failure / strength
+    parameters = ExtrinsicCohesiveParameters(strength, gc).proximal_parameters(compliance)
+    q = compliance * strength * np.array([[-.3, .2, -.1]])
+    positive = q.copy()
+    positive[:, 0] = 0.
+    expected = [positive / (compliance * strength), -positive / (compliance**2 * strength),
+                np.ones(1), np.array([np.sum(positive**2) / (2 * compliance**2 * strength)]),
+                np.array([.5 * strength])]
+    inputs, _ = response(q, 0., parameters)
+    for index in range(5):
+        seed = np.array([[.3, .7, -.2]]) if index < 2 else np.ones(1)
+        with wp.Tape() as tape:
+            outputs = evaluate(inputs)
+        base = outputs[index].numpy()
+        tape.backward(grads={outputs[index]: array(seed, index < 2)})
+        ad = inputs[2].grad.numpy()[0]
+        np.testing.assert_allclose(ad, np.sum(expected[index] * seed), rtol=1e-12, atol=1e-12)
+        tape.zero()
+        for epsilon in [1e-7, 1e-8]:
+            _, shifted = response(q, failure * epsilon, parameters)
+            fd = np.sum((shifted[index].numpy() - base) * seed) / (failure * epsilon)
+            np.testing.assert_allclose(ad, fd, rtol=2e-6, atol=1e-8)

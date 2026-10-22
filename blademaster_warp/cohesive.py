@@ -108,27 +108,39 @@ def cohesive_proximal_response(
     radius = wp.length(positive)
     old = previous[i]
     r = radius
+    gain = float(1.0)
+    unloading = bool(False)
     if old < failure:
-        r = float(0.0)
-        if old > 0.0:
-            stiffness = strength * (1.0 - old / failure) / old
-            r = radius / (1.0 + compliance * stiffness)
+        denominator = old + compliance * strength * (1.0 - old / failure)
+        gain = old / denominator
+        r = radius * gain
+        unloading = True
         if r > old or (old == 0.0 and radius > compliance * strength):
+            unloading = False
             r = (radius - compliance * strength) / (1.0 - compliance * strength / failure)
             if r >= failure:
                 r = radius
     g = wp.vec3(0.0)
-    if radius > 0.0:
+    if old >= failure:
+        g = positive
+    elif unloading:
+        g = gain * positive
+    elif radius > 0.0:
         g = r / radius * positive
     high = wp.max(old, r)
     energy = float(0.0)
-    if high > 0.0 and high < failure:
+    if unloading:
+        high = old
+        denominator = old + compliance * strength * (1.0 - old / failure)
+        energy = 0.5 * strength * (1.0 - old / failure) * old * wp.length_sq(positive) / (denominator * denominator)
+    elif high > 0.0 and high < failure:
         energy = 0.5 * strength * (1.0 - high / failure) / high * r * r
-    t = q / compliance
-    if r > 0.0:
-        t = compression / compliance * n
-        if high < failure:
-            t += strength * (1.0 - high / failure) / high * g
+    t = compression / compliance * n
+    if unloading:
+        denominator = old + compliance * strength * (1.0 - old / failure)
+        t += strength * (1.0 - old / failure) / denominator * positive
+    elif high > 0.0 and high < failure:
+        t += strength * (1.0 - high / failure) / high * g
     gap[i] = g
     traction[i] = t
     maximum[i] = high

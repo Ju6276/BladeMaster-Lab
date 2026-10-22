@@ -199,6 +199,7 @@ PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定�
 | 可微求解 | 正向 TLMPM 切割与工具双向耦合 | 增加粒子、材料、接触历史、切割事件和刀路的自动微分与伴随；当前可微刀路由外部给定 |
 | 损伤释放积分 | 方向接触功的经验阈值；达到阈值后移除刃向冲量，材料应力保持原更新 | 原 `Solver` 和 M4 在子步边界切换；M5 `EventCutContact` 根据剩余断裂功积分释放步的刃向冲量，使释放时刻进入状态导数，见上节 |
 | E5 内聚元件 | 方向接触功损伤，几何侧码独立分离网格 | 已实现独立双线性内聚元件，形式参考 [Camanho–Dávila/MOOSE](https://mooseframework.inl.gov/releases/moose/2022-06-10/source/materials/cohesive_zone_model/BiLinearMixedModeTraction.html)，大变形虚功参考 [Reinoso–Paggi](https://arxiv.org/abs/1507.05168)。本地推导平均面法向、共轭表面应力与现有多场的力映射；K、σ、G_c 为独立材料量。原因是已释放刃向投影力的闭合路径功非零。元件与 TLMPM 耦合算例已核对，自然切口入口的面积生成、插入牵引平衡和历史接入待完成；动态插入的牵引初始化参考 [Sierra/SM](https://www.sandia.gov/files/sierra/SM_Users_5_20/main/materials/cohesive.html) |
+| E5 受载插入原型 | 几何事件直接更新侧码 | `runs/e5_release_audit/extrinsic_*.py` 验证初始刚性内聚界面，以零开口约束承接有限牵引，避免插入时额外引入弹性开口。初始刚性势和约束增量求解参考 [Vavasis–Papoulia–Hirmand](https://arxiv.org/abs/1909.10641) 式 7；原型采用卸载至原点的历史律，论文式 8 保留残余起裂强度。原型本地实现闭式径向近端更新、全矩阵耦合迭代及后向 Euler 单元推进；条件为有效惯性 Hessian 大于软化负刚度，未接入主切割流程 |
 | 几何分侧积分 | 子步更新侧码 | `GeometryEventContact` 用 RK2 二次位置延拓和三个时刻的几何间隙生成入区候选；旋转查询按角跨度 ≤π/2 分段，在实际材料推进上验证括区、求根并切分，按事件时间求导；使用连续的刀后 `2Δx` 区域，原步末查询的 `max(相对推进速度×Δt,0)` 回看扩展由步内穿越查询替代 |
 | 耦合区间内的刀具 | 位姿与速度保持不变 | 默认相同；`tool_substep='predict'` 用 6×6 移动性矩阵逐子步更新刀速并推进位姿 |
 | 接触检测 | 未写明 | 默认用设备端条件重建邻居表；`hash` 每子步重建 Warp HashGrid，`all` 全对检测（每粒子 64 线程），按完整搜索核对接触集合 |

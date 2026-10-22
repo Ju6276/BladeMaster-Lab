@@ -1051,7 +1051,7 @@ PYTHONPATH=. .venv/bin/python runs/e4_43a939a/trace_crossing.py
 
 三条完整横移轨迹定位到 **0.696765625 s / 第 44593 步**：粒子 1167 的基准/负扰动/正扰动刀距为 **−4.564e-12/−1.374e-11/+4.609e-12 m**，旧端点摩擦回算产生 **1.372e-6/1.372e-6/0 m** 的历史位移。接触起始处的历史跳变传入后续刀力；此时三条轨迹的塑性、释放及侧码数量相同。`109fe3f` 已删除这条端点回算，当前接触网络在零初始历史下满足 `h₁=Δt μFₙ t/(c+θΔt kₜ)`，随法向载荷趋零；θ=1/2、1 与三档阻尼共 **6** 个解析连续性检查通过。命令：`PYTHONPATH=. .venv/bin/python runs/e4_43a939a/trace_jump.py`、`PYTHONPATH=. .venv/bin/python -m pytest tests/test_friction_energy.py -q`（**33 passed**）。
 
-`ca90da9`，RTX 4090、dirty=false，固定 `--dt .000015625 --flip-reference-dt .000015625` 的当前公式复验：横移 ε=1e-6/1e-7 mm 的 AD/FD 相对误差为 **0.00094923%/0.00033584%**，对应旧值 **8.02884%/13.94012%**。深度两档继续验收。日志：`runs/e4_ca90da9/crossing.log`，命令其余参数同本节的 `diff_multicut_validate`。
+`ca90da9`，RTX 4090、dirty=false，固定 `--dt .000015625 --flip-reference-dt .000015625` 的当前公式复验：横移 ε=1e-6/1e-7 mm 的 AD/FD 相对误差为 **0.00094923%/0.00033584%**，对应旧值 **8.02884%/13.94012%**。深度两档误差 **0.0112984%/0.0371589%**，四项全部通过；32/127 步检查点状态重算差 **0**，刀路/初始位置梯度差 **2.297e-15/3.898e-12**。暂停损伤增量 **0**，终态三块 **726/360/366** 粒子、释放 **36** 粒子。报告：`runs/e4_ca90da9/crossing/report.json`，命令其余参数同本节的 `diff_multicut_validate`。
 
 `d221ad4`、dirty=true（追加上述 6 项测试及文档），RTX 4090：`PYTHONPATH=. .venv/bin/python -m pytest tests -q`，**1023 passed、8 skipped、18 subtests passed**（254.58 s）。
 
@@ -1094,3 +1094,17 @@ PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_surface_grid.py
 同提交 192 个有限变形界面状态：力/表面应力与增量势导数的相对差 **1.577e-16/2.622e-16**，刚体旋转虚功绝对残差 ≤**1.137e-13**。加载边界 κ=0.2/0.3/1 mm 的左右导数分别符合卸载刚度与软化斜率；两者不同，力连续。命令：`PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_frame.py`、`PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_loading_corner.py`。
 
 `d4bbb6f`、dirty=true（新增 `cohesive.py` 与 15 项测试），RTX 4090：`PYTHONPATH=. .venv/bin/python -m pytest tests -q`，**1045 passed、8 skipped、18 subtests passed**（249.28 s）。
+
+## 2026-10-22：E5 受载界面生成与耦合约束原型
+
+`769dd89`，RTX 4090、dirty=false。初始刚性内聚原型在零开口下传递低于强度的拉/剪载荷及压缩载荷，新增储能与耗散均为 **0**。σ=50 kPa、G_c=7/70/700/1400 的加载—卸载—断裂功分别为 **7/70/700/1400 J/m²**，最大功残差 **5.685e-14 J/m²**。256 个随机状态的归一化最小能量解误差 ≤**3.787e-8**，平衡残差 ≤**5.335e-15**；状态、法向、历史和参数在 ε=1e-6/1e-7 下的 AD/FD 最大相对误差 **1.764e-9**。ε=1e-5 的参数扰动跨过 1 个起裂分支，误差 **0.4221%**；起裂点左右切线与解析式一致，牵引连续。
+
+双侧质量折合 **2 kg/m²**，先施加低于强度的预载，再拉开至断裂；四档 G_c、每特征时间 128/256/512 步，共 **12** 例后向 Euler 推进。最大相对能量残差 **2.376e-5/4.138e-6/8.360e-7**，材料、质量、步长的两档轨迹梯度最大误差 **7.607e-8**。
+
+64 粒子、4 个界面的实际 TLMPM 传力矩阵功配对误差 **5.552e-17**。全矩阵耦合求解在 32/64/128/256 次迭代的平衡相对残差为 **1.138e-3/6.276e-6/3.651e-10/4.101e-16**。自由开口、法向、历史、材料及耦合矩阵均通过至少两档差分；ε=1e-4/1e-5 最大误差 **3.211e-7**。历史方向的 AD/独立隐式方程导数为 **0.02862841554856842/0.02862841554856843**；细差分 ε=1e-6/1e-7 的相对误差为 **4.415e-6/5.285e-5**。上述原型位于 `runs/`；下一项将参考面生成、移动面法向和多界面约束接入自然切割。
+
+```bash
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_prox.py
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_dynamics.py
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_coupled.py
+```

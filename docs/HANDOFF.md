@@ -198,7 +198,7 @@ E5 能量基准工作树为 `~/Projects/BladeMaster-Warp-e5-20261022`（`33a7001
 
 公式更新后的自然窗口重验已完成，干净工作树 `~/Projects/BladeMaster-Warp-e5-friction-20261022`，日志 `runs/e5_109fe3f/banana_h6.log`。6 mm 香蕉、2 ms、三相位、dt=15.625/7.8125/3.90625 μs，固定 PIC 参考时间 15.625 μs，比较 32/127 步 CPU 检查点及两档自然差分。`43a939a` 的塑性交叉轨迹已结束，报告为 `~/Projects/BladeMaster-Warp-e4-energy-20261022/runs/e4_43a939a/crossing/report.json`：横移两档误差 **8.03%/13.94%**，深度两档 **7.53%/0.01368%**，3 项失败，队列退出。32/127 步检查点重算状态差均为 **0**。`runs/e4_43a939a/trace_crossing.py` 从未切初态重放基准及横移 ±1e-7 mm，逐段保存状态和约束统计；基准目标精确复现，全部阶段的网格约束求解次数 **0**。
 
-当前公式的 6 mm 交叉两刀复验工作树为 `~/Projects/BladeMaster-Warp-e4-current-20261022`（干净 `ca90da9`），日志 `runs/e4_ca90da9/crossing.log`，报告目录 `runs/e4_ca90da9/crossing/`。命令显式使用 `--dt .000015625 --flip-reference-dt .000015625`，其余配置与上面的长轨迹相同。横移 ε=1e-6/1e-7 mm 两项已返回，误差 **0.00094923%/0.00033584%**；深度两项继续验收。双精度、固定累加、中点积分及事件求根修复均保留；相关 **105** 项复核通过。`ca90da9` 全量 **1017 passed、8 skipped、18 subtests passed**（273.94 s）。
+当前公式的 6 mm 交叉两刀复验工作树为 `~/Projects/BladeMaster-Warp-e4-current-20261022`（干净 `ca90da9`），日志 `runs/e4_ca90da9/crossing.log`，报告目录 `runs/e4_ca90da9/crossing/`。命令显式使用 `--dt .000015625 --flip-reference-dt .000015625`，其余配置与上面的长轨迹相同。四项自然差分全部通过：横移 ε=1e-6/1e-7 mm 误差 **0.00094923%/0.00033584%**，深度 **0.0112984%/0.0371589%**。32/127 步检查点状态重算差 **0**，刀路梯度差 **2.297e-15**，暂停损伤增量 **0**。双精度、固定累加、中点积分及事件求根修复均保留；相关 **105** 项复核通过。`ca90da9` 全量 **1017 passed、8 skipped、18 subtests passed**（273.94 s）。
 
 旧轨迹 `runs/e4_43a939a/trace_jump.py` 已定位横移 ε=1e-7 mm 的一个跳变：第 44593 步，粒子 1167 的刀距跨过 0，旧摩擦端点回算使历史从 0 跳到 **1.372 μm**。`109fe3f` 已替换该公式；新增 6 项接触起始处的解析连续性检查通过，完整轨迹结果继续以当前公式报告核对。
 
@@ -213,6 +213,10 @@ G_c=7/70/700/1400 与三档步长的 50 ms 扫描已完成，报告在 `e5-trans
 当前界面工作树为 `~/Projects/BladeMaster-Warp-e5-cohesive-20261022`。`d4bbb6f` 增加多场交换前的网格冲量入口，7 项独立传递/功配对/转置导数检查通过；全量 **1030 passed、8 skipped、18 subtests passed**（261.66 s）。干净提交下 `runs/e5_release_audit/cohesive_grid.py`、`cohesive_grid_refine.py` 完成 24 例平面双侧算例；`cohesive_surface_grid.py` 完成旋转/剪切算例。0.125 μs 三相位的最大相对能量残差 **2.327e-7**，旋转轨迹差 ≤**5.22e-15**，六类输入的两档梯度误差 ≤**8.144e-7**。`769dd89` 已在干净提交下完成旋转/剪切耦合复验，新增 15 项界面测试后的全量为 **1045 passed、8 skipped、18 subtests passed**（249.28 s）。界面响应已整理到 `cohesive.py`；`tests/test_cohesive.py` 包含断裂功、不可逆历史、虚功、客观性、自然差分和加载边界两侧切线。下一项是自然切口的参考面积、双侧映射、插入牵引平衡与检查点历史，再接回完整刀路；插入受载界面时同时核对受力连续性和能量。
 
 同一 `cut_index` 内损伤 D 累积；新刀重置本刀 D，旧侧码与塑性 Fp 保留。M4 使用记录的离散分支；M5 的自然流程在每条扰动轨迹上重新生成侧码、接触对和损伤释放。`scripts.diff_natural_validate --from-initial` 从未切割初态展开，默认窗口模式从原求解器选定的共同状态起步。
+
+受载插入原型保存在 `e5-cohesive` 工作树的 `runs/e5_release_audit/extrinsic_{prox,dynamics,coupled}.{py,json}`，干净 `769dd89`。零开口承载/零插入能、四档断裂功、256 状态梯度、12 例质量—界面步长对照及实际 TLMPM 的 4 界面全矩阵约束均已核对，数字见 RESULTS。原型保留起裂折点和全部差分步长；弱历史方向另有独立隐式方程导数核对。下一项接自然参考面和移动法向的共轭力，再接入完整自然轨迹和检查点；主切割流程仍使用原损伤释放律。
+
+`e4-current` 中 4 mm 交叉窗口也在运行，脚本/日志为 `runs/e4_ca90da9/crossing_window.py`、`crossing_h4.log`，报告目录 `crossing_h4_640ms`。6 mm 完整交叉已通过；`continue_cases.py` 核对报告后顺序复验暂停续切、平行两刀、三刀后推块；状态在 `runs/e4_ca90da9/continue_status.json`。运行中工作树保持固定提交。
 
 完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。
 

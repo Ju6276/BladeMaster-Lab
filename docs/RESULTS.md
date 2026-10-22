@@ -1037,3 +1037,29 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 PYTHONPATH=. .venv/bin/python -m scripts.diff_energy_validate --output runs/e5_current/block_plastic --shape block --material plastic --scenes rest press cut --duration .05 --dt-divisors 1 2 4 --cutting-energies 7 70 700 1400
 PYTHONPATH=. .venv/bin/python -m scripts.diff_energy_validate --output runs/e5_current/banana_release --shape banana --material banana --scenes cut --duration .05 --dt-divisors 1 2 4 --cutting-energies 7 70 700 1400
 ```
+
+## 2026-10-22：E4 塑性交叉复验与旧修复核对
+
+`43a939a`，RTX 4090、dirty=false，6 mm 香蕉、1.04 s / 66560 步。横移 ε=1e-6/1e-7 mm 的 AD/FD 相对误差为 **8.02884%/13.94012%**，深度对应 **7.53189%/0.013684%**，3 项失败。32/127 步检查点重算状态差 **0**，控制量梯度差 **5.684e-14**。横移小扰动的 AD/左差分/右差分为 **−0.01440889/−0.01445391/−0.01034664**。逐段重放的基准目标精确复现，所有材料阶段的网格约束求解次数 **0**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate --output runs/e4_43a939a/crossing --cases crossing --spacings .006 --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
+PYTHONPATH=. .venv/bin/python runs/e4_43a939a/trace_crossing.py
+```
+
+`43a939a` 保留 `f60a5c4` 的有序 P2G、双精度转换、中点推进和几何事件求根。当前公式的精度/中点/几何/材料 VJP 复核 **105 passed**（37.32 s）。`ca90da9` 增加显式 dt/PIC 参考时间参数，固定接触刚度及 PIC 速率核对通过；全量 **1017 passed、8 skipped、18 subtests passed**（273.94 s）。
+
+## 2026-10-22：E5 完整短轨迹阈值扫描与释放力闭合路径
+
+`ec7bcb4`，RTX 4090、dirty=false，50 ms、dt=15.625/7.8125/3.90625 μs，固定 PIC 参考时间 15.625 μs。塑性方块静置/压入及 G_c=7/70/700/1400 切割共 **18** 例完成；压入相对能量残差 **0.001116%/0.000758%/0.000375%**，各阈值的切割残差 **0.014090%/0.007980%/0.004001%**，释放数均为 **0**。香蕉四阈值共 **12** 例完成：G_c=7/70 各释放 **4** 粒子，三档残差分别 **23.59953%/23.59991%/23.60007%** 和 **7.30799%/7.30844%/7.30862%**；G_c=700/1400 未释放，残差幅值均为 **0.000594%/0.000182%/0.0000579%**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_energy_validate --output runs/e5_current/block_plastic --shape block --material plastic --scenes rest press cut --duration .05 --dt-divisors 1 2 4 --cutting-energies 7 70 700 1400
+PYTHONPATH=. .venv/bin/python -m scripts.diff_energy_validate --output runs/e5_current/banana_release --shape banana --material banana --scenes cut --duration .05 --dt-divisors 1 2 4 --cutting-energies 7 70 700 1400
+```
+
+同提交单接触：μ=0、kₙ=4752 N/m、接触距离 1.5 mm，刃尖前方矩形路径 x=0.3–0.4 mm、z=−0.3 至 −0.2 mm。保持 D 不变，每边 128/256/512 个采样；未释放闭环净功 **1.034e-10/2.584e-11/6.460e-12 J**，已释放为 **7.785586e-5/7.785585e-5/7.785584e-5 J**。反向路径净功变号，释放力规则的能量失败来自移除刃向分量。下一项将断裂阻力与刀面压缩接触分开，先核对储能、非负耗散和局部导数，再接入自然轨迹。
+
+```bash
+PYTHONPATH=. .venv/bin/python runs/e5_release_cycle.py
+```

@@ -79,7 +79,7 @@ GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384
 
 `CutHistory` 保存侧码、排序后的粒子对 ID 和刀次；检查点重算同时核对连续状态及这些离散状态。同刀暂停保留 D，新刀按原求解器规则清零 D 并保留历史侧码。`release="boundary"` 使用原步末释放；`release="integrated"` 使用下节的步内刃向冲量积分。`scripts.diff_natural_validate` 从首次分侧附近的同一状态开始，逐步对照原求解器、比较不同检查点长度，分别记录差分误差及侧码/接触/释放的变化数。
 
-`checkpoint_device="cpu"` 将检查点的全部粒子、接触及事件状态复制到主机，每段反向前恢复到计算设备；完成该段后释放后端检查点。保存到 CPU、反向时取回的存储策略可参照 [PyTorch save_on_cpu](https://docs.pytorch.org/docs/stable/autograd.html#torch.autograd.graph.save_on_cpu)，这里使用 `warp.clone` 搬移数组。时间步、事件求根与 VJP 公式共用同一实现，CPU/GPU 检查点均与完整 Tape 核对。
+`checkpoint_device="cpu"` 将检查点的全部粒子、接触及事件状态复制到主机，每段反向前恢复到计算设备；完成该段后释放已处理的检查点。保存到 CPU、反向时取回的存储策略可参照 [PyTorch save_on_cpu](https://docs.pytorch.org/docs/stable/autograd.html#torch.autograd.graph.save_on_cpu)，这里使用 `warp.clone` 搬移数组。时间步、事件求根与 VJP 公式共用同一实现，CPU/GPU 检查点均与完整 Tape 核对。
 
 ## 几何分侧的步内积分
 

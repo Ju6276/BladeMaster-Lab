@@ -829,3 +829,19 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
 PYTHONPATH=. .venv/bin/python runs/e23_fb379d4/full_path_extra_fd.py
 PYTHONPATH=. .venv/bin/python runs/e23_fb379d4/full_path_yield_fd.py
 ```
+
+### 2026-10-22：CPU 检查点存储
+
+`a55b185`，RTX 4090、dirty=false：**4 mm、4892 粒子、G_c=7、50 ms / 3800 步、每段 8 步**，GPU/CPU 检查点的末端 x/v/F/Fp/应力/损伤差、事件时刻差及刀冲量差均为 **0**，两组均释放 **5** 个粒子。刀路梯度最大差 **1.53e-14**，材料梯度最大相对差 **4.42e-15**，全部检查点状态重算差 **0**。
+
+峰值 CUDA 数组内存从 **1.906 GiB** 降到 **0.791 GiB**（**−58.5%**）；检查点正向、重算、反向累计为 **98.50/98.81 s**。CPU 存储通过 13 项新增检查；全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**863 passed、8 skipped、18 subtests passed**，249.61 s。8 项跳过为 CRESSim 上游构建。
+
+```bash
+for storage in cuda cpu; do
+  PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
+    --output runs/e3_a55b185/checkpoint_memory_${storage} --from-initial \
+    --trajectory cut-withdraw-push --duration .05 --spacings .004 --cutting-energy 7 \
+    --dt-divisors 1 --adjoint checkpoint --segment-steps 8 --epsilons \
+    --checkpoint-device "$storage"
+done
+```

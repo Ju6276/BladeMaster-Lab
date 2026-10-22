@@ -23,6 +23,8 @@ def prepare_at(
     bevel: float,
     radius: float,
     dt: float,
+    tool_velocity: wp.vec3,
+    tool_omega: wp.vec3,
     side: wp.array(dtype=float),
     normal: wp.array(dtype=wp.vec3),
     lever: wp.array(dtype=wp.vec3),
@@ -53,15 +55,17 @@ def prepare_at(
             s = -1.0
     n = wp.quat_rotate(rotation[0], wp.vec3(s, 0.0, 0.0))
     gap = s * local[0] - half[0]
+    arm = wp.quat_rotate(rotation[0], wp.vec3(s * half[0], local[1], local[2]))
+    relative = grid_v - tool_velocity - wp.cross(tool_omega, arm)
     # Include fast arrivals from beyond the proxy radius using the velocity
     # after stress and all existing contacts, not the FLIP particle velocity.
-    if gap > radius and gap + dt * wp.dot(grid_v, n) > 0.0:
+    if gap > radius and gap + dt * wp.dot(relative, n) > 0.0:
         side[p] = 0.0
         return
     side[p] = s
     normal[p] = n
-    lever[p] = wp.quat_rotate(rotation[0], wp.vec3(s * half[0], local[1], local[2]))
-    rhs[p] = -wp.max(gap, 0.0) / dt - wp.dot(grid_v, n)
+    lever[p] = arm
+    rhs[p] = -wp.max(gap, 0.0) / dt - wp.dot(relative, n)
     for a in range(8):
         slot = slots[p, a]
         if slot >= 0:
@@ -80,6 +84,7 @@ def prepare(
     impulse: wp.array(dtype=float), extrapolated: wp.array(dtype=float), needs_solve: wp.array(dtype=int),
 ):
     prepare_at(wp.tid(), x, slots, weights, velocity, position, rotation, half, bevel, radius, dt,
+               wp.vec3(0.0), wp.vec3(0.0),
                side, normal, lever, rhs, active_weights, impulse, extrapolated, needs_solve)
 
 

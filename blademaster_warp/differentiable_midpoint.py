@@ -1,7 +1,5 @@
 """Explicit midpoint stages with endpoint return maps for contact histories."""
 
-from dataclasses import replace
-
 import numpy as np
 import warp as wp
 
@@ -84,7 +82,9 @@ def rigid_history_endpoint(
 ):
     p = wp.tid()
     up = wp.vec3(0.0, 0.0, 1.0)
-    h = tangent(base_history[0, p], up) + duration[0] * tangent(stage_v[p], up)
+    h = wp.vec3(0.0)
+    if board_gap(stage_x[p], radius, board_half) < 0.0:
+        h = tangent(base_history[0, p], up) + duration[0] * tangent(stage_v[p], up)
     result[0, p] = project_history(board_gap(x[p], radius, board_half), v[p], up, h,
                                   board_kn, kt, damping, friction[0], friction[1])
     gap, normal, relative = blade_contact(
@@ -95,7 +95,9 @@ def rigid_history_endpoint(
         stage_x[p], stage_v[p], stage_position[0], velocity[0], stage_rotation[0], omega[0],
         half, bevel, offset, hold, stage_damage[p], departed[p],
     )
-    h = tangent(base_history[1, p], stage_normal) + duration[0] * tangent(stage_relative, stage_normal)
+    h = wp.vec3(0.0)
+    if stage_gap < 0.0:
+        h = tangent(base_history[1, p], stage_normal) + duration[0] * tangent(stage_relative, stage_normal)
     result[1, p] = project_history(gap, relative, normal, h, kn, kt, damping, friction[0], friction[1])
 
 
@@ -112,9 +114,10 @@ def pair_history_endpoint(
     normal = wp.normalize(x[p] - x[q])
     stage_normal = wp.normalize(stage_x[p] - stage_x[q])
     h = wp.vec3(0.0)
-    if previous[i] >= 0:
-        h = tangent(base_history[previous[i]], stage_normal)
-    h += duration[0] * tangent(stage_v[p] - stage_v[q], stage_normal)
+    if wp.length(stage_x[p] - stage_x[q]) < diameter:
+        if previous[i] >= 0:
+            h = tangent(base_history[previous[i]], stage_normal)
+        h += duration[0] * tangent(stage_v[p] - stage_v[q], stage_normal)
     result[i] = project_history(wp.length(x[p] - x[q]) - diameter, v[p] - v[q], normal,
                                 h, kn, kt, damping, friction[0], friction[1])
 
@@ -162,17 +165,23 @@ def advance_midpoint(contact, state, history, tool, duration, cutting):
         contact, state, history, tool, branch, duration=half, edge_departed=departed,
         stage_base=state, stage_history=history,
     )
+    # Material transport uses interpolated grid velocities, so an Euler-stage
+    # contact can be absent from a search using the initial particle velocities.
+    stage_keys = np.union1d(keys, contact.contact_keys(mid, history.codes, 0.))
+    endpoint_branch = contact.freeze(history.codes.numpy(), stage_keys, history.pair_keys,
+                                     history.damage.numpy() >= 1, cutting=cutting)
     mid_history = project_endpoint(contact, mid, mid_history, state, history, tool, mid_tool,
-                                    half, branch, departed)
-    mid_branch = replace(branch, previous=m.array(np.arange(len(keys)), int, False))
+                                    half, endpoint_branch, departed)
+    mid_branch = contact.freeze(history.codes.numpy(), stage_keys, stage_keys,
+                                history.damage.numpy() >= 1, cutting=cutting)
     result, updated, force = FixedCutContact.step(
         contact, mid, mid_history, mid_tool, mid_branch, duration=duration, edge_departed=departed,
         stage_base=state, stage_history=history,
     )
     updated = project_endpoint(contact, result, updated, mid, history, mid_tool, end_tool,
-                                duration, branch, departed)
+                                duration, endpoint_branch, departed)
     updated.path_midpoint = m.zeros(m.n, wp.vec3, False)
     m.launch(position_midpoint, m.n, inputs=[state.x, mid.x, result.x],
              outputs=[updated.path_midpoint], device=m.device)
-    updated.codes, updated.pair_keys, updated.cut_index = history.codes, keys, history.cut_index
+    updated.codes, updated.pair_keys, updated.cut_index = history.codes, stage_keys, history.cut_index
     return result, updated, force

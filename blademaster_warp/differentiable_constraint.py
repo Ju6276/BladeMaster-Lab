@@ -1,4 +1,4 @@
-"""Held-blade grid constraint with independent projected-solve iterates."""
+"""Blade grid constraint with independent projected-solve iterates."""
 
 from dataclasses import dataclass
 
@@ -11,13 +11,19 @@ from . import blade_constraint as constraint
 def prepare_timed(
     x: wp.array(dtype=wp.vec3), slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
     velocity: wp.array(dtype=wp.vec3), position: wp.array(dtype=wp.vec3), rotation: wp.array(dtype=wp.quat),
+    tool_velocity: wp.array(dtype=wp.vec3), tool_omega: wp.array(dtype=wp.vec3), moving_tool: int,
     half: wp.vec3, bevel: float, radius: float, duration: wp.array(dtype=float),
     side: wp.array(dtype=float), normal: wp.array(dtype=wp.vec3), lever: wp.array(dtype=wp.vec3),
     rhs: wp.array(dtype=float), active_weights: wp.array(dtype=wp.vec3),
     impulse: wp.array(dtype=float), extrapolated: wp.array(dtype=float), needs_solve: wp.array(dtype=int),
 ):
+    translation = wp.vec3(0.0)
+    angular = wp.vec3(0.0)
+    if moving_tool != 0:
+        translation = tool_velocity[0]
+        angular = tool_omega[0]
     constraint.prepare_at(wp.tid(), x, slots, weights, velocity, position, rotation, half, bevel,
-                          radius, duration[0], side, normal, lever, rhs, active_weights,
+                          radius, duration[0], translation, angular, side, normal, lever, rhs, active_weights,
                           impulse, extrapolated, needs_solve)
 
 
@@ -66,7 +72,8 @@ class GridConstraintResult:
     residual: float
 
 
-def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=None, *, duration=None):
+def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=None, *, duration=None,
+          moving_tool=False):
     """Same 48-iteration batches and residual stopping rule as BladeConstraint.
 
     Entry sides and the iteration count are discrete. A supplied fixed_batches
@@ -88,6 +95,7 @@ def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=Non
     offset = max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0])
     model.launch(prepare_timed, model.n,
               inputs=[x, grid.slots, model.weights, velocity, tool.position, tool.rotation,
+                      tool.velocity, tool.omega, int(moving_tool),
                       cfg.blade_half_size, cfg.blade_bevel_height, offset, duration],
               outputs=[side, normal, lever, rhs, active_weights, impulse, extrapolated, needs_solve],
               device=model.device)

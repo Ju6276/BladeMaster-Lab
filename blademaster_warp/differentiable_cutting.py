@@ -386,6 +386,7 @@ class FixedCutContact(PrescribedContact):
             nonlocal constraint_result
             constraint_result = grid_constraint.solve(
                 m, grid, mass, velocity, state.x, tool, history.side, frozen.grid_batches, duration=duration,
+                moving_tool=bool(stage),
             )
             return constraint_result.velocity
 

@@ -271,6 +271,22 @@ def gather_stage(
 
 
 @wp.kernel
+def stage_grid_candidate(base_momentum: wp.array(dtype=wp.vec3), mass: wp.array(dtype=float),
+                         old_v: wp.array(dtype=wp.vec3), new_v: wp.array(dtype=wp.vec3),
+                         candidate: wp.array(dtype=wp.vec3)):
+    i = wp.tid()
+    if mass[i] > 0.0:
+        candidate[i] = base_momentum[i] / mass[i] + new_v[i] - old_v[i]
+
+
+@wp.kernel
+def add_stage_projection(new_v: wp.array(dtype=wp.vec3), candidate: wp.array(dtype=wp.vec3),
+                         projected: wp.array(dtype=wp.vec3), result: wp.array(dtype=wp.vec3)):
+    i = wp.tid()
+    result[i] = new_v[i] + projected[i] - candidate[i]
+
+
+@wp.kernel
 def timed_body_impulse(gravity: wp.vec3, mass: float, duration: wp.array(dtype=float),
                        impulse: wp.array(dtype=wp.vec3)):
     impulse[wp.tid()] = mass * duration[0] * gravity
@@ -483,7 +499,24 @@ class MaterialTrajectory(ElasticTrajectory):
         self.launch(m.grid_vel, grid.count, inputs=[grid_mass, coupled_momentum, coupled_impulse],
                   outputs=[old_v, new_v], device=self.device)
         if grid_transform is not None:
-            new_v = grid_transform(grid, grid_mass, new_v)
+            if stage_base is None:
+                new_v = grid_transform(grid, grid_mass, new_v)
+            else:
+                # RK stages add their force increment to the segment's base
+                # velocity. The unilateral projection must constrain that sum.
+                base_momentum = self.zeros(grid.count, wp.vec3)
+                self.launch(ordered_remap, grid.count,
+                            inputs=[grid.particle_offsets, grid.particles, grid.corners, self.weights,
+                                    stage_base.v, self.mass], outputs=[base_momentum], device=self.device)
+                candidate = self.zeros(grid.count, wp.vec3)
+                self.launch(stage_grid_candidate, grid.count,
+                            inputs=[self.couple(grid, base_momentum), grid_mass, old_v, new_v],
+                            outputs=[candidate], device=self.device)
+                projected = grid_transform(grid, grid_mass, candidate)
+                corrected = self.zeros(grid.count, wp.vec3)
+                self.launch(add_stage_projection, grid.count, inputs=[new_v, candidate, projected],
+                            outputs=[corrected], device=self.device)
+                new_v = corrected
         if stage_base is not None:
             self.launch(gather_stage, self.n,
                         inputs=[stage_base.x, stage_base.v, state.v, grid.slots, self.weights,

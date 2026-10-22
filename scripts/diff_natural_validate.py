@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 import sys
+from time import perf_counter
 
 import numpy as np
 import warp as wp
@@ -20,6 +21,10 @@ from blademaster_warp.solver import Solver
 from scripts.diff_cut_validate import (
     capture_window, configuration, differentiable_tool, numpy_tool, reaction_loss, terminal_loss,
 )
+from scripts.diff_cut_trajectory import PATH_TIMES, tool_at_time
+
+
+STATE_PARAMETERS = ('initial_z_mm', 'young_scale', 'yield_scale', 'friction_scale', 'fracture_scale')
 
 
 def first_side_prefix(cfg):
@@ -52,9 +57,39 @@ def capture_initial(cfg, steps):
                        prefix * cfg.dt, cfg.dt, rows)
 
 
+def intact_initial(cfg):
+    m = MaterialTrajectory(cfg, precision='float64', ordered_transfers=True)
+    state = m.state()
+    values = {name: getattr(state, name).numpy() for name in ('x', 'v', 'F', 'Fp')}
+    values['stress'] = np.zeros((m.n, 3, 3))
+    saved = dict(rigid=np.zeros((2, m.n, 3)), pairs=np.zeros((0, 3)),
+                 damage=np.zeros(m.n), side=np.zeros(m.n))
+    return WindowState(np.array([.0004, 0., .027 + cfg.blade_half_size[2]]), values, saved,
+                       np.zeros(m.n, dtype=np.int64), np.empty(0, dtype=np.int64), 0., cfg.dt, [])
+
+
+def time_edges(steps, dt, phase, start, trajectory):
+    total = steps * dt
+    edges = np.arange(steps + 1, dtype=float) * dt
+    if phase:
+        edges = np.concatenate(([0.], (np.arange(steps) + phase) * dt, [total]))
+    if trajectory == 'cut-withdraw-push':
+        tolerance = 8 * np.finfo(float).eps * max(total, dt)
+        for knot in PATH_TIMES[1:]:
+            relative = knot - start
+            if 0 < relative < total:
+                nearest = int(np.argmin(np.abs(edges - relative)))
+                if abs(edges[nearest] - relative) <= tolerance:
+                    edges[nearest] = relative
+                else:
+                    edges = np.sort(np.append(edges, relative))
+    return edges
+
+
 def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', friction_update='projected',
              *, initial_window=None, return_arrays=False, adjoint='full',
-             controls_to_check=('knife_x_mm', 'knife_depth_scale'), integration='midpoint', phase=0.):
+             controls_to_check=('knife_x_mm', 'knife_depth_scale'), integration='midpoint', phase=0.,
+             trajectory='straight', progress=False, state_parameters=()):
     directions = dict(knife_x_mm=np.array([1., 0., 0.]),
                       knife_depth_scale=np.array([0., 1., 0.]),
                       knife_lateral_scale=np.array([0., 0., 1.]))
@@ -62,15 +97,19 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
         raise ValueError('Use full Tape or checkpoint adjoints with at least one segment length')
     if not controls_to_check or any(name not in directions for name in controls_to_check):
         raise ValueError('Select knife_x_mm, knife_depth_scale or knife_lateral_scale')
+    if trajectory not in ('straight', 'cut-withdraw-push'):
+        raise ValueError('Trajectory must be straight or cut-withdraw-push')
+    if any(name not in STATE_PARAMETERS for name in state_parameters):
+        raise ValueError(f'State parameters must be selected from {STATE_PARAMETERS}')
     window = capture_initial(cfg, steps) if initial_window is None else initial_window
     if not np.isfinite(phase) or not 0 <= phase < 1:
         raise ValueError('Time-grid phase must be in [0, 1)')
     total_duration = steps * cfg.dt
-    edges = np.arange(steps + 1, dtype=float) * cfg.dt
-    if phase:
-        edges = np.concatenate(([0.], (np.arange(steps) + phase) * cfg.dt, [total_duration]))
-    durations = np.diff(edges) if phase else np.full(steps, cfg.dt)
-    instructions = [CutInstruction(duration=float(dt)) for dt in durations]
+    edges = time_edges(steps, cfg.dt, phase, window.start_time, trajectory)
+    durations = np.diff(edges) if phase or trajectory != 'straight' else np.full(steps, cfg.dt)
+    instructions = [CutInstruction(duration=float(dt),
+                    cutting=trajectory == 'straight' or window.start_time + edges[i] < PATH_TIMES[1])
+                    for i, dt in enumerate(durations)]
     steps = len(durations)
     origin, values, saved, rows = window.origin, window.values, window.history, window.rows
     controls = np.array([0., 1., 1.])
@@ -83,6 +122,8 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     q = m.array(controls, float)
 
     def knife(step):
+        if trajectory == 'cut-withdraw-push':
+            return tool_at_time(m, q, window.start_time + edges[step])
         return differentiable_tool(m, q, origin, window.start_time + edges[step])
 
     def objective(step, state, h, force, loss):
@@ -128,9 +169,14 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                                    rigid_modes=np.asarray(rigid_modes), geometry=geometry_events,
                                    force=np.asarray(forces), damage_work=damage_work), error, discrete
 
-    compare = phase == 0 and cfg.dt == window.reference_dt and steps == len(rows)
+    compare = trajectory == 'straight' and phase == 0 and cfg.dt == window.reference_dt and steps == len(rows)
+    begun = perf_counter()
     with wp.Tape() if adjoint == 'full' else nullcontext() as tape:
         loss, terminal, terminal_history, events, forward_error, discrete_error = rollout(compare=compare)
+    forward_s = perf_counter() - begun
+    if progress:
+        print(json.dumps(dict(stage='forward', duration_s=total_duration, elapsed_s=forward_s,
+                               loss=float(loss.numpy()[0]))), flush=True)
     parameters = dict(young_modulus=m.young, yield_stress=m.yield_stress,
                       friction=c.friction, fracture_energy=c.fracture_energy)
     gradient, gradient_x, parameter_gradients = None, None, None
@@ -171,16 +217,32 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
         checkpoint.append(dict(segment_steps=length, controls_max_abs=error_q, initial_x_max_abs=error_x,
                                gradient_reference=gradient_reference,
                                material_max_abs=material_error,
-                               recompute_max_abs=timings['recompute_max_abs']))
+                               recompute_max_abs=timings['recompute_max_abs'],
+                               timings={name: timings[name] for name in ('forward_s', 'recompute_s', 'backward_s')}))
+        if progress:
+            print(json.dumps(dict(stage='checkpoint', segment_steps=length,
+                                   timings=checkpoint[-1]['timings'])), flush=True)
     finite_difference = []
     baseline_loss = float(loss.numpy()[0])
-    for parameter in controls_to_check:
-        direction = directions[parameter]
-        ad = float(gradient @ direction)
+    checks = [(name, q, controls, directions[name], float(gradient @ directions[name]))
+              for name in controls_to_check]
+    material_sources = dict(young_scale='young_modulus', yield_scale='yield_stress',
+                            friction_scale='friction', fracture_scale='fracture_energy')
+    for name in state_parameters:
+        if name == 'initial_z_mm':
+            direction = np.zeros_like(values['x'])
+            direction[:, 2] = .001
+            checks.append((name, initial.x, values['x'], direction, float(np.sum(gradient_x * direction))))
+        else:
+            key = material_sources[name]
+            source = parameters[key]
+            base = source.numpy().copy()
+            checks.append((name, source, base, base, float(np.sum(parameter_gradients[key] * base))))
+    for parameter, source, base, direction, ad in checks:
         for epsilon in epsilons:
             losses, changes = [], []
             for sign in (-1, 1):
-                q.assign(controls + sign * epsilon * direction)
+                source.assign(base + sign * epsilon * direction)
                 shifted_loss, _, _, shifted, _, _ = rollout()
                 losses.append(float(shifted_loss.numpy()[0]))
                 mode_changes = np.argwhere(shifted['rigid_modes'] != events['rigid_modes'])
@@ -211,7 +273,13 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                                            right_fd=(losses[1] - baseline_loss) / epsilon,
                                            relative_error=abs(ad - fd) / max(abs(ad), abs(fd), 1e-12),
                                            event_changes=changes))
-    if not np.isfinite([float(loss.numpy()[0]), *gradient]).all():
+            if progress:
+                print(json.dumps(dict(stage='finite_difference', parameter=parameter, epsilon=epsilon,
+                                       relative_error=finite_difference[-1]['relative_error'])), flush=True)
+        source.assign(base)
+    if (not np.isfinite([float(loss.numpy()[0]), *gradient]).all()
+            or not np.isfinite(gradient_x).all()
+            or any(not np.isfinite(g).all() for g in parameter_gradients.values())):
         raise FloatingPointError('Nonfinite objective or gradient')
     new_labels = np.count_nonzero(events['codes'][-1] != history.codes.numpy())
     if not new_labels:
@@ -220,17 +288,21 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     work_from_damage = threshold * np.sum(terminal_history.damage.numpy() - history.damage.numpy())
     result = dict(config=asdict(cfg), release=release, geometry=geometry, friction_update=friction_update,
                 integration=integration if geometry == 'event' else 'symplectic',
-                adjoint=adjoint,
+                adjoint=adjoint, trajectory=trajectory, forward_s=forward_s,
                 particles=m.n, prefix_steps=round(window.start_time / cfg.dt),
                 start_time_s=window.start_time, steps=steps, duration_s=total_duration, time_grid_phase=phase,
                 newly_labelled_particles=int(new_labels), peak_pairs=max(map(len, events['pairs'])),
+                released_particles=int(np.count_nonzero(terminal_history.damage.numpy() >= 1)),
+                peak_force_n=float(np.max(np.linalg.norm(events['force'], axis=1))),
+                initial_x_gradient_l2=float(np.linalg.norm(gradient_x)),
                 loss=float(loss.numpy()[0]), gradient_controls=gradient.tolist(),
                 gradient_materials={name: value.tolist() for name, value in parameter_gradients.items()},
                 damage_work_j=events['damage_work'], damage_work_balance_error_j=abs(events['damage_work']-work_from_damage),
                 knife_impulse_ns=np.sum(durations[:, None] * events['force'], axis=0).tolist(),
                 vs_original_max_abs=forward_error if compare else None,
                 vs_original_discrete=discrete_error if compare else None,
-                checkpoint=checkpoint, finite_difference=finite_difference)
+                checkpoint=checkpoint, finite_difference=finite_difference,
+                process_peak_live_cuda_pool_bytes=wp.get_mempool_used_mem_high(m.device))
     if not return_arrays:
         return result
     event_times = np.full(m.n, np.nan)
@@ -250,10 +322,15 @@ def main():
     parser.add_argument('--materials', choices=['banana', 'soft', 'plastic'], nargs='+', default=['banana'])
     parser.add_argument('--shapes', choices=['banana', 'block', 'cylinder'], nargs='+', default=['banana'])
     parser.add_argument('--steps', type=int, default=64)
+    parser.add_argument('--from-initial', action='store_true')
+    parser.add_argument('--duration', type=float)
+    parser.add_argument('--trajectory', choices=['straight', 'cut-withdraw-push'], default='straight')
+    parser.add_argument('--cutting-energy', type=float)
     parser.add_argument('--segment-steps', type=int, nargs='+', default=[16, 32])
     parser.add_argument('--adjoint', choices=['full', 'checkpoint'], default='full')
     parser.add_argument('--parameters', nargs='+', default=['knife_x_mm', 'knife_depth_scale'],
                         choices=['knife_x_mm', 'knife_depth_scale', 'knife_lateral_scale'])
+    parser.add_argument('--state-parameters', nargs='+', choices=STATE_PARAMETERS, default=[])
     parser.add_argument('--release', choices=['boundary', 'integrated'], default='integrated')
     parser.add_argument('--geometry', choices=['boundary', 'event'], default='boundary')
     parser.add_argument('--friction-update', choices=['lagged', 'projected'], default='projected')
@@ -278,9 +355,17 @@ def main():
                     cfg = replace(cfg, size=(.024, .018, .018))
                 dt = tangent_history_dt(cfg, banana_dt(cfg, spacing))
                 cfg = replace(cfg, dt=dt, flip_reference_dt=dt)
-                row = evaluate(cfg, args.steps, args.release, args.epsilons, args.segment_steps,
+                if args.cutting_energy is not None:
+                    cfg = replace(cfg, cutting_energy=args.cutting_energy)
+                steps = args.steps if args.duration is None else round(args.duration / dt)
+                if args.duration is not None and (steps < 1 or abs(steps * dt - args.duration) > 1e-12):
+                    parser.error('Duration must be positive and divide exactly by the time step')
+                window = intact_initial(cfg) if args.from_initial else None
+                row = evaluate(cfg, steps, args.release, args.epsilons, args.segment_steps,
                                args.geometry, args.friction_update, adjoint=args.adjoint,
-                               controls_to_check=args.parameters, integration=args.integration)
+                               controls_to_check=args.parameters, integration=args.integration,
+                               initial_window=window, trajectory=args.trajectory, progress=True,
+                               state_parameters=args.state_parameters)
                 row.update(shape=shape, material=material)
                 report['cases'].append(row)
                 (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')

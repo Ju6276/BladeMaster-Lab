@@ -21,6 +21,9 @@ from blademaster_warp.topology import components
 from scripts.diff_cut_validate import configuration, reaction_loss, terminal_loss
 
 
+PATH_TIMES = (0., .24, .48, .55, .75, .85, 1.05)
+
+
 @wp.kernel
 def path_motion(q: wp.array(dtype=float), base: wp.vec3, speed: wp.vec3, origin: wp.vec3,
                 position: wp.array(dtype=wp.vec3), velocity: wp.array(dtype=wp.vec3)):
@@ -30,7 +33,7 @@ def path_motion(q: wp.array(dtype=float), base: wp.vec3, speed: wp.vec3, origin:
 
 
 def motion(cfg, elapsed, controls):
-    times = np.array([0., .24, .48, .55, .75, .85, 1.05])
+    times = np.asarray(PATH_TIMES)
     positions = np.array([[.0004, 0, .027], [.0004, 0, .0005], [.0004, 0, .032],
                           [-.008, 0, .032], [-.008, 0, .008], [.008, 0, .008], [.008, 0, .032]])
     positions[:, 2] += cfg.blade_half_size[2]
@@ -45,7 +48,11 @@ def motion(cfg, elapsed, controls):
 
 
 def tool_at(model, q, step):
-    _, base, speed, origin = motion(model.config, step * model.config.dt, [0, 1, 1])
+    return tool_at_time(model, q, step * model.config.dt)
+
+
+def tool_at_time(model, q, elapsed):
+    _, base, speed, origin = motion(model.config, elapsed, [0, 1, 1])
     position, velocity = model.zeros(1, wp.vec3), model.zeros(1, wp.vec3)
     vector = wp.vec3d if model.precision == "float64" else wp.vec3
     model.launch(path_motion, 1, inputs=[q, vector(*base), vector(*speed), vector(*origin)],

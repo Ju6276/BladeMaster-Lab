@@ -112,6 +112,24 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory \
 
 ## M5：事件定位与扰动扫描
 
+完整自然轨迹从未切割的初态建立材料与接触历史，所有扰动重新搜索接触并定位切割事件。`--trajectory cut-withdraw-push` 复用上述六段刀路，在速度变化时刻切分时间步；控制量三项分别为 x 偏移、下刀行程比例和横推行程比例。`--state-parameters` 额外检查初始粒子位置和材料参数到末端的导数。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/natural_<commit>_trajectory --geometry event --from-initial \
+  --trajectory cut-withdraw-push --duration .24 --spacings .006 \
+  --adjoint checkpoint --segment-steps 16 32 128 --epsilons 1e-6 1e-7 \
+  --state-parameters initial_z_mm young_scale fracture_scale
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
+  --output runs/natural_<commit>_refine --from-initial \
+  --trajectory cut-withdraw-push --duration .24 --spacings .006 .004 \
+  --dt-divisors 1 2 4 --adjoint checkpoint --segment-steps 32 --epsilons 1e-7
+```
+
+`--duration 1.05` 延长到横推后的退刀；`--cutting-energy 70` 或 `7` 检查损伤释放活跃的材料组合。报告包含初态梯度范数、自然差分、释放粒子数、刀力峰值、损伤功及检查点的前向/重算/反向耗时和显存。
+
+`scripts.diff_contact_convergence` 将各材料场的粒子放在同一法向位置、赋予统一法向速度，使形变率为零，得到刀、板和两组粒子相撞的单自由度解析对照。粒子对参考刚度按同一切向位置的接触重数计算。扫描固定刚度下的步长及时间网格相位，分别记录位置/速度导数对解析解的误差和对自然差分的误差。
+
 ```bash
 PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_events \
   --spacing .006 --duration .24 --output runs/m5_<commit>_events_6mm

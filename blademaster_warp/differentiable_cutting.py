@@ -308,6 +308,7 @@ class FixedCutContact(PrescribedContact):
         self.friction = trajectory.array([cfg.friction_static, cfg.friction_dynamic], float)
         self.fracture_energy = trajectory.array([cfg.cutting_energy], float)
         self.integrate_release = False
+        self.energy_ledger = None
         self._no_edge_departure = trajectory.zeros(trajectory.n, int, False)
         self._topologies = {}
 
@@ -389,9 +390,10 @@ class FixedCutContact(PrescribedContact):
             )
             return constraint_result.velocity
 
+        trace = {} if self.energy_ledger is not None else None
         result = m.step(state, impulse=impulse, topology=frozen.topology, fixed_yielded=frozen.yielded,
                         grid_transform=constrain if cfg.blade_grid_constraint else None,
-                        duration=duration, stage_base=stage_base)
+                        duration=duration, stage_base=stage_base, trace=trace)
         updated.side = history.side
         if constraint_result is not None:
             updated.side = constraint_result.side
@@ -405,6 +407,10 @@ class FixedCutContact(PrescribedContact):
                       outputs=[combined, combined_work], device=m.device)
             reaction = combined
             updated.tool_work = combined_work
+        if self.energy_ledger is not None:
+            self.energy_ledger.capture(state, base_history, tool, frozen, duration,
+                                       impulse, result, replace(updated), constraint_result, trace,
+                                       midpoint=bool(stage))
         return result, updated, reaction
 
     def checkpoint_vjp(self, initial, history, frozen, segment_steps, tool_at_step, objective,
@@ -477,11 +483,16 @@ class FixedCutContact(PrescribedContact):
             for a in (*start_arrays.values(), *parameters):
                 a.grad.zero_()
             local_loss = m.zeros(1, float)
-            with wp.Tape() as tape:
-                current, h = start, start_history
-                for step in range(first, last):
-                    current, h, reaction = self.step(current, h, tool_at_step(step), frozen[step])
-                    objective(step, current, h, reaction, local_loss)
+            ledger = self.energy_ledger
+            self.energy_ledger = None
+            try:
+                with wp.Tape() as tape:
+                    current, h = start, start_history
+                    for step in range(first, last):
+                        current, h, reaction = self.step(current, h, tool_at_step(step), frozen[step])
+                        objective(step, current, h, reaction, local_loss)
+            finally:
+                self.energy_ledger = ledger
             current_arrays = arrays(current, h)
             if timings is not None:
                 for name, expected_array in arrays(expected, expected_history).items():

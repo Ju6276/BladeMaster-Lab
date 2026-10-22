@@ -373,14 +373,17 @@ class GeometryEventContact(NaturalCutContact):
     def advance_segment(self, state, history, tool, duration, cutting):
         if self.integration == "midpoint":
             from .differentiable_midpoint import advance_midpoint
-            return advance_midpoint(self, state, history, tool, duration, cutting)
-        keys = self.contact_keys(state, history.codes, float(duration.numpy()[0]))
-        branch = self.freeze(history.codes.numpy(), keys, history.pair_keys,
-                             history.damage.numpy() >= 1, cutting=cutting)
-        result, updated, force = FixedCutContact.step(
-            self, state, history, tool, branch, duration=duration, edge_departed=history.edge_departed,
-        )
-        updated.codes, updated.pair_keys, updated.cut_index = history.codes, keys, history.cut_index
+            result, updated, force = advance_midpoint(self, state, history, tool, duration, cutting)
+        else:
+            keys = self.contact_keys(state, history.codes, float(duration.numpy()[0]))
+            branch = self.freeze(history.codes.numpy(), keys, history.pair_keys,
+                                 history.damage.numpy() >= 1, cutting=cutting)
+            result, updated, force = FixedCutContact.step(
+                self, state, history, tool, branch, duration=duration, edge_departed=history.edge_departed,
+            )
+            updated.codes, updated.pair_keys, updated.cut_index = history.codes, keys, history.cut_index
+        if self.energy_ledger is not None:
+            self.energy_ledger.finish_trial(state, history, tool, result, updated, cutting)
         return result, updated, force
 
     def locate(self, state, history, tool, tool0, elapsed, end, trial, trial_tool, particle, kind, plane,
@@ -442,6 +445,8 @@ class GeometryEventContact(NaturalCutContact):
         if instruction.cut_index != history.cut_index:
             history = replace(history, damage=m.zeros(m.n, float), cut_index=int(instruction.cut_index),
                               edge_departed=None)
+        if self.energy_ledger is not None:
+            self.energy_ledger.begin(state, history, tool, instruction.cutting)
         elapsed = m.array([0.], float, False)
         end = (m.duration if instruction.duration is None
                else m.array([instruction.duration], float, False))
@@ -460,6 +465,8 @@ class GeometryEventContact(NaturalCutContact):
                                            trial_h, remaining)
             particle, fraction, kind, plane, lower, upper = selected
             if fraction > 1:
+                if self.energy_ledger is not None:
+                    self.energy_ledger.accept(trial, trial_h, end_tool)
                 m.launch(accumulate_segment, m.n,
                          inputs=[trial_force, trial_h.damage_work, trial_h.tool_work, remaining, end],
                          outputs=[reaction, work, tool_work], device=m.device)
@@ -483,6 +490,8 @@ class GeometryEventContact(NaturalCutContact):
                 else:
                     raise RuntimeError('Geometric event ordering did not converge')
                 duration = self.interval(time, elapsed)
+                if self.energy_ledger is not None:
+                    self.energy_ledger.accept(before, h, event_tool)
                 m.launch(accumulate_segment, m.n,
                          inputs=[force, h.damage_work, h.tool_work, duration, end],
                          outputs=[reaction, work, tool_work], device=m.device)
@@ -502,6 +511,8 @@ class GeometryEventContact(NaturalCutContact):
                              3 ** instruction.cut_index, int(edge_entry)],
                      outputs=[codes, departed], device=m.device)
             history = replace(history, codes=codes, edge_departed=departed)
+            if self.energy_ledger is not None:
+                self.energy_ledger.event(state, history, start_tool, instruction.cutting)
             events.append((particle, elapsed))
             if float(elapsed.numpy()[0]) >= float(end.numpy()[0]):
                 history.damage_work = work

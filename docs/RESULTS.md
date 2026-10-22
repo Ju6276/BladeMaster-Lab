@@ -1007,3 +1007,11 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_friction_energy.py tests/test
 PYTHONPATH=. .venv/bin/python -m pytest tests -q
 PYTHONPATH=. .venv/bin/python runs/e5_friction_probe.py
 ```
+
+## 2026-10-22：摩擦更新后的自然事件窗口复验（`109fe3f`）
+
+RTX 4090，干净提交，6 mm 香蕉 1452 粒子、2 ms 窗口，dt=15.625/7.8125/3.90625 μs，时间网格相位 0/0.25/0.5，固定 PIC 速率 3200 s⁻¹。36 项自然差分的最大相对误差 **0.034311%**；32/127 步检查点重算状态差 **0**，刀路梯度差 ≤**7.61e-15**。最细两档刀路梯度差 ≤**0.17884%**、位置差 ≤**1.303e-9 m**。9 份末态数组均为有限值；每个窗口新分侧 68 粒子，其余粒子的事件时刻按报告约定为空。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine --output runs/e5_109fe3f/banana_h6 --spacings .006 --materials banana --duration .002 --dt-divisors 4 8 16 --phases 0 .25 .5 --adjoint checkpoint --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7 --integration midpoint --friction-update midpoint --flip-reference-dt .000015625
+```

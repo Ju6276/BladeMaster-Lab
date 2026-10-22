@@ -425,7 +425,7 @@ class MaterialTrajectory(ElasticTrajectory):
         return result
 
     def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None,
-             grid_transform=None, duration=None, stage_base=None):
+             grid_transform=None, duration=None, stage_base=None, trace=None):
         cfg = self.config
         duration = self.duration if duration is None else duration
         grid = self.uncut if topology is None else topology
@@ -464,6 +464,7 @@ class MaterialTrajectory(ElasticTrajectory):
         coupled_impulse = self.couple(grid, grid_impulse)
         self.launch(m.grid_vel, grid.count, inputs=[grid_mass, coupled_momentum, coupled_impulse],
                   outputs=[old_v, new_v], device=self.device)
+        unconstrained_v = new_v
         if grid_transform is not None:
             if stage_base is None:
                 new_v = grid_transform(grid, grid_mass, new_v)
@@ -515,6 +516,8 @@ class MaterialTrajectory(ElasticTrajectory):
                   outputs=[result.Fp, result.yielded, result.stress, plastic_errors], device=self.device)
         if int(plastic_errors.numpy()[0]):
             raise FloatingPointError('Plastic return mapping failed to converge')
+        if trace is not None:
+            trace.update(grid=grid, old_v=old_v, new_v=new_v, unconstrained_v=unconstrained_v)
         return result
 
     def checkpoint_vjp(self, *args, **kwargs):

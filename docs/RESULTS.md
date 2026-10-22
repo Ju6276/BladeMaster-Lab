@@ -742,3 +742,19 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
   --dt-divisors 32 64 128 --phases 0 .25 .5 --adjoint checkpoint \
   --segment-steps 32 --epsilons 5e-9 --integration midpoint
 ```
+
+### 2026-10-22：M5 E2 接触修复与 E3 初态释放轨迹
+
+`819cb13` / `09e52b4`：中点阶段重搜实际粒子接触对，按 ID 补齐阶段历史；接触外历史积分率为零，零摩擦返回映射消去试探切向力及其历史导数。移动刀面的网格约束使用相对速度，并投影 `v_base_grid + τ a_stage`。`7b1fb8e` 的 16 项接触测试覆盖穷举接触对、平移/转动刀面、动量与反力、进入侧释放及刀面到刀缘的完整轨迹导数。全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**848 passed、8 skipped、18 subtests passed**；8 项跳过为 CRESSim 上游构建。
+
+`fb379d4`，RTX 4090、dirty=false：**6 mm、1452 粒子、G_c=7 J/m²、15.625 μs、3200 步 / 50 ms**，从未切割初态自然生成 **68** 个侧码，**4** 个粒子损伤释放。完整 Tape 与 **16/32/128** 步检查点的控制量/初始位置梯度最大差为 **5.47e-15 / 6.24e-13**，全部状态重算差 **0**；损伤功平衡误差 **2.03e-20 J**，进程 CUDA 数组内存池峰值 **13.38 GiB**。
+
+刀位、行程、初始高度、E、摩擦系数与 G_c 共 **12** 组自然差分，最大相对误差 **0.9185%**；刀路与材料各自最大误差 **0.02604% / 0.0002062%**。初态有粒子位于板接触边界，负向高度扰动在首步建立接触；高度扰动 `1e-7 mm` 时 AD **−0.00886663175**、左差分 **−0.00903107089**、右差分 **−0.00886658247**，AD 与右差分相差 **0.000556%**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
+  --output runs/e23_fb379d4/initial_50ms_gc7 --geometry event --from-initial \
+  --trajectory cut-withdraw-push --duration .05 --cutting-energy 7 --spacings .006 \
+  --adjoint full --segment-steps 16 32 128 --epsilons 1e-6 1e-7 \
+  --state-parameters initial_z_mm young_scale friction_scale fracture_scale
+```

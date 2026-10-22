@@ -252,3 +252,9 @@ E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20
 - 梯度质量：Suh 等，*Do Differentiable Simulators Give Better Policy Gradients?*，ICML 2022
 - 切割真机数据：Jamdagni & Jia，IROS 2019、ICRA 2021、T-RO 2024（论文表里有 E、ν、断裂韧性，数据未公开）；Quantified Knife Project https://github.com/seattleultrasonics/Quantified-Knife-Project （公开，只有电子秤测的竖直力）
 - 网格依赖：Bažant & Oh 1983，裂纹带模型（断裂能随网格变化的经典问题）
+
+统一原型局部检查已在干净 `ca283ec` 复跑通过。反向 Jacobian 直接由 Warp 残差构建；CPU 手写 Jacobian 在零压力舍入边界与 Warp 的分支不一致，失败步使用 Warp 后伴随相对残差为 **3.210e-15**。当前连续轨迹 `extrinsic_unified_trajectory.py` 已结束并失败于 160 步初速度：4 档误差 **0.404484/0.649817/4.5917e-5/2.9373e-6**（要求至少两档 ≤2e-5）；旋转最大归一化状态差 **1.541e-11**。下一项对照原光滑 KKT 与统一近端解的逐步位移/压力及有限差分，定位弱导数的求解误差，保留原四档。
+
+`extrinsic_unified_energy.py` 的闭合预载算例停止于冗余约束的浮点残差：开口输入最大 1.061e-9 m，偏离 B 值域 5.633e-23 m；归一化残差 **2.012e-20**、当前停止值 **1.926e-20**。补偿求和对照 `extrinsic_energy_debug.py` / `extrinsic_stable_flow.py` 失败于约束位移与网格冲量推进的应力对照，最大差 **1.0415e-10 Pa**、标准 `atol=1e-10, rtol=1e-12`。诊断状态为 `semismooth_{adjoint,primal}_failure.npz`；这些能量/轨迹进程均已结束，E3/E4 队列仍运行。下一项核对残差的浮点误差来源和应力对应的 F 误差，再复跑 12 例能量细化。自然参考面积/位置实现可参考 [Crook–Homel 的 MPM 界面定义与积分](https://www.osti.gov/servlets/purl/3003988)，论文与文本已下载至 `runs/e5_release_audit/crook_homel_2026.*`。
+
+E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已自动开始 `three-cuts-push`。E3 的 `release_h4_refine` 仍在最细一档；前两档各四项自然差分通过，两档侧码/释放/接触集合相同，最大刀路梯度变化 **0.2451%**。

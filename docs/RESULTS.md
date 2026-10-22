@@ -1197,3 +1197,15 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 `a7df3f4`、dirty=true（对应 `ca283ec` 的内聚核修复），RTX 4090，闭合/零历史起裂/混合历史/已有损伤各 4 档载荷共 **16** 例通过；解析残差 Jacobian 的独立差分最大相对误差 **1.3821e-9**，数值分裂尺度 0.5/1/2 倍给出相同粒子解。4 类状态 × 10 类输入的 **40** 个方向各有至少两档自然差分相对误差 ≤**2e-5**，最差第二档 **1.3519e-7**；完整 **160** 行结果保存原始差分以及 `F_free+G u` 的基态/增量分开相减值。连续粒子轨迹随后核对。
 
 命令：`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_semismooth_probe.py`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_semismooth_validate.py`。报告为同名 `.json`，工作树见 HANDOFF。
+
+## 2026-10-23：当前公式的 E4 平行两刀
+
+干净 `ca90da9`，RTX 4090，6 mm、1.04 s、66560 步，dt/PIC 参考时间 15.625 μs。横移两档自然差分相对误差 **0.0002968%/0.0001523%**，深度 **0.07879%/0.07261%**；32/127 步检查点状态重算差 **0**、控制量/初始位置梯度差 **3.903e-16/7.434e-13**。最终 **380/648/424** 三块，暂停损伤增量 **0**，CUDA 数组峰值 **3.288 GiB**。
+
+命令：`PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate --output runs/e4_ca90da9/two-cuts --cases two-cuts --spacings .006 --dt .000015625 --flip-reference-dt .000015625 --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7`。报告 `runs/e4_ca90da9/two-cuts/report.json`。
+
+## 2026-10-23：统一内聚残差的反向与连续轨迹复验
+
+干净 `ca283ec`，RTX 4090，隐式反向 Jacobian 直接由 Warp 残差构建，局部 **40** 个方向、**160** 行自然差分复跑通过；最差第二档 **1.3519e-7**。160 步旋转归一化状态差 **1.5409e-11**，通过 1e-10。初速度轨迹差分失败：四档相对误差 **0.404484/0.649817/4.5917e-5/2.9373e-6**，低于 2e-5 的档位为 **1/4**，要求至少 2 档；后续输入组合尚未运行。下一项对照约束位移/压力及自然差分的逐步精度。
+
+命令：`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_semismooth_validate.py`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_unified_trajectory.py`。报告/日志位于同目录；工作树见 HANDOFF。

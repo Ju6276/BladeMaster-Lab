@@ -34,7 +34,7 @@ def project_history(gap: float, relative: wp.vec3, normal: wp.vec3, history: wp.
     trial = -kt * ht - damping * vt
     magnitude = wp.length(trial)
     normal_force = kn * (-gap)
-    if magnitude <= mus * normal_force:
+    if mus > 0.0 and magnitude <= mus * normal_force:
         return ht
     force = wp.vec3(0.0)
     if magnitude > 0.0:

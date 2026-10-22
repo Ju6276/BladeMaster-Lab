@@ -7,6 +7,7 @@ import warp as wp
 from blademaster_warp.differentiable_constraint import solve
 from blademaster_warp.differentiable_geometry import GeometryEventContact
 from blademaster_warp.differentiable_material import MaterialTrajectory
+from blademaster_warp.differentiable_midpoint import project_history
 from blademaster_warp.solver import Config
 
 
@@ -161,3 +162,25 @@ def test_midpoint_grid_projection_constrains_the_final_stage_velocity(knife_spee
     tape.backward(grads={state.v: m.array(seed, wp.vec3, False)})
     np.testing.assert_allclose(tool.velocity.grad.numpy()[0, 0], 1., atol=2e-5)
     np.testing.assert_allclose(np.sum(initial.v.grad.numpy()[:, 0]), 0., atol=2e-5)
+
+
+@wp.kernel
+def zero_cone_probe(parameters: wp.array(dtype=float), damping: float, output: wp.array(dtype=wp.vec3)):
+    output[0] = project_history(-.0002, wp.vec3(parameters[0], 0., 0.), wp.vec3(0., 0., 1.),
+                                 wp.vec3(parameters[1], 0., 0.), 75., 37.5, damping, 0., 0.)
+
+
+@pytest.mark.parametrize('damping', [0., .1])
+def test_zero_friction_history_cancels_trial_force_and_its_derivative(damping):
+    m = model()
+    parameters = m.array([0., 0.], float)
+    output = m.zeros(1, wp.vec3)
+    with wp.Tape() as tape:
+        m.launch(zero_cone_probe, 1, inputs=[parameters, damping], outputs=[output], device=m.device)
+    tape.backward(grads={output: m.array([[1., 0., 0.]], wp.vec3, False)})
+    np.testing.assert_allclose(parameters.grad.numpy(), [-damping / 37.5, 0.], atol=1e-15)
+    for sign in (-1, 1):
+        values = sign * np.array([1e-7, 2e-7])
+        result = m.zeros(1, wp.vec3)
+        m.launch(zero_cone_probe, 1, inputs=[m.array(values, float), damping], outputs=[result], device=m.device)
+        np.testing.assert_allclose(37.5 * result.numpy()[0, 0] + damping * values[0], 0., atol=1e-15)

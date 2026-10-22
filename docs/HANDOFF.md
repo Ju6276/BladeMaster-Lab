@@ -216,6 +216,10 @@ G_c=7/70/700/1400 与三档步长的 50 ms 扫描已完成，报告在 `e5-trans
 
 受载插入原型保存在 `e5-cohesive` 工作树的 `runs/e5_release_audit/extrinsic_{prox,dynamics,coupled}.{py,json}`，干净 `769dd89`。零开口承载/零插入能、四档断裂功、256 状态梯度、12 例质量—界面步长对照及实际 TLMPM 的 4 界面全矩阵约束均已核对，数字见 RESULTS。原型保留起裂折点和全部差分步长；弱历史方向另有独立隐式方程导数核对。下一项接自然参考面和移动法向的共轭力，再接入完整自然轨迹和检查点；主切割流程仍使用原损伤释放律。
 
+`extrinsic_admm.py` 已处理 16/32 积分点、秩 9 的冗余约束，面积等分复制和 ρ 变化对照通过。`extrinsic_particle.py` 将其接入真实粒子推进：9 例步长细化的能量残差约随步长线性下降，受载闭合例面能/损伤为 0，24/160 步的四类轨迹梯度通过两档自然差分。局部近端核已整理为 `cohesive.cohesive_proximal_response`；全局 ADMM 原型与平面耦合尚在 `runs/`。下一项是随物体运动的面法向及其共轭力、自然生成参考面与永久界面历史；同时统一界面压缩约束与现有粒子接触，避免重复计力。
+
+局部近端核提交前全量测试 **1059 passed、8 skipped、18 subtests passed**（274.88 s），日志在 `e5-cohesive` 的 `runs/cohesive_prox_full_tests.log`。
+
 `e4-current` 中 4 mm 交叉窗口也在运行，脚本/日志为 `runs/e4_ca90da9/crossing_window.py`、`crossing_h4.log`，报告目录 `crossing_h4_640ms`。6 mm 完整交叉已通过；`continue_cases.py` 核对报告后顺序复验暂停续切、平行两刀、三刀后推块；状态在 `runs/e4_ca90da9/continue_status.json`。运行中工作树保持固定提交。
 
 完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。

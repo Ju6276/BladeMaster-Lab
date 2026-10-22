@@ -1108,3 +1108,19 @@ PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_prox.py
 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_dynamics.py
 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_coupled.py
 ```
+
+## 2026-10-22：E5 冗余界面约束与粒子推进
+
+`769dd89`，RTX 4090、dirty=false。64 粒子、16 个面积分点的 TLMPM 矩阵秩为 **9**；ADMM 的开口—动量平衡相对残差 **3.873e-17**。将积分点复制为 32 个并各分一半面积，粒子速度保持一致（绝对差 ≤**1e-10 m/s**）；ρ 乘 0.5/1.5 后同样一致。速度、材料、插值、面积、质量、时长的两档自然差分最大相对误差 **9.213e-9**。局部核现为 `cohesive_proximal_response`，14 项单元测试覆盖有限预载、断裂功、约束驻点、旋转和梯度。
+
+同一 64 粒子、12 mm 方块，16 点平面、E=20 kPa、纯 FLIP，接入实际 `MaterialTrajectory.step`。0.2 ms、dt=2/1/0.5 μs，G_c=7/70 拉开及 G_c=70 受载闭合共 **9** 例。拉开相对能量残差分别 **0.005789/0.002888/0.001443** 和 **−0.004990/−0.002493/−0.001246**；G_c=7 完整断裂耗散为 **0.001008 J=G_c A₀**。初始 F_xx=1.05 的受载例保持开口/损伤/面能为 **0**，整体能量残差 **−0.0004931/−0.0002466/−0.0001233**。每步约束 16–48 次迭代，最大平衡相对残差 ≤**1e-11**。
+
+24/160 步轨迹的初速度、内聚参数、E 和时长在 ε=1e-4/1e-5 下的最大梯度相对误差 **1.056e-6**；报告保留四档 ε=1e-4 至 1e-7。24 步的弱 E 导数在后两档误差为 **7.550e-5/6.756e-4**，160 步为 **6.609e-6/3.583e-5**。
+
+```bash
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_admm.py
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_particle.py
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_cohesive_proximal.py -q
+```
+
+`769dd89`、dirty=true（新增局部近端核及 14 项测试），RTX 4090：`PYTHONPATH=. .venv/bin/python -m pytest tests -q`，**1059 passed、8 skipped、18 subtests passed**（274.88 s）。

@@ -1,4 +1,4 @@
-"""Bilinear cohesive response per reference interface area."""
+"""Cohesive surface energies and constrained incremental responses."""
 
 from dataclasses import dataclass
 import math
@@ -23,6 +23,75 @@ class CohesiveParameters:
 
     def as_tuple(self):
         return self.stiffness, self.strength, self.fracture_energy
+
+
+@dataclass(frozen=True)
+class ExtrinsicCohesiveParameters:
+    """Strength in Pa and fracture energy per reference area in J/m²."""
+
+    strength: float
+    fracture_energy: float
+
+    def __post_init__(self):
+        if any(not math.isfinite(v) or v <= 0 for v in (self.strength, self.fracture_energy)):
+            raise ValueError('Strength and fracture energy must be finite and positive')
+
+    def proximal_parameters(self, compliance):
+        """Compliance is m/Pa; the incremental potential must be strictly convex."""
+        if not math.isfinite(compliance) or compliance <= 0:
+            raise ValueError('Proximal compliance must be finite and positive')
+        if compliance * self.strength >= 2 * self.fracture_energy / self.strength:
+            raise ValueError('Proximal stiffness must exceed the cohesive softening slope')
+        return self.strength, self.fracture_energy, compliance
+
+
+@wp.kernel
+def cohesive_proximal_response(
+    free_gap: wp.array(dtype=wp.vec3), normals: wp.array(dtype=wp.vec3),
+    previous: wp.array(dtype=float), parameters: wp.array(dtype=wp.vec3),
+    gap: wp.array(dtype=wp.vec3), traction: wp.array(dtype=wp.vec3),
+    maximum: wp.array(dtype=float), storage: wp.array(dtype=float),
+    fracture: wp.array(dtype=float),
+):
+    # Minimize |g-q|²/(2 compliance) + storage(g, previous) + fracture(g, previous),
+    # subject to g·n >= 0. parameters contains validated (strength, G_c, compliance).
+    # Normals are nonzero; previous >= 0. Energies are per reference area in J/m².
+    i = wp.tid()
+    strength, gc, compliance = parameters[i][0], parameters[i][1], parameters[i][2]
+    failure = 2.0 * gc / strength
+    n = wp.normalize(normals[i])
+    q = free_gap[i]
+    compression = wp.min(wp.dot(q, n), 0.0)
+    positive = q - compression * n
+    radius = wp.length(positive)
+    old = previous[i]
+    r = radius
+    if old < failure:
+        r = float(0.0)
+        if old > 0.0:
+            stiffness = strength * (1.0 - old / failure) / old
+            r = radius / (1.0 + compliance * stiffness)
+        if r > old or (old == 0.0 and radius > compliance * strength):
+            r = (radius - compliance * strength) / (1.0 - compliance * strength / failure)
+            if r >= failure:
+                r = radius
+    g = wp.vec3(0.0)
+    if radius > 0.0:
+        g = r / radius * positive
+    high = wp.max(old, r)
+    energy = float(0.0)
+    if high > 0.0 and high < failure:
+        energy = 0.5 * strength * (1.0 - high / failure) / high * r * r
+    t = q / compliance
+    if r > 0.0:
+        t = compression / compliance * n
+        if high < failure:
+            t += strength * (1.0 - high / failure) / high * g
+    gap[i] = g
+    traction[i] = t
+    maximum[i] = high
+    storage[i] = energy
+    fracture[i] = 0.5 * strength * wp.min(high, failure)
 
 
 @wp.kernel

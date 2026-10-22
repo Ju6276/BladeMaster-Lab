@@ -1015,3 +1015,11 @@ RTX 4090，干净提交，6 mm 香蕉 1452 粒子、2 ms 窗口，dt=15.625/7.81
 ```bash
 PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine --output runs/e5_109fe3f/banana_h6 --spacings .006 --materials banana --duration .002 --dt-divisors 4 8 16 --phases 0 .25 .5 --adjoint checkpoint --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7 --integration midpoint --friction-update midpoint --flip-reference-dt .000015625
 ```
+
+## 2026-10-22：E4 完整三刀后推块（`f60a5c4`）
+
+RTX 4090，干净提交，6 mm 香蕉 1452 粒子，2.18 s / 139520 子步，最终四块 **380/346/302/424** 粒子。第一刀横移与深度的两档自然差分共 4 项，最大误差 **0.148941%**；32/127 步 CPU 检查点重算状态差 **0**，刀路梯度差 **2.193e-15**。每刀标签 **968/971/954**；暂停段损伤变化 **0**，最终本刀释放 **1** 粒子，Fp−I 最大值 **0**。累计损伤功 **0.0064744463 J**，QΔD 残差 **1.735e-18 J**；峰值刀力 **3.14566 N**，峰值活动显存池 **3.344 GiB**。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate --output runs/e4_f60a5c4/three-cuts-push --cases three-cuts-push --spacings .006 --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
+```

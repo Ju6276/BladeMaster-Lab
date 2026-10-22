@@ -305,6 +305,39 @@ def timed_deformation(
 
 
 @wp.kernel
+def ordered_mass_momentum(
+    offsets: wp.array(dtype=int), particles: wp.array(dtype=int), corners: wp.array(dtype=int),
+    weights: wp.array2d(dtype=float), v: wp.array(dtype=wp.vec3), mass: float,
+    grid_mass: wp.array(dtype=float), momentum: wp.array(dtype=wp.vec3),
+):
+    slot = wp.tid()
+    total_mass = float(0.0)
+    total_momentum = wp.vec3(0.0)
+    for edge in range(offsets[slot], offsets[slot + 1]):
+        p, a = particles[edge], corners[edge]
+        weighted_mass = mass * weights[p, a]
+        total_mass += weighted_mass
+        total_momentum += weighted_mass * v[p]
+    grid_mass[slot] = total_mass
+    momentum[slot] = total_momentum
+
+
+@wp.kernel
+def gather_flow(
+    slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
+    mass: wp.array(dtype=float), momentum: wp.array(dtype=wp.vec3),
+    flow: wp.array(dtype=wp.vec3),
+):
+    p = wp.tid()
+    velocity = wp.vec3(0.0)
+    for a in range(8):
+        slot = slots[p, a]
+        if mass[slot] > 0.0:
+            velocity += weights[p, a] * momentum[slot] / mass[slot]
+    flow[p] = velocity
+
+
+@wp.kernel
 def ordered_remap(
     offsets: wp.array(dtype=int), particles: wp.array(dtype=int), corners: wp.array(dtype=int),
     weights: wp.array2d(dtype=float), v: wp.array(dtype=wp.vec3), mass: float,
@@ -423,6 +456,21 @@ class MaterialTrajectory(ElasticTrajectory):
                   inputs=[grid.offsets, grid.sources, grid.coefficients, source],
                   outputs=[result], device=self.device)
         return result
+
+    def flow_velocity(self, velocity, topology):
+        """Velocity conjugate to particle forces scattered through the coupled grid."""
+        grid = topology
+        mass = self.zeros(grid.count, float, False)
+        momentum = self.zeros(grid.count, wp.vec3)
+        self.launch(ordered_mass_momentum, grid.count,
+                    inputs=[grid.particle_offsets, grid.particles, grid.corners,
+                            self.weights, velocity, self.mass],
+                    outputs=[mass, momentum], device=self.device)
+        flow = self.zeros(self.n, wp.vec3)
+        self.launch(gather_flow, self.n,
+                    inputs=[grid.slots, self.weights, mass, self.couple(grid, momentum)],
+                    outputs=[flow], device=self.device)
+        return flow
 
     def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None,
              grid_transform=None, duration=None, stage_base=None, trace=None):

@@ -38,7 +38,7 @@ class EnergyLedger:
         self._trial = None
         contact.energy_ledger = self
 
-    def geometry(self, state, history, tool, cutting):
+    def geometry(self, state, history, tool, cutting, velocity=None):
         m, cfg = self.model, self.model.config
         radius = cfg.grid_spacing / 4
         gaps = m.zeros((2, m.n), float, False)
@@ -46,7 +46,8 @@ class EnergyLedger:
         relative = m.zeros((2, m.n), wp.vec3, False)
         departed = self.contact._no_edge_departure if history.edge_departed is None else history.edge_departed
         m.launch(rigid_geometry, m.n,
-                 inputs=[state.x, state.v, history.damage, departed, tool.position, tool.velocity,
+                 inputs=[state.x, state.v if velocity is None else velocity,
+                         history.damage, departed, tool.position, tool.velocity,
                          tool.rotation, tool.omega, cfg.blade_half_size, cfg.blade_bevel_height,
                          radius, max(cfg.blade_contact_radius or radius, radius - cfg.blade_half_size[0]),
                          cfg.board_half_extent, int(cutting and cfg.cut_hold)],
@@ -99,11 +100,11 @@ class EnergyLedger:
         self._event(self.snapshot(state, history, tool, cutting), 'cut_side')
 
     def capture(self, stage, base_history, tool, branch, duration, impulse, result, raw_history,
-                constraint, trace, *, midpoint):
+                constraint, trace, *, midpoint, contact_velocity):
         self._trial = dict(stage=stage, base_history=base_history, stage_tool=tool, branch=branch,
                            dt=float(duration.numpy()[0]), impulse=impulse, result=result,
                            raw_history=raw_history, constraint=constraint, trace=trace,
-                           midpoint=midpoint)
+                           midpoint=midpoint, contact_velocity=contact_velocity)
 
     def finish_trial(self, start, history, tool, result, updated, cutting):
         if self._trial is None or self._trial['result'] is not result:
@@ -144,7 +145,7 @@ class EnergyLedger:
         stage = r['stage']
         raw, base, branch = r['raw_history'], r['base_history'], r['branch']
         kn, board_kn, kt, damping = self.constants()
-        gaps, normals, relative = self.geometry(stage, base, r['stage_tool'], r['cutting'])
+        gaps, normals, relative = self.geometry(stage, base, r['stage_tool'], r['cutting'], r['contact_velocity'])
         theta = .5 if self.contact.friction_update == 'midpoint' else 1.
         groups = [self._friction_terms(gaps[i], normals[i], relative[i], base.rigid.numpy()[i],
                                       raw.rigid.numpy()[i], stiffness, kt, damping, dt, theta, r['midpoint'])
@@ -153,7 +154,7 @@ class EnergyLedger:
         tangent_impulse = groups[0][2] + groups[1][2]
         pairs = branch.pairs.numpy()
         if len(pairs):
-            x, v = stage.x.numpy(), stage.v.numpy()
+            x, v = stage.x.numpy(), r['contact_velocity'].numpy()
             delta = x[pairs[:, 0]] - x[pairs[:, 1]]
             length = np.linalg.norm(delta, axis=-1)
             normal = delta / length[:, None]
@@ -176,6 +177,7 @@ class EnergyLedger:
         flow = np.sum(weights * trace['old_v'].numpy()[slots], axis=1)
         constraint_dv = np.sum(weights * (trace['new_v'].numpy() - trace['unconstrained_v'].numpy())[slots], axis=1)
         stage_v = stage.v.numpy()
+        contact_v = r['contact_velocity'].numpy()
         gravity = np.array([0., 0., -9.81])
         particle_impulse = r['impulse'].numpy() - dt * m.mass * gravity
         plastic = m.volume * np.sum(elastic_density(result.F.numpy(), r['start'].Fp.numpy(),
@@ -188,11 +190,11 @@ class EnergyLedger:
             grid_work = float(np.sum(constraint.linear_impulse.numpy() * r['stage_tool'].velocity.numpy())
                               + np.sum(constraint.angular_impulse.numpy() * r['stage_tool'].omega.numpy()))
         knife_work = float(raw.tool_work.numpy()[0])
-        actual_relative_work = float(np.sum(particle_impulse * stage_v)) - (knife_work - grid_work)
+        actual_relative_work = float(np.sum(particle_impulse * contact_v)) - (knife_work - grid_work)
         raw_relative_work = contact['normal_relative_work_j'] - contact['input_work_j']
-        normal_transfer = float(np.sum(normal_impulse * (flow - stage_v)))
-        friction_transfer = float(np.sum(tangent_impulse * (flow - stage_v)))
-        release_transfer = float(np.sum((particle_impulse - normal_impulse - tangent_impulse) * (flow - stage_v)))
+        normal_transfer = float(np.sum(normal_impulse * (flow - contact_v)))
+        friction_transfer = float(np.sum(tangent_impulse * (flow - contact_v)))
+        release_transfer = float(np.sum((particle_impulse - normal_impulse - tangent_impulse) * (flow - contact_v)))
         row = dict(
             duration_s=dt,
             kinetic_change_j=end['kinetic_j'] - start['kinetic_j'],

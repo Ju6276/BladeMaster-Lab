@@ -344,6 +344,9 @@ class FixedCutContact(PrescribedContact):
         base_history = history if stage_history is None else stage_history
         damage = base_history.damage
         stage = int(stage_base is not None)
+        contact_velocity = state.v
+        if stage:
+            contact_velocity = m.flow_velocity(state.v, frozen.topology)
         edge_departed = self._no_edge_departure if edge_departed is None else edge_departed
         sn, gk = cfg.contact_scales()
         radius = cfg.grid_spacing / 4
@@ -360,7 +363,7 @@ class FixedCutContact(PrescribedContact):
         updated.trial_damage = m.zeros(m.n, float)
         updated.damage_work = m.zeros(m.n, float)
         m.launch(rigid_step, m.n,
-                  inputs=[state.x, state.v, base_history.rigid, damage, frozen.released, edge_departed,
+                  inputs=[state.x, contact_velocity, base_history.rigid, damage, frozen.released, edge_departed,
                           frozen.rigid_modes,
                           tool.position, tool.velocity, tool.rotation, tool.omega, self.friction,
                           cfg.blade_half_size, cfg.blade_bevel_height, radius, blade_offset,
@@ -374,7 +377,7 @@ class FixedCutContact(PrescribedContact):
                            updated.tool_work, updated.rigid_modes], device=m.device)
         if frozen.pairs.shape[0]:
             m.launch(pair_step, frozen.pairs.shape[0],
-                      inputs=[state.x, state.v, frozen.pairs, frozen.previous, frozen.pair_modes,
+                      inputs=[state.x, contact_velocity, frozen.pairs, frozen.previous, frozen.pair_modes,
                               base_history.pairs, self.friction,
                               2 * radius, m.mass, duration, cfg.dt, sn, gk, cfg.tangent_damping,
                               int(self.friction_update == 'midpoint'), stage],
@@ -410,7 +413,7 @@ class FixedCutContact(PrescribedContact):
         if self.energy_ledger is not None:
             self.energy_ledger.capture(state, base_history, tool, frozen, duration,
                                        impulse, result, replace(updated), constraint_result, trace,
-                                       midpoint=bool(stage))
+                                       midpoint=bool(stage), contact_velocity=contact_velocity)
         return result, updated, reaction
 
     def checkpoint_vjp(self, initial, history, frozen, segment_steps, tool_at_step, objective,

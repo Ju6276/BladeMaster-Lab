@@ -922,3 +922,13 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate \
   --output runs/e4_8d35d5c/two-cuts --cases two-cuts --spacings .006 \
   --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
 ```
+
+### 2026-10-22：M5 验收判定与多刀事件导出
+
+`f60a5c4`，RTX 4090：新增 **26** 项检查，覆盖差分中的 NaN/Inf、缺失或重复扰动尺度、超差退出、检查点保存/重算状态中的 NaN、同粒子多刀事件导出及自定义路径的完整初态。定向 **40 passed**；全量 **900 passed、8 skipped、18 subtests passed**，229.27 s。8 项跳过为 CRESSim 上游构建。
+
+已有 `8d35d5c` 暂停续切、平行两刀的报告用新判定复核通过，末态 x/v/F/Fp/应力/损伤及全部刀力样本均为有限数。多刀事件存入 `event_times_by_cut`，物理推进与梯度公式保持相同。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests -q --tb=short
+```

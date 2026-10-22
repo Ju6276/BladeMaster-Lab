@@ -816,7 +816,7 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine \
 
 `fb379d4`，RTX 4090、dirty=false：**6 mm、1452 粒子、G_c=700、1.05 s / 67200 步**，从未切割初态完成下刀、退刀、推块和再次退刀。末端按参考网格与侧码的机械连通性得到 **726/726** 两块；侧码新增 **1096**，损伤释放 **0**，峰值候选粒子接触对 **25**，峰值刀力 **12.3579 N**，`max|Fp−I|=0.137919`。
 
-刀位/行程/横推梯度为 **−0.00869876627 / −1.88067358 / 0.532864613**；`1e-7` 自然差分误差为 **0.001071% / 0.0006306% / 0.01955%**。行程负向扰动改变一个粒子的分侧步号。**16/32/128** 步检查点的控制量/初始位置梯度最大差为 **5.49e-14 / 2.29e-12**，全部连续状态重算差 **0**；损伤功平衡误差 **2.17e-19 J**，进程 CUDA 数组内存池峰值 **5.485 GiB**。
+刀位/行程/横推梯度为 **−0.00869876627 / −1.88067358 / 0.532864613**；`1e-7` 自然差分误差为 **0.001071% / 0.0006306% / 0.01955%**，`1e-8` 为 **0.04597% / 0.0004850% / 0.001143%**。行程负向扰动改变一个粒子的分侧步号。**16/32/128** 步检查点的控制量/初始位置梯度最大差为 **5.49e-14 / 2.29e-12**，全部连续状态重算差 **0**；损伤功平衡误差 **2.17e-19 J**，进程 CUDA 数组内存池峰值 **5.485 GiB**。
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
@@ -824,4 +824,5 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate \
   --trajectory cut-withdraw-push --duration 1.05 --spacings .006 \
   --adjoint checkpoint --segment-steps 16 32 128 --epsilons 1e-7 \
   --parameters knife_x_mm knife_depth_scale knife_lateral_scale
+PYTHONPATH=. .venv/bin/python runs/e23_fb379d4/full_path_extra_fd.py
 ```

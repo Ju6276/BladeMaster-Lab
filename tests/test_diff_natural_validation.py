@@ -76,6 +76,9 @@ def test_multicut_report_accumulates_damage_work_across_resets(explicit_window, 
     assert result['trajectory'] == path.name
     assert [entry['cut_index'] for entry in result['milestones']] == [0, 0, 1]
     assert result['damage_work_j'] > 0
+    velocities = np.repeat(np.diff(positions, axis=0) / np.diff(times)[:, None], 2, axis=0)
+    expected_work = -cfg.dt * np.sum(arrays['force'] * velocities)
+    np.testing.assert_allclose(result['knife_work_j'], expected_work, rtol=1e-12, atol=1e-16)
     assert result['damage_work_balance_error_j'] < 1e-14
     assert result['pause_damage_max_abs'] == 0
     assert result['checkpoint'][1]['controls_max_abs'] < 1e-10

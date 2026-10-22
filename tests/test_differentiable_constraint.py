@@ -50,6 +50,7 @@ def test_grid_constraint_forward(spacing):
     assert result.residual <= 1e-6
     np.testing.assert_allclose(result.velocity.numpy(), original.new_v.numpy()[slots], atol=2e-7)
     np.testing.assert_allclose(result.linear_impulse.numpy(), -original.reaction.numpy(), atol=2e-10)
+    np.testing.assert_allclose(result.angular_impulse.numpy(), -original.torque.numpy(), atol=2e-12)
     np.testing.assert_array_equal(result.side.numpy(), original.blade_constraint.side.numpy())
 
 

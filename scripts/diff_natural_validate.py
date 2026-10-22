@@ -176,6 +176,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
         codes, pairs, released, rigid_modes = [], [], [], []
         geometry_events = []
         forces, damage_work, damage_increment = [], 0., 0.
+        tool_work = 0.
         milestones = []
         previous_damage = h.damage.numpy()
         old_cut_codes = h.codes.numpy() % (3 ** h.cut_index)
@@ -196,6 +197,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
             geometry_events.append({p: float(t.numpy()[0]) for p, t in h.geometry_events})
             forces.append(force.numpy()[0])
             damage_work += float(np.sum(h.damage_work.numpy()))
+            tool_work += float(h.tool_work.numpy()[0])
             damage_increment += float(np.sum(current_damage) - (
                 np.sum(previous_damage) if h.cut_index == previous_index else 0.))
             if path is not None:
@@ -235,6 +237,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
         return loss, state, h, dict(codes=np.asarray(codes), pairs=pairs, released=np.asarray(released),
                                    rigid_modes=np.asarray(rigid_modes), geometry=geometry_events,
                                    force=np.asarray(forces), damage_work=damage_work,
+                                   tool_work=tool_work,
                                    damage_increment=damage_increment, milestones=milestones,
                                    pause_damage_max_abs=pause_damage_error), error, discrete
 
@@ -346,10 +349,10 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                 print(json.dumps(dict(stage='finite_difference', parameter=parameter, epsilon=epsilon,
                                        relative_error=finite_difference[-1]['relative_error'])), flush=True)
         source.assign(base)
-    if (not np.isfinite([float(loss.numpy()[0]), *gradient]).all()
+    if (not np.isfinite([float(loss.numpy()[0]), events['tool_work'], *gradient]).all()
             or not np.isfinite(gradient_x).all()
             or any(not np.isfinite(g).all() for g in parameter_gradients.values())):
-        raise FloatingPointError('Nonfinite objective or gradient')
+        raise FloatingPointError('Nonfinite objective, tool work or gradient')
     new_labels = np.count_nonzero(events['codes'][-1] != history.codes.numpy())
     if not new_labels:
         raise RuntimeError('Selected window contains no new side assignments')
@@ -368,6 +371,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                 gradient_materials={name: value.tolist() for name, value in parameter_gradients.items()},
                 damage_work_j=events['damage_work'], damage_work_balance_error_j=abs(events['damage_work']-work_from_damage),
                 material_energy_initial=initial_energy, material_energy_final=final_energy,
+                knife_work_j=events['tool_work'],
                 knife_impulse_ns=np.sum(durations[:, None] * events['force'], axis=0).tolist(),
                 vs_original_max_abs=forward_error if compare else None,
                 vs_original_discrete=discrete_error if compare else None,

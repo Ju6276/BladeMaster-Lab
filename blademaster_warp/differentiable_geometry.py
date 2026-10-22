@@ -264,12 +264,15 @@ def assign_event(x: wp.array(dtype=wp.vec3), position: wp.array(dtype=wp.vec3),
 
 @wp.kernel
 def accumulate_segment(force: wp.array(dtype=wp.vec3), work: wp.array(dtype=float),
+                       tool_work: wp.array(dtype=float),
                        duration: wp.array(dtype=float), total_dt: wp.array(dtype=float),
-                       average_force: wp.array(dtype=wp.vec3), total_work: wp.array(dtype=float)):
+                       average_force: wp.array(dtype=wp.vec3), total_work: wp.array(dtype=float),
+                       total_tool_work: wp.array(dtype=float)):
     p = wp.tid()
     wp.atomic_add(total_work, p, work[p])
     if p == 0:
         wp.atomic_add(average_force, 0, duration[0] / total_dt[0] * force[0])
+        wp.atomic_add(total_tool_work, 0, tool_work[0])
 
 
 class GeometryEventContact(NaturalCutContact):
@@ -444,6 +447,7 @@ class GeometryEventContact(NaturalCutContact):
                else m.array([instruction.duration], float, False))
         end_tool = self.pose(tool, end)
         reaction, work = m.zeros(1, wp.vec3), m.zeros(m.n, float)
+        tool_work = m.zeros(1, float)
         events = []
         for _ in range(m.n + 1):
             start_tool = self.pose(tool, elapsed)
@@ -457,9 +461,10 @@ class GeometryEventContact(NaturalCutContact):
             particle, fraction, kind, plane, lower, upper = selected
             if fraction > 1:
                 m.launch(accumulate_segment, m.n,
-                         inputs=[trial_force, trial_h.damage_work, remaining, end],
-                         outputs=[reaction, work], device=m.device)
+                         inputs=[trial_force, trial_h.damage_work, trial_h.tool_work, remaining, end],
+                         outputs=[reaction, work, tool_work], device=m.device)
                 trial_h.damage_work = work
+                trial_h.tool_work = tool_work
                 trial_h.geometry_events = tuple(events)
                 return trial, trial_h, reaction
             if fraction > 0:
@@ -479,8 +484,8 @@ class GeometryEventContact(NaturalCutContact):
                     raise RuntimeError('Geometric event ordering did not converge')
                 duration = self.interval(time, elapsed)
                 m.launch(accumulate_segment, m.n,
-                         inputs=[force, h.damage_work, duration, end],
-                         outputs=[reaction, work], device=m.device)
+                         inputs=[force, h.damage_work, h.tool_work, duration, end],
+                         outputs=[reaction, work, tool_work], device=m.device)
                 state, history, elapsed = before, h, time
                 start_tool = event_tool
             codes = wp.clone(history.codes, requires_grad=False)
@@ -500,6 +505,7 @@ class GeometryEventContact(NaturalCutContact):
             events.append((particle, elapsed))
             if float(elapsed.numpy()[0]) >= float(end.numpy()[0]):
                 history.damage_work = work
+                history.tool_work = tool_work
                 history.geometry_events = tuple(events)
                 return state, history, reaction
         raise RuntimeError('More side-assignment events than unlabelled particles')

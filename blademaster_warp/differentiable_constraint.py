@@ -59,8 +59,13 @@ def apply_grid(mass: wp.array(dtype=float), coupled: wp.array(dtype=wp.vec3),
 
 @wp.kernel
 def add_reaction(contact: wp.array(dtype=wp.vec3), constraint_impulse: wp.array(dtype=wp.vec3),
-                 duration: wp.array(dtype=float), force: wp.array(dtype=wp.vec3)):
+                 angular_impulse: wp.array(dtype=wp.vec3), velocity: wp.array(dtype=wp.vec3),
+                 omega: wp.array(dtype=wp.vec3), contact_work: wp.array(dtype=float),
+                 duration: wp.array(dtype=float), force: wp.array(dtype=wp.vec3),
+                 work: wp.array(dtype=float)):
     force[0] = contact[0] - constraint_impulse[0] / duration[0]
+    work[0] = (contact_work[0] + wp.dot(constraint_impulse[0], velocity[0])
+               + wp.dot(angular_impulse[0], omega[0]))
 
 
 @dataclass
@@ -68,6 +73,7 @@ class GridConstraintResult:
     velocity: wp.array
     side: wp.array
     linear_impulse: wp.array
+    angular_impulse: wp.array
     batches: int
     residual: float
 
@@ -101,7 +107,7 @@ def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=Non
               device=model.device)
     count = int(needs_solve.numpy()[0]) if fixed_batches is None else fixed_batches
     if count == 0:
-        return GridConstraintResult(velocity, side, model.zeros(1, wp.vec3), 0, 0.0)
+        return GridConstraintResult(velocity, side, model.zeros(1, wp.vec3), model.zeros(1, wp.vec3), 0, 0.0)
     coupled_count = model.couple(grid, active_weights)
     bound = model.zeros(model.n, float, False)
     model.launch(constraint.row_bound, model.n,
@@ -113,13 +119,13 @@ def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=Non
         model.launch(constraint.scatter, model.n,
                   inputs=[grid.slots, model.weights, normal, lever, values],
                   outputs=[output, linear, angular], device=model.device)
-        return model.couple(grid, output), linear
+        return model.couple(grid, output), linear, angular
 
     batches, residual_value = 0, 0.0
     while True:
         extrapolated = impulse
         for iteration in range(48):
-            coupled, _ = scatter(extrapolated)
+            coupled, _, _ = scatter(extrapolated)
             next_impulse = model.zeros(model.n, float)
             next_extrapolated = model.zeros(model.n, float)
             model.launch(project, model.n,
@@ -127,7 +133,7 @@ def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=Non
                               impulse, extrapolated, float(iteration / (iteration + 3))],
                       outputs=[next_impulse, next_extrapolated], device=model.device)
             impulse, extrapolated = next_impulse, next_extrapolated
-        coupled, linear = scatter(impulse)
+        coupled, linear, angular = scatter(impulse)
         residual = model.zeros(1, float, False)
         model.launch(constraint.record_residual, model.n,
                   inputs=[grid.slots, model.weights, mass, coupled, normal, rhs],
@@ -141,4 +147,4 @@ def solve(model, grid, mass, velocity, x, tool, old_side=None, fixed_batches=Non
             break
     result = model.zeros(grid.count, wp.vec3)
     model.launch(apply_grid, grid.count, inputs=[mass, coupled, velocity], outputs=[result], device=model.device)
-    return GridConstraintResult(result, side, linear, batches, residual_value)
+    return GridConstraintResult(result, side, linear, angular, batches, residual_value)

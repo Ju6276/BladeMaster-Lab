@@ -109,6 +109,7 @@ def rigid_step(
     damage_work: wp.array(dtype=float),
     impulse: wp.array(dtype=wp.vec3),
     reaction: wp.array(dtype=wp.vec3),
+    tool_work: wp.array(dtype=float),
     modes: wp.array2d(dtype=int),
 ):
     p = wp.tid()
@@ -204,6 +205,7 @@ def rigid_step(
     damage_work[p] = work
     impulse[p] = wp.vec3(0.0, 0.0, -9.81 * mass * dt) + board + blade
     wp.atomic_add(reaction, 0, -blade / dt)
+    wp.atomic_add(tool_work, 0, wp.dot(blade, velocity[0] + wp.cross(omega[0], lever)))
 
 
 @wp.kernel
@@ -274,6 +276,7 @@ class CutHistory:
     geometry_events: tuple = ()
     edge_departed: wp.array | None = None
     path_midpoint: wp.array | None = None
+    tool_work: wp.array | None = None
 
 
 @dataclass
@@ -357,6 +360,7 @@ class FixedCutContact(PrescribedContact):
         pairs = m.zeros(m.n, wp.vec3)
         impulse = m.zeros(m.n, wp.vec3)
         reaction = m.zeros(1, wp.vec3)
+        updated.tool_work = m.zeros(1, float)
         updated.trial_damage = m.zeros(m.n, float)
         updated.damage_work = m.zeros(m.n, float)
         m.launch(rigid_step, m.n,
@@ -371,7 +375,7 @@ class FixedCutContact(PrescribedContact):
                           stage,
                           int(frozen.cutting), int(cfg.cut_hold), int(cfg.cut_work == "advance")],
                   outputs=[updated.rigid, updated.damage, updated.trial_damage, updated.damage_work, rigid, reaction,
-                           updated.rigid_modes], device=m.device)
+                           updated.tool_work, updated.rigid_modes], device=m.device)
         if frozen.pairs.shape[0]:
             m.launch(pair_step, frozen.pairs.shape[0],
                       inputs=[state.x, state.v, frozen.pairs, frozen.previous, frozen.pair_modes,
@@ -399,10 +403,13 @@ class FixedCutContact(PrescribedContact):
             updated.grid_batches = constraint_result.batches
             updated.grid_residual = constraint_result.residual
             combined = m.zeros(1, wp.vec3)
+            combined_work = m.zeros(1, float)
             m.launch(grid_constraint.add_reaction, 1,
-                      inputs=[reaction, constraint_result.linear_impulse, duration],
-                      outputs=[combined], device=m.device)
+                      inputs=[reaction, constraint_result.linear_impulse, constraint_result.angular_impulse,
+                              tool.velocity, tool.omega, updated.tool_work, duration],
+                      outputs=[combined, combined_work], device=m.device)
             reaction = combined
+            updated.tool_work = combined_work
         return result, updated, reaction
 
     def checkpoint_vjp(self, initial, history, frozen, segment_steps, tool_at_step, objective,

@@ -955,3 +955,18 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate \
 PYTHONPATH=. .venv/bin/python -m pytest tests/test_energy.py -q --tb=short
 PYTHONPATH=. .venv/bin/python -m pytest tests -q --tb=short
 ```
+
+### 2026-10-22：M5 E5 刀具输入功与返回映射核对
+
+`76f9a23`，RTX 4090：刀具输入功新增 **18** 项检查通过，覆盖静止/平移/旋转刀、网格约束冲量矩、事件分段累计、完整 Tape/CPU 检查点及两档自然差分。自然报告增加 `knife_work_j`；全量 **943 passed、8 skipped、18 subtests passed**，**322.54 s**。
+
+塑性耗散核对失败：固定 F、初始 Fp=I，E=20 kPa、ν=0.35、屈服=200 Pa；F 的主伸长 **[0.55,0.4,0.3] / [0.2,0.1,0.05]**，J=**0.066 / 0.001**，当前投影令共旋储能分别增加 **94.0385 / 574.0021 J/m³**。同参数 **[1.1,0.95,0.95]** 的储能下降 **110.0832 J/m³**。
+
+独立 NumPy/SciPy 对照按等容对数塑性增量最小化“共旋储能＋塑性耗散距离”，上述两组强压缩的储能下降 **1399.9545 / 10030.5700 J/m³**，塑性体积误差 ≤**5e-16**，驻点残差 ≤**1.15e-8 Pa**。方法依据为 [Miehe 等的增量能量最小化](https://doi.org/10.1016/S0045-7825(02)00438-3)；下一项为 Warp 返回映射及屈服/重复主伸长/耗散/导数核对，再复测受影响的切割轨迹。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_tool_work.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
+PYTHONPATH=. .venv/bin/python runs/e5_plastic_probe.py
+PYTHONPATH=. .venv/bin/python runs/e5_variational_probe.py
+```

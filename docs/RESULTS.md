@@ -1124,3 +1124,18 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_cohesive_proximal.py -q
 ```
 
 `769dd89`、dirty=true（新增局部近端核及 14 项测试），RTX 4090：`PYTHONPATH=. .venv/bin/python -m pytest tests -q`，**1059 passed、8 skipped、18 subtests passed**（274.88 s）。
+
+## 2026-10-22：E5 移动面压力与闭合约束
+
+`6361c84`、dirty=true（新增移动面压力核及 4 项测试），RTX 4090。`cohesive_contact_response` 的压力牵引和面应力通过独立增量势虚功、64 组旋转、全部输入自然差分与秩 2 面映射检查。全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1063 passed、8 skipped、18 subtests passed**（300.46 s）。
+
+64 粒子、16 点界面、G_c=70、0.2 ms，初始切向开口为 **0.2/0.1 mm**，法向初速度满足闭合约束，两侧加速度为 **±2000 m/s²**，叠加角速度 **(30,−20,200) rad/s**。dt=2/1/0.5 μs 的相对能量残差为 **−0.006207/−0.003104/−0.001552**；去掉面转动共轭力时为 **−0.009538/−0.006444/−0.004896**。160 步整体坐标旋转的归一化状态差 ≤**9.736e-15**。闭合前 24 步轨迹的八类输入在 ε=1e-4/1e-5 下梯度误差 ≤**4.997e-6**；弱 E 导数在 ε=1e-7 下误差为 **1.704e-4**，四档差分均保留。
+
+移动面 160 步自然差分失败：初速度扰动轨迹第 **46** 步开始闭合，ADMM 512/8192 次迭代的平衡相对残差为 **2.532e-8/2.406e-8**。同一输入、同一增量势的 SciPy SLSQP 与 NumPy 驻点细化得到 **9/16** 个承压点，其余点正常开口 **5.424e-12 至 1.434e-10 m**，动量—开口残差 **3.026e-19**。下一项将主动集求解和对应导数接入原型，重跑该扰动及完整梯度。
+
+```bash
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_surface.py
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_surface_validate.py --steps 24 --output runs/e5_release_audit/extrinsic_surface_short.json
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_surface_validate.py --steps 160
+PYTHONPATH=. .venv/bin/python runs/e5_release_audit/surface_failed_primal.py
+```

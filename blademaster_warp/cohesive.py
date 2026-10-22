@@ -45,6 +45,48 @@ class ExtrinsicCohesiveParameters:
         return self.strength, self.fracture_energy, compliance
 
 
+@wp.func
+def surface_area_vector(deformation: wp.mat33, reference_normal: wp.vec3):
+    columns = wp.transpose(deformation)
+    return (reference_normal[0] * wp.cross(columns[1], columns[2])
+            + reference_normal[1] * wp.cross(columns[2], columns[0])
+            + reference_normal[2] * wp.cross(columns[0], columns[1]))
+
+
+@wp.func
+def surface_normal(deformation: wp.mat33, reference_normal: wp.vec3):
+    # The mapped reference tangents must span a nonzero area.
+    return wp.normalize(surface_area_vector(deformation, reference_normal))
+
+
+@wp.func
+def surface_normal_pullback(deformation: wp.mat33, reference_normal: wp.vec3, adj_normal: wp.vec3):
+    columns = wp.transpose(deformation)
+    f0, f1, f2 = columns[0], columns[1], columns[2]
+    a = surface_area_vector(deformation, reference_normal)
+    n = wp.normalize(a)
+    adj_a = (adj_normal - wp.dot(adj_normal, n) * n) / wp.length(a)
+    p0 = reference_normal[1] * wp.cross(adj_a, f2) + reference_normal[2] * wp.cross(f1, adj_a)
+    p1 = reference_normal[0] * wp.cross(f2, adj_a) + reference_normal[2] * wp.cross(adj_a, f0)
+    p2 = reference_normal[0] * wp.cross(adj_a, f1) + reference_normal[1] * wp.cross(f0, adj_a)
+    return wp.matrix_from_cols(p0, p1, p2)
+
+
+@wp.kernel
+def cohesive_contact_response(
+    gap: wp.array(dtype=wp.vec3), deformation: wp.array(dtype=wp.mat33),
+    reference_normal: wp.array(dtype=wp.vec3), multiplier: wp.array(dtype=float),
+    traction: wp.array(dtype=wp.vec3), surface_stress: wp.array(dtype=wp.mat33),
+):
+    # multiplier <= 0 is the pressure multiplier (Pa) for g·n >= 0.
+    # Both forces are derivatives of multiplier * g·n at fixed multiplier;
+    # surface_stress (N/m) is conjugate to the mean-face deformation.
+    i = wp.tid()
+    traction[i] = multiplier[i] * surface_normal(deformation[i], reference_normal[i])
+    surface_stress[i] = surface_normal_pullback(
+        deformation[i], reference_normal[i], multiplier[i] * gap[i])
+
+
 @wp.kernel
 def cohesive_proximal_response(
     free_gap: wp.array(dtype=wp.vec3), normals: wp.array(dtype=wp.vec3),
@@ -107,13 +149,8 @@ def cohesive_response(
     # traction is Pa; surface_stress is N/m; both energy outputs are J/m².
     # parameters contains a validated (stiffness, strength, fracture energy).
     i = wp.tid()
-    columns = wp.transpose(deformation[i])
-    f0, f1, f2 = columns[0], columns[1], columns[2]
     reference_normal = normal[i]
-    a = (reference_normal[0] * wp.cross(f1, f2)
-         + reference_normal[1] * wp.cross(f2, f0)
-         + reference_normal[2] * wp.cross(f0, f1))
-    n = wp.normalize(a)
+    n = surface_normal(deformation[i], reference_normal)
     g = gap[i]
     compression = wp.min(wp.dot(g, n), 0.0)
     active = g - compression * n
@@ -126,12 +163,7 @@ def cohesive_response(
     elif high > onset:
         d = failure * (high - onset) / (high * (failure - onset))
     traction[i] = k * ((1.0 - d) * g + d * compression * n)
-    adj_normal = k * d * compression * g
-    adj_a = (adj_normal - wp.dot(adj_normal, n) * n) / wp.length(a)
-    p0 = reference_normal[1] * wp.cross(adj_a, f2) + reference_normal[2] * wp.cross(f1, adj_a)
-    p1 = reference_normal[0] * wp.cross(f2, adj_a) + reference_normal[2] * wp.cross(adj_a, f0)
-    p2 = reference_normal[0] * wp.cross(adj_a, f1) + reference_normal[1] * wp.cross(f0, adj_a)
-    surface_stress[i] = wp.matrix_from_cols(p0, p1, p2)
+    surface_stress[i] = surface_normal_pullback(deformation[i], reference_normal, k * d * compression * g)
     maximum[i] = high
     damage[i] = d
     energy[i] = 0.5 * k * ((1.0 - d) * wp.length_sq(active) + compression * compression)

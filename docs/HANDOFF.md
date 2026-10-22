@@ -184,6 +184,8 @@ M5 E3 已通过：6/4 mm 从未切割初态运行 50 ms 释放、0.24 s 下刀�
 
 4 mm、G_c=70 完整轨迹得到 **2446/2446** 两块，**5** 个粒子损伤释放；三项刀路与 G_c 各两档自然差分最大误差 **0.6647%**，CPU/32 步检查点峰值数组显存 **5.431 GiB**。4 mm、G_c=7 的释放短轨迹最细两档刀路/G_c 梯度差 ≤**0.468%/1.426%**。下一项是 E4 多刀与永久历史；整体能量、网格/场景泛化和切割优化分别为 E5–E7。
 
+E4 提交 `8d35d5c`：新增 11 项测试，全量 **874 passed、8 skipped、18 subtests passed**。4090 工作树 `~/Projects/BladeMaster-Warp-e4-20261022` 保持该干净提交；`runs/e4_8d35d5c/status.json` 记录完整轨迹队列，四类任务的日志分别为 `resume.log`、`two-cuts.log`、`crossing.log`、`three-cuts-push.log`，报告保存在同名子目录。队列遇到执行错误或差分超出 2% 时停止；查对应日志定位，修复并复测后继续剩余任务。
+
 同一 `cut_index` 内损伤 D 累积；新刀重置本刀 D，旧侧码与塑性 Fp 保留。M4 使用记录的离散分支；M5 的自然流程在每条扰动轨迹上重新生成侧码、接触对和损伤释放。`scripts.diff_natural_validate --from-initial` 从未切割初态展开，默认窗口模式从原求解器选定的共同状态起步。
 
 完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。

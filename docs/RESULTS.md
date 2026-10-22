@@ -944,3 +944,14 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate \
   --output runs/e4_8d35d5c/crossing --cases crossing --spacings .006 \
   --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
 ```
+
+### 2026-10-22：M5 E5 材料能量与解析检查
+
+`53e417b`，RTX 4090：新增 **25** 项能量检查通过。独立 NumPy 计算动能、重力势能和共旋弹性储能；4 组含塑性状态的形变，各用两档扰动核对储能方向导数与求解器应力虚功。自然切割报告记录起终点材料能量。
+
+自由落体 **2 ms**、步长 **0.2/0.1/0.05 ms**：中点积分的总能量偏差均 ≤**1e-16 J**；半隐式积分的偏差符合 \(-\frac12 M|g|^2T\Delta t\)。全量 **925 passed、8 skipped、18 subtests passed**，310.43 s；8 项跳过为 CRESSim 上游构建。下一项为接触储能、刀具输入功、塑性与摩擦及传递耗散的分项收支。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_energy.py -q --tb=short
+PYTHONPATH=. .venv/bin/python -m pytest tests -q --tb=short
+```

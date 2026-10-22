@@ -190,6 +190,8 @@ E4 完整暂停续切、平行两刀和交叉两刀通过，报告在 `~/Project
 
 `f60a5c4` 全量 **900 passed、8 skipped、18 subtests passed**。验收拒绝非有限差分和检查点状态，多刀事件按切割编号导出；物理推进和梯度公式与 `8d35d5c` 相同。
 
+E5 开发工作树为 `~/Projects/BladeMaster-Warp-e5-20261022`，材料能量基础为 `53e417b`：新增 **25** 项解析及虚功检查，全量 **925 passed、8 skipped、18 subtests passed**。自然报告增加起终点动能、重力势能和弹性储能。继续接入接触储能、刀具输入功及分项耗散；E4 仍在固定版本工作树运行。发现数值问题时在 E5 工作树修复并核对小例，公式变化后按影响范围重跑 E4。
+
 同一 `cut_index` 内损伤 D 累积；新刀重置本刀 D，旧侧码与塑性 Fp 保留。M4 使用记录的离散分支；M5 的自然流程在每条扰动轨迹上重新生成侧码、接触对和损伤释放。`scripts.diff_natural_validate --from-initial` 从未切割初态展开，默认窗口模式从原求解器选定的共同状态起步。
 
 完整轨迹入口 `scripts.diff_cut_trajectory`；窗口入口 `scripts.diff_cut_validate`，命令见 DIFFERENTIABLE。固定接触/屈服标记时差分评估同一分支公式，`--natural-branches` 重算局部分支。M4 固定释放事件时反力对 G_c 的梯度为零；M5 释放窗口由累计损伤更新事件，G_c 梯度进入后续状态。外部指定刀路时，几何分侧与损伤释放是两个独立触发条件。

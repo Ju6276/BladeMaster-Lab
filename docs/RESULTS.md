@@ -1231,3 +1231,13 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 干净 `ca90da9`，RTX 4090，4 mm、4892 粒子、50 ms、G_c=7；dt=13.157895/6.578947/3.289474 μs，固定 PIC 参考时间 13.157895 μs、接触参考时间 25 μs。三档各释放 **5** 粒子，共 **12** 组刀路自然差分通过，最大相对误差 **0.00043623%**；32 步 CPU 检查点状态重算差 **0**。侧码、释放、接触及事件集合相同；最细两档位置差 **7.721e-10 m**、事件时刻差 **3.766e-9 s**，E/G_c 梯度变化 **0.037864%/0.021458%**。深度梯度的两次相邻变化为 **0.24505%/0.27433%**；继续核对更细步长及事件相位。
 
 命令：`PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py release_h4_refine`。报告：`runs/e3_ca90da9/release_h4_refine/report.json`；队列已进入 `cut_h6`。
+
+## 2026-10-23：统一界面闭合处的反力秩与轨迹差分
+
+干净 `541c913`，RTX 4090，64 粒子、16 界面积分点、dt=2 μs。第 47–48 步的实际 Warp 残差 Jacobian 为 240×240、秩 **239**，右零空间的粒子位移分量最大 **1.223e-15/6.087e-15**；包含全部闭合点的法向约束秩 **14/16**。最小范数反力满足原动量方程，闭合第一步压力范围 **−544703.43～−544691.57 Pa**。±1e-6 初速度扰动在第 48 步出现最大 **2.480e-13/1.083e-13 m** 的局部张开，±1e-7 的对应点仍闭合。
+
+按参考面积加权选择等价最小范数反力的 160 步对照仍失败：AD **−1.6345582086**，四档自然差分相对误差 **0.404479/0.649813/3.07919e-5/6.60599e-6**，通过 **1/4** 档，要求至少两档 ≤**2e-5**。使用能量算例相同的补偿求和，两档小扰动误差为 **2.78117e-5/7.97212e-6**，仍为 **1/4** 档通过。扩展精度残差核对显示闭合步骤仍有约 **1e-19 m** 的位移修正；下一项迭代细化整段对照。
+
+命令：`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_rank_probe.py`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_canonical_reaction.py`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_canonical_flow_trajectory.py`。报告 `runs/e5_release_audit/rank_probe/report.json`，轨迹日志与入口同名；方法来源见 METHOD。
+
+文档提交前，干净 `541c913` 全量 **1085 passed、8 skipped、18 subtests passed**（336.09 s）。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/research_541c913_full_tests.log`；8 项跳过为 CRESSim 上游构建。

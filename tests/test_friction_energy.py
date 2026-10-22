@@ -67,6 +67,26 @@ def test_zero_friction_creates_no_elastic_history(theta, dt):
     np.testing.assert_allclose(updated, 0., atol=1e-18)
 
 
+@pytest.mark.parametrize('theta', [.5, 1.])
+@pytest.mark.parametrize('damping', [0., .01, .4])
+def test_contact_birth_history_vanishes_with_normal_load(theta, damping):
+    loads = np.array([0., 1e-12, 1e-10, 1e-8, 1e-6])
+    velocity = np.tile([.5, .2, 0.], (len(loads), 1))
+    normal = np.tile([0., 0., 1.], (len(loads), 1))
+    k, dt, mu = 500., 1e-4, .2
+    updated, force = run(np.zeros_like(velocity), velocity, normal, loads,
+                         k, damping, dt, mu, mu, theta)
+
+    # A newly closed, sliding interface starts with zero stored displacement.
+    # Its exact Kelvin–Voigt response is proportional to the vanishing load.
+    direction = velocity / np.linalg.norm(velocity, axis=1)[:, None]
+    exact_force = -mu * loads[:, None] * direction
+    exact_history = -dt * exact_force / (damping + theta * dt * k)
+    np.testing.assert_allclose(force, exact_force, rtol=1e-12, atol=1e-20)
+    np.testing.assert_allclose(updated, exact_history, rtol=1e-7, atol=2e-20)
+    np.testing.assert_allclose(updated[0], 0., atol=2e-20)
+
+
 @pytest.mark.parametrize('theta,order', [(.5, 2), (1., 1)])
 def test_sliding_relaxation_matches_analytic_kelvin_voigt(theta, order):
     k, c, speed, load, mu = 500., .4, .5, .1, .2

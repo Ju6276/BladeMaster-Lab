@@ -1049,6 +1049,10 @@ PYTHONPATH=. .venv/bin/python runs/e4_43a939a/trace_crossing.py
 
 `43a939a` 保留 `f60a5c4` 的有序 P2G、双精度转换、中点推进和几何事件求根。当前公式的精度/中点/几何/材料 VJP 复核 **105 passed**（37.32 s）。`ca90da9` 增加显式 dt/PIC 参考时间参数，固定接触刚度及 PIC 速率核对通过；全量 **1017 passed、8 skipped、18 subtests passed**（273.94 s）。
 
+三条完整横移轨迹定位到 **0.696765625 s / 第 44593 步**：粒子 1167 的基准/负扰动/正扰动刀距为 **−4.564e-12/−1.374e-11/+4.609e-12 m**，旧端点摩擦回算产生 **1.372e-6/1.372e-6/0 m** 的历史位移。接触起始处的历史跳变传入后续刀力；此时三条轨迹的塑性、释放及侧码数量相同。`109fe3f` 已删除这条端点回算，当前接触网络在零初始历史下满足 `h₁=Δt μFₙ t/(c+θΔt kₜ)`，随法向载荷趋零；θ=1/2、1 与三档阻尼共 **6** 个解析连续性检查通过。命令：`PYTHONPATH=. .venv/bin/python runs/e4_43a939a/trace_jump.py`、`PYTHONPATH=. .venv/bin/python -m pytest tests/test_friction_energy.py -q`（**33 passed**）。
+
+`d221ad4`、dirty=true（追加上述 6 项测试及文档），RTX 4090：`PYTHONPATH=. .venv/bin/python -m pytest tests -q`，**1023 passed、8 skipped、18 subtests passed**（254.58 s）。
+
 ## 2026-10-22：E5 完整短轨迹阈值扫描与释放力闭合路径
 
 `ec7bcb4`，RTX 4090、dirty=false，50 ms、dt=15.625/7.8125/3.90625 μs，固定 PIC 参考时间 15.625 μs。塑性方块静置/压入及 G_c=7/70/700/1400 切割共 **18** 例完成；压入相对能量残差 **0.001116%/0.000758%/0.000375%**，各阈值的切割残差 **0.014090%/0.007980%/0.004001%**，释放数均为 **0**。香蕉四阈值共 **12** 例完成：G_c=7/70 各释放 **4** 粒子，三档残差分别 **23.59953%/23.59991%/23.60007%** 和 **7.30799%/7.30844%/7.30862%**；G_c=700/1400 未释放，残差幅值均为 **0.000594%/0.000182%/0.0000579%**。
@@ -1063,3 +1067,9 @@ PYTHONPATH=. .venv/bin/python -m scripts.diff_energy_validate --output runs/e5_c
 ```bash
 PYTHONPATH=. .venv/bin/python runs/e5_release_cycle.py
 ```
+
+## 2026-10-22：E5 双线性内聚界面单元
+
+`ec7bcb4`，RTX 4090、dirty=false，独立单元使用 [Camanho–Dávila 双线性界面形式及 MOOSE 实现](https://mooseframework.inl.gov/releases/moose/2022-06-10/source/materials/cohesive_zone_model/BiLinearMixedModeTraction.html)：最大开裂位移保存不可逆损伤，压缩刚度独立保留。测试刚度 **5e8 Pa/m**、强度 **5e4 Pa**，G_c=7/70/700/1400 的加载—卸载—完全断裂功分别等于 **7/70/700/1400 J/m²**，最大能量绝对残差 **2.615e-11 J/m²**；断裂后的 −0.03 mm 压缩对应 **−15 kPa**。
+
+192 组状态的开裂位移、历史和三个材料参数自然差分（ε=1e-5/1e-6/1e-7）最大相对误差 **1.653e-8**；两步加载历史到卸载力的梯度误差 **5.979e-9**。128 组刚体旋转与储能虚功通过。混合开裂/剪切路径采用 128/256/512 个分段时，积分功残差 **−2.872e-4/−7.180e-5/−1.795e-5 J/m²**，每次细化约降 4 倍。下一项将界面连接运行时生成的切口，核对插入能量、双侧力及刀路导数。命令：`PYTHONPATH=. .venv/bin/python runs/e5_release_audit/cohesive_unit.py`。

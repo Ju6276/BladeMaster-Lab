@@ -5,6 +5,7 @@ import pytest
 
 from blademaster_warp.differentiable_material import MaterialTrajectory
 from blademaster_warp.differentiable_natural import CutInstruction, NaturalCutContact
+from blademaster_warp.energy import material_energy
 from blademaster_warp.solver import Config
 from scripts.diff_natural_validate import WindowState, difference_result, evaluate, event_time_array
 from scripts.diff_multicut_validate import CutPath, validate_differences
@@ -83,6 +84,11 @@ def test_multicut_report_accumulates_damage_work_across_resets(explicit_window, 
     assert arrays['event_times_by_cut'].shape == (2, model.n)
     assert np.any(np.isfinite(arrays['event_times_by_cut'][0]))
     assert np.any(np.isfinite(arrays['event_times_by_cut'][1]))
+    assert result['material_energy_initial']['kinetic_j'] == 0
+    assert result['material_energy_initial']['elastic_j'] == 0
+    measured = material_energy(*(arrays[name] for name in ('x', 'v', 'F', 'Fp')),
+                                model.mass, model.volume, cfg.young_modulus, cfg.poisson_ratio)
+    assert result['material_energy_final'] == measured
 
 
 @pytest.mark.parametrize('bad', [np.nan, np.inf, -np.inf])

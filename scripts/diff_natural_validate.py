@@ -15,6 +15,7 @@ from blademaster_warp.coupling import ExternalToolPort
 from blademaster_warp.differentiable_material import MaterialTrajectory
 from blademaster_warp.differentiable_geometry import GeometryEventContact
 from blademaster_warp.differentiable_natural import CutInstruction, NaturalCutContact
+from blademaster_warp.energy import energy_snapshot
 from blademaster_warp.presets import banana_dt, tangent_history_dt
 from blademaster_warp.provenance import git_revision
 from blademaster_warp.solver import Solver
@@ -151,6 +152,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     kwargs = dict(integration=integration) if geometry == 'event' else {}
     c = contact_type(m, release=release, friction_update=friction_update, **kwargs)
     initial = m.state(**values)
+    initial_energy = energy_snapshot(m, initial)
     history = c.history(**saved, codes=window.codes, pair_keys=window.pair_keys)
     q = m.array(controls, float)
     path_tool = None if path is None else path.bind(m, q)
@@ -241,6 +243,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
     with wp.Tape() if adjoint == 'full' else nullcontext() as tape:
         loss, terminal, terminal_history, events, forward_error, discrete_error = rollout(compare=compare, log=True)
     forward_s = perf_counter() - begun
+    final_energy = energy_snapshot(m, terminal)
     if progress:
         print(json.dumps(dict(stage='forward', duration_s=total_duration, elapsed_s=forward_s,
                                loss=float(loss.numpy()[0]))), flush=True)
@@ -364,6 +367,7 @@ def evaluate(cfg, steps, release, epsilons, segment_steps, geometry='boundary', 
                 loss=float(loss.numpy()[0]), gradient_controls=gradient.tolist(),
                 gradient_materials={name: value.tolist() for name, value in parameter_gradients.items()},
                 damage_work_j=events['damage_work'], damage_work_balance_error_j=abs(events['damage_work']-work_from_damage),
+                material_energy_initial=initial_energy, material_energy_final=final_energy,
                 knife_impulse_ns=np.sum(durations[:, None] * events['force'], axis=0).tolist(),
                 vs_original_max_abs=forward_error if compare else None,
                 vs_original_discrete=discrete_error if compare else None,

@@ -219,6 +219,17 @@ def gather_particles(
 
 
 @wp.kernel
+def correct_kinematics(
+    free_x: wp.array(dtype=wp.vec3), free_v: wp.array(dtype=wp.vec3),
+    displacement: wp.array(dtype=wp.vec3), duration: wp.array(dtype=float),
+    next_x: wp.array(dtype=wp.vec3), next_v: wp.array(dtype=wp.vec3),
+):
+    p = wp.tid()
+    next_x[p] = free_x[p] + displacement[p]
+    next_v[p] = free_v[p] + displacement[p] / duration[0]
+
+
+@wp.kernel
 def gather_stage(
     x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3), stage_v: wp.array(dtype=wp.vec3),
     slots: wp.array2d(dtype=int), weights: wp.array2d(dtype=float),
@@ -478,6 +489,45 @@ class MaterialTrajectory(ElasticTrajectory):
                     inputs=[grid.slots, self.weights, mass, self.couple(grid, momentum)],
                     outputs=[flow], device=self.device)
         return flow
+
+    def correct_displacement(self, state, free, displacement, topology=None, duration=None,
+                             fixed_yielded=None):
+        """Complete a first-order MUSL step from a grid-induced dt * delta_v in metres.
+
+        free is the step from state before the additional grid impulse, with the
+        same topology and duration. Plasticity is updated from state's Fp.
+        """
+        grid = self.uncut if topology is None else topology
+        duration = self.duration if duration is None else duration
+        if displacement.shape != (self.n,):
+            raise ValueError('Displacement must have one vector per particle')
+        result = PlasticState(self.zeros(self.n, wp.vec3), self.zeros(self.n, wp.vec3),
+                              self.zeros(self.n, wp.mat33), self.zeros(self.n, wp.mat33),
+                              self.zeros(self.n, int, False), self.zeros(self.n, wp.mat33))
+        self.launch(correct_kinematics, self.n,
+                    inputs=[free.x, free.v, displacement, duration],
+                    outputs=[result.x, result.v], device=self.device)
+        mass = self.zeros(grid.count, float, False)
+        weighted_displacement = self.zeros(grid.count, wp.vec3)
+        self.launch(ordered_mass_momentum, grid.count,
+                    inputs=[grid.particle_offsets, grid.particles, grid.corners,
+                            self.weights, displacement, self.mass],
+                    outputs=[mass, weighted_displacement], device=self.device)
+        self.launch(timed_deformation, self.n,
+                    inputs=[free.F, grid.slots, self.gradients, mass,
+                            self.couple(grid, weighted_displacement), self.array([1.0], float, False)],
+                    outputs=[result.F], device=self.device)
+        if fixed_yielded is None:
+            fixed_yielded = self.zeros(self.n, int, False)
+            fixed_yielded.fill_(-1)
+        errors = self.zeros(1, int, False)
+        self.launch(project_plastic, self.n,
+                    inputs=[result.F, state.Fp, self.young, self.yield_stress,
+                            self.config.poisson_ratio, fixed_yielded],
+                    outputs=[result.Fp, result.yielded, result.stress, errors], device=self.device)
+        if int(errors.numpy()[0]):
+            raise FloatingPointError('Plastic return mapping failed to converge')
+        return result
 
     def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None,
              grid_transform=None, duration=None, stage_base=None, trace=None, grid_load=None):

@@ -127,6 +127,8 @@ M5 中点阶段的 `MaterialTrajectory.flow_velocity` 对当前速度先 P2G，�
 
 `Solver(precision="float64")` 与 `MaterialTrajectory(precision="float64")` 分别运行原正向流程和可微流程。`precision.py` 将同一份 Warp 函数的浮点类型及常量提升到双精度；分支和公式保持相同。原求解器继续使用动态多场注册与场交换，可微流程使用固定分支的稀疏映射；同精度对照检验两套推进结果。
 
+`MaterialTrajectory.correct_displacement` 接受全局约束求解得到的网格诱导位移增量 `u=Δt·Δv`，完成同一一阶 MUSL 步：`x=x_free+u`、`v=v_free+u/Δt`，F 增量由 u 的粒子到网格重映射与相容场交换计算，塑性返回从段初 Fp 更新。它与先散射约束冲量再执行 `step(grid_load=...)` 代数等价，直接使用求解位移可避免从约束反力重构位移时的抵消；13 项状态和导数对照覆盖未切开、部分切开、交叉侧码、弹性/塑性和两档 PIC/FLIP。该入口使用一阶 MUSL 的位置与 F 更新，中点 RK2 仍由原阶段入口推进。
+
 ## 事件分段的中点积分
 
 `GeometryEventContact` 默认采用 `integration="midpoint"`：对参考网格上的半离散动力学执行显式中点 RK2。第一阶段推进半段，第二阶段用中点的速度、应力、刀位和接触力推进整段。粒子位置率为插值网格速度，变形率为参考梯度作用于当前速度，速度率包含材料/接触加速度及固定单位时间的 PIC 残差阻尼。塑性 Fp 在预测点和终点分别从段初 Fp 返回映射。各阶段、分段时长及返回映射均进入同一 Warp Tape。

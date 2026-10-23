@@ -293,6 +293,6 @@ E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-2026
 
 提交前全量 `permanent_history_full.log` 为 **1230 passed、8 skipped、18 subtests passed**（380.51 s）。
 
-零面积装配前的 `unequal_area_limit.json` 暴露闭合分支的反力选择问题：同位置积分点的面积按 60/40、65/35 拆分，共同历史导数分别为 **0.6510417/0.6868132**，解析值 **0.625**，单侧差分误差 **4.0006%/9.0006%**。下一步统一闭合分支的面积加权反力和 VJP，保留零历史单侧导数并复测面积拆分；1e-12 m 历史扰动的光滑初值 KKT 失败一并定位。上述永久状态代码未修改内聚平衡公式。
+闭合分支按参考面积选择最小压力范数反力，位移及其 VJP 保持同一约束；固定法向 ADMM 统一提供初值，初值牵引采用近端核的直接表达。`weighted_area_limit.json` 的 14 组正向、42 组单侧扰动全部完成，最小 1e-12 m 档相对误差 ≤**6.24702e-7**。`weighted_compare160.json` 三种轨迹与 `e4cf414` 求解器的归一化状态差 ≤**1.95528e-14**、能量差 ≤**4.337e-19 J**。新增 22 项解析及面积拆分检查；全量 `weighted_area_full.log` 为 **1252 passed、8 skipped、18 subtests passed**（366.51 s）。同一 `e5-grid` 工作树的 `weighted_existing160.json/.log` 与 `weighted_energy.json/.log` 分别运行八类输入长梯度和十二例能量复测。下一项是零面积物理装配、自然双侧码、接触去重及 RK2 分段。
 
 插入失败对照位于 `e5-interface-20261023/runs/interface_insertion/patch.json`：平移在 1.096e-23～4.386e-23 m 的间隙舍入处触发半光滑线搜索失败；刚体旋转 dt=2 μs 的假断裂耗散为 6.240e-6 J。该对照对应 `b7048c7`、dirty=true 的 `f507dc0` 源码。入口 `runs/e5_release_audit/extrinsic_insertion_patch.py`。

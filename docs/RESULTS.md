@@ -1461,3 +1461,11 @@ RTX 4090，`6d2ffb5`、dirty=true。`CohesiveHistory` 的追加、首阶材料�
 RTX 4090，`6d2ffb5`、dirty=true（内聚公式同该提交）。总面积 **4e-6 m²**、自由开口 **1 μm** 的同位置积分点按 **60/40、65/35** 拆分，闭合分支的位移不变，零历史处的共同历史导数却为 **0.6510417/0.6868132**，解析值均为 **0.625**。1e-11 m 单侧差分为 **0.6249961**，两组误差 **4.0006%/9.0006%**，检查失败。闭合分支按未加权约束分配反力，使牵引依赖拆分权重；下一项统一面积加权反力与相应 VJP，并复测不等面积、零面积极限及长轨迹。1e-12 m 历史扰动还触发光滑初值的 KKT 细化失败，另核对其病态驻点求解。
 
 命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/unequal_area_limit.py`，工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，报告/日志 `runs/grid_update/unequal_area_limit.json/.log`。14 组正向、42 组单侧扰动逐项保存数值或求解错误。
+
+## 2026-10-23：面积加权闭合反力与统一近端初值
+
+RTX 4090，`e4cf414`、dirty=true。同位置积分点按七种面积比例拆分，受拉/受压共 **14** 组的位移差 **0**，牵引均为 **±31250 Pa**，共同历史导数为 **0.625/0**；**42** 组单侧扰动无求解失败，1e-12 m 档最大相对误差 **6.24702e-7**。新增 **22** 项检查覆盖不等面积的十类输入伴随，以及 1e-10/1e-12 m 正历史的串联弹簧解析状态和导数。
+
+闭合承载、已有损伤和受载断裂三种 **160** 步轨迹，与 `e4cf414` 求解器逐步对照：归一化状态差 ≤**1.95528e-14**、能量差 ≤**4.337e-19 J**、外功差 ≤**2.711e-20 J**。闭合反力按参考面积取最小压力范数；固定法向 ADMM 提供统一初值，直接近端牵引避免小耦合下的相减损失。方法和 VJP 见 METHOD。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/unequal_area_limit.py --output runs/grid_update/weighted_area_limit.json`；`runs/e5_release_audit/weighted_solver_compare.py`；`-m pytest tests -q`。同一 `e5-grid-20261023` 工作树报告/日志为 `runs/grid_update/{weighted_area_limit.json,weighted_compare160.json,weighted_area_full.log}`。提交前全量 **1252 passed、8 skipped、18 subtests passed**（366.51 s）；8 项跳过为 CRESSim 上游构建。

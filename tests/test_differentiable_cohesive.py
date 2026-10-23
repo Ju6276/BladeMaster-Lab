@@ -222,6 +222,73 @@ def closed_pair(area, free_gap):
 
 
 @pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
+@pytest.mark.parametrize("fraction", [0.6, 0.65, 0.9999])
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+def test_unequal_area_partition_preserves_pressure_and_history_derivative(interface_solver, fraction, sign):
+    values = closed_pair(4e-6, [sign * 1e-6, 0.0, 0.0])
+    values = [np.repeat(a, 2, axis=0) if i < 8 else a for i, a in enumerate(values)]
+    values[7][:] = 4e-6 * np.array([fraction, 1 - fraction])
+    source = arrays(values)
+    with wp.Tape() as tape:
+        result = interface_solver(*source)
+    np.testing.assert_allclose(
+        result.traction.numpy(), [[sign * 31250.0, 0.0, 0.0]] * 2, rtol=2e-13, atol=1e-12
+    )
+    seed_u = np.array([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    tape.backward(grads={result.displacement: wp.array(seed_u, dtype=wp.vec3d)})
+    expected = 0.625 if sign > 0 else 0.0
+    np.testing.assert_allclose(source[3].grad.numpy().sum(), expected, rtol=2e-13, atol=1e-14)
+    np.testing.assert_array_equal(source[7].grad.numpy(), 0.0)
+    tape.zero()
+    seed_t = np.array([[1.0 / 5e4, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    tape.backward(grads={result.traction: wp.array(seed_t, dtype=wp.vec3d)})
+    np.testing.assert_allclose(source[7].grad.numpy(), -sign * 156250.0, rtol=2e-10, atol=1e-5)
+    np.testing.assert_allclose(source[3].grad.numpy().sum(), -expected * 625000.0, rtol=2e-10, atol=1e-8)
+
+
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
+def test_unequal_quadrature_partition_preserves_all_physical_pullbacks(interface_solver):
+    values = fixture("closed")
+    rng = np.random.default_rng(911)
+    reference, gradients, seeds = None, None, None
+    for fractions in [[1.0], [0.6, 0.4], [0.65, 0.35], [0.9999, 0.0001]]:
+        copies = len(fractions)
+        duplicated = [np.repeat(a, copies, axis=0) if i < 8 else a.copy() for i, a in enumerate(values)]
+        weights = np.tile(fractions, len(values[0]))
+        duplicated[7] *= weights
+        source = arrays(duplicated)
+        with wp.Tape() as tape:
+            result = interface_solver(*source)
+        target = outputs(result)
+        if seeds is None:
+            scales = [0.0028, 5e4, 0.0028, 70.0, 70.0, 1.0, 70.0, 0.0028, 0.0028]
+            seeds = [rng.normal(size=a.numpy().shape) / scale for a, scale in zip(target, scales)]
+            reference = [a.numpy() for a in target]
+        actual_seeds = [np.repeat(s, copies, axis=0) if i < 8 else s.copy() for i, s in enumerate(seeds)]
+        for i in range(8):
+            actual_seeds[i] *= weights.reshape((-1,) + (1,) * (actual_seeds[i].ndim - 1))
+            np.testing.assert_allclose(
+                target[i].numpy(), np.repeat(reference[i], copies, axis=0), rtol=2e-12, atol=1e-11
+            )
+        np.testing.assert_allclose(result.displacement.numpy(), reference[-1], rtol=2e-12, atol=1e-15)
+        tape.backward(grads={a: wp.array(s, dtype=a.dtype) for a, s in zip(target, actual_seeds)})
+        pulled = []
+        for i, (a, base) in enumerate(zip(source, values)):
+            gradient = a.grad.numpy()
+            if i == 7:
+                gradient *= weights
+            if i < 8:
+                gradient = gradient.reshape(len(base), copies, *base.shape[1:]).sum(axis=1)
+            pulled.append(gradient)
+        if gradients is None:
+            gradients = pulled
+        else:
+            for i, (actual, expected) in enumerate(zip(pulled, gradients)):
+                scale = max(np.max(np.abs(expected)), 1.0)
+                np.testing.assert_allclose(actual, expected, rtol=2e-8, atol=1e-10 * scale, err_msg=str(i))
+
+
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
 @pytest.mark.parametrize("moving_frame", [False, True])
 @pytest.mark.parametrize("history", [[0.0, 0.0, 0.0], [1e-4, 2e-4, 4e-3], [0.0, 2e-4, 4e-3]])
 def test_zero_opening_map_preserves_history_energy_and_adjoint(interface_solver, moving_frame, history):
@@ -458,6 +525,36 @@ def test_compensated_geometry_advection_and_snapshot():
             ) / (2 * epsilon)
             np.testing.assert_allclose(ad, fd, rtol=2e-5, atol=1e-10)
         source.assign(base)
+
+
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
+@pytest.mark.parametrize("fraction", [0.6, 0.9999])
+@pytest.mark.parametrize("history", [1e-10, 1e-12])
+def test_small_unloading_history_matches_series_spring_solution(interface_solver, fraction, history):
+    values = closed_pair(4e-6, [1e-6, 0.0, 0.0])
+    values[3][:] = history
+    split = [np.repeat(value, 2, axis=0) for value in values[:8]] + values[8:]
+    split[7] *= np.array([fraction, 1 - fraction])
+    sources = arrays(split)
+    with wp.Tape() as tape:
+        result = interface_solver(*sources)
+    strength, gc = values[4][0, :2]
+    failure = 2 * gc / strength
+    stiffness = strength * (1 / history - 1 / failure)
+    mobility = 2 * values[7][0] * values[9][0] ** 2 / values[8][0]
+    denominator = 1 + mobility * stiffness
+    opening = values[0][0, 0] / denominator
+    traction = stiffness * opening
+    np.testing.assert_allclose(result.gap.numpy()[:, 0], opening, rtol=2e-8, atol=1e-20)
+    np.testing.assert_allclose(result.traction.numpy()[:, 0], traction, rtol=2e-12)
+    np.testing.assert_allclose(
+        result.displacement.numpy()[:, 0],
+        (values[0][0, 0] - opening) * np.array([0.5, -0.5]),
+        rtol=2e-14,
+    )
+    tape.backward(grads={result.displacement: wp.array([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3d)})
+    expected = values[0][0, 0] * mobility * strength / (history * denominator) ** 2
+    np.testing.assert_allclose(sources[3].grad.numpy().sum(), expected, rtol=2e-9)
 
 
 @wp.kernel

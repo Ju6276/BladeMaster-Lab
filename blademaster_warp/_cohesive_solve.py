@@ -4,60 +4,9 @@ import numpy as np
 from scipy.optimize import least_squares, minimize
 
 
-def constitutive(gap, history, material):
-    (strength, gc) = material[:, :2].T
-    failure = 2 * gc / strength
-    radius = np.linalg.norm(gap, axis=1)
-    high = np.maximum(history, radius)
-    if np.any(high <= 0):
-        raise ValueError("Active-set radial response requires positive opening history")
-    stiffness = np.where(high < failure, strength * (1 - high / failure) / high, 0.0)
-    traction = stiffness[:, None] * gap
-    potential = 0.5 * stiffness * radius**2 + 0.5 * strength * np.minimum(high, failure)
-    hessian = stiffness[:, None, None] * np.eye(3)
-    loading = (radius > history) & (radius < failure)
-    hessian[loading] -= (strength[loading] / radius[loading] ** 3)[:, None, None] * np.einsum(
-        "qi,qj->qij", gap[loading], gap[loading]
-    )
-    return (potential, traction, hessian)
-
-
-def potential_increment(gap, reference, history, material, displacement=None):
-    (strength, gc) = material[:, :2].T
-    failure = 2 * gc / strength
-    (radius, initial) = (np.linalg.norm(gap, axis=1), np.linalg.norm(reference, axis=1))
-    displacement = gap - reference if displacement is None else displacement
-    delta = np.divide(
-        np.sum(displacement * (2 * reference + displacement), axis=1),
-        radius + initial,
-        out=np.zeros(len(gap)),
-        where=radius + initial > 0.0,
-    )
-    stiffness = np.where(history < failure, strength * (1 - history / failure) / history, 0.0)
-    (u, u0) = (np.minimum(radius, history), np.minimum(initial, history))
-    du = np.where((radius <= history) & (initial <= history), delta, u - u0)
-    (v, v0) = (np.clip(radius, history, failure), np.clip(initial, history, failure))
-    both_loading = (radius >= history) & (radius <= failure) & (initial >= history) & (initial <= failure)
-    dv = np.where(both_loading, delta, v - v0)
-    return 0.5 * stiffness * du * (u + u0) + strength * dv * (1 - (v + v0) / (2 * failure))
-
-
 def skew(x):
     (a, b, c) = x
     return np.array([[0.0, -c, b], [c, 0.0, -a], [-b, a, 0.0]])
-
-
-def constrained_linear_solve(H, A, rhs_u, rhs_c):
-    if not len(A):
-        return (np.linalg.solve(H, rhs_u), np.empty(0))
-    (U, s, Vt) = np.linalg.svd(A, full_matrices=True)
-    rank = np.sum(s > s[0] * max(A.shape) * np.finfo(float).eps)
-    (Ur, Vr) = (U[:, :rank], Vt[:rank].T)
-    null = Vt[rank:].T
-    particular = Vr @ (Ur.T @ rhs_c / s[:rank])
-    u = particular + null @ np.linalg.solve(null.T @ H @ null, null.T @ (rhs_u - H @ particular))
-    multiplier = Ur @ (Vr.T @ (rhs_u - H @ u) / s[:rank])
-    return (u, multiplier)
 
 
 def geometry(q, frame, normal, b, gradient):
@@ -127,107 +76,6 @@ def constraint_gradient(base, L, u):
     local_gradient = np.concatenate([normal, np.cross(b, z), np.cross(z, a)], axis=1)
     gradient = np.einsum("qi,qia->qa", local_gradient, L)
     return (value, gradient, None)
-
-
-def smooth_primal(values, initial_tolerance=1e-08):
-    (q, frame, normal, history, material, b, gradient, area, mass, dt) = values
-    coefficient = float(mass[0] / dt[0] ** 2)
-    (base, L, weights) = geometry(q, frame, normal, b, gradient)
-    basis_matrix = weights.transpose(1, 0, 2).reshape(-1, b.shape[1])
-    (_, singular, vt) = np.linalg.svd(basis_matrix, full_matrices=False)
-    rank = np.sum(singular > singular.max() * max(basis_matrix.shape) * np.finfo(float).eps)
-    V = vt[:rank].T
-    vector_basis = np.kron(V, np.eye(3))
-    reduced = b @ V
-    reduced_L = L @ vector_basis
-    (_, base_t, _) = constitutive(q, history, material)
-    c0 = constraints(base, reduced_L, np.zeros(rank * 3))[0]
-    displacement = b @ (b.T @ (area[:, None] * base_t)) / coefficient
-    scale = max(np.max(np.abs(c0)), np.max(np.abs(displacement)))
-    if scale == 0:
-        scale = np.max(2 * material[:, 1] / material[:, 0])
-    energy_scale = coefficient * scale**2
-
-    def at(y):
-        displacement = scale * reduced @ y.reshape(rank, 3)
-        g = q + displacement
-        (phi, t, h) = constitutive(g, history, material)
-        value = (
-            0.5 * (y @ y)
-            + np.sum(area * potential_increment(g, q, history, material, displacement)) / energy_scale
-        )
-        grad = y + (reduced.T @ (area[:, None] * t)).ravel() / (coefficient * scale)
-        H = (
-            np.eye(len(y))
-            + np.einsum("qi,qab,qj,q->iajb", reduced, h, reduced, area).reshape(len(y), len(y)) / coefficient
-        )
-        (c, C, Hc) = constraints(base, reduced_L, scale * y)
-        return (value, grad, H, c / scale, C, scale * Hc)
-
-    optimized = minimize(
-        lambda y: at(y)[:2],
-        np.zeros(rank * 3),
-        jac=True,
-        method="SLSQP",
-        constraints=[dict(type="ineq", fun=lambda y: at(y)[3], jac=lambda y: at(y)[4])],
-        options=dict(ftol=initial_tolerance, maxiter=400),
-    )
-    y = optimized.x.copy()
-    active = np.flatnonzero(optimized.multipliers > 0.0)
-    pressure = optimized.multipliers[active].copy()
-    for iteration in range(80):
-        (value, grad, H, c, C, Hc) = at(y)
-        A = C[active]
-        hessian = H - np.einsum("q,qij->ij", pressure, Hc[active])
-        residual = np.r_[grad - A.T @ pressure, c[active]]
-        (du, dp) = constrained_linear_solve(hessian, A, -residual[: len(y)], -residual[len(y) :])
-        increment = np.r_[du, -dp]
-        y += increment[: len(y)]
-        pressure += increment[len(y) :]
-        if len(pressure) and pressure.min() < 0:
-            delete = int(np.argmin(pressure))
-            active = np.delete(active, delete)
-            pressure = np.delete(pressure, delete)
-            continue
-        c = at(y)[3]
-        violation = int(np.argmin(c))
-        if c[violation] < -1e-12 and violation not in active:
-            active = np.r_[active, violation]
-            pressure = np.r_[pressure, 0.0]
-            continue
-        if np.max(np.abs(residual)) < 1e-11:
-            break
-    else:
-        raise RuntimeError("Moving constraint KKT refinement failed")
-    u = (scale * vector_basis @ y).reshape(-1, 3)
-    nu = np.zeros(len(q))
-    nu[active] = -scale * pressure
-    g = q + b @ u
-    (phi, t, h) = constitutive(g, history, material)
-    (c, C, Hc) = constraints(base, reduced_L, scale * y)
-    r_u = u.ravel() + (b.T @ (area[:, None] * t)).ravel() / coefficient + vector_basis @ (C.T @ nu)
-    failure = 2 * material[:, 1] / material[:, 0]
-    residual = float(np.max(np.abs(r_u)) / failure.min())
-    active_error = np.max(np.abs(c[active]) / failure[active], initial=0.0)
-    if residual > 1e-11 or np.min(c / failure) < -1e-11 or active_error > 1e-11:
-        raise RuntimeError(f"Moving constraint residual {residual}, {np.min(c / failure)}")
-    A = C[active]
-    return (
-        u,
-        nu,
-        active,
-        None,
-        dict(
-            iterations=optimized.nit + iteration + 1,
-            active=len(active),
-            rank=int(rank),
-            optimizer_success=bool(optimized.success),
-            residual=residual,
-            active_residual=float(active_error),
-            max_pressure_pa=float(np.max(np.abs(coefficient * nu / area))),
-            active_singular_values=np.linalg.svd(A, compute_uv=False).tolist(),
-        ),
-    )
 
 
 def proximal(z, normal, history, material, compliance):
@@ -392,7 +240,10 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False):
     if np.all(history == 0.0):
         reaction = np.linalg.lstsq(b @ b.T, q, rcond=None)[0]
         candidate_u = -b.T @ reaction
-        candidate_t = coefficient * reaction / area[:, None]
+        root_area = np.sqrt(area)
+        weighted = b.T * root_area[None, :]
+        pressure = np.linalg.lstsq(weighted, -candidate_u, rcond=None)[0]
+        candidate_t = coefficient * pressure / root_area[:, None]
         candidate_frame = frame + np.einsum("pa,qpb->qab", candidate_u, gradient)
         candidate_n = (
             reference[:, :1] * np.cross(candidate_frame[:, :, 1], candidate_frame[:, :, 2])
@@ -437,23 +288,12 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False):
     for _ in range(256):
         raw = root_area * gap - multiplier + inverse @ (root_area * (q - gap) + multiplier)
         trial = (raw + multiplier) / root_area
-        gap = proximal(trial, normals, history, material, compliance)[0]
+        response = proximal(trial, normals, history, material, compliance)
+        gap = response[0]
         multiplier += raw - root_area * gap
-    traction = (trial - gap) / compliance
+    traction = response[5] / compliance
     initial_u = -b.T @ (area[:, None] * traction) / coefficient
     initializer = "fixed_normal_admm"
-    if np.all(history > 0) and size > 0:
-        (initial_u, nu, _, _, _) = smooth_primal(values)
-        gap = q + b @ initial_u
-        updated_frame = frame + np.einsum("pa,qpb->qab", initial_u, gradient)
-        normals = (
-            reference[:, :1] * np.cross(updated_frame[:, :, 1], updated_frame[:, :, 2])
-            + reference[:, 1:2] * np.cross(updated_frame[:, :, 2], updated_frame[:, :, 0])
-            + reference[:, 2:3] * np.cross(updated_frame[:, :, 0], updated_frame[:, :, 1])
-        )
-        normals /= np.linalg.norm(normals, axis=1)[:, None]
-        traction = constitutive(gap, history, material)[1] + (coefficient * nu / area)[:, None] * normals
-        initializer = "smooth_energy"
     y[:size] = basis.T @ initial_u.ravel() / length
     y[size:] = compliance * traction.ravel() / length
     initial = least_squares(
@@ -566,12 +406,20 @@ def refine_geometry(values, gap_remainder, frame_remainder, compliance_factor=1.
         q, frame, reference, _, material, b, gradient, area, mass, dt = precise
         coefficient = mass[0] / dt[0] ** 2
         mobility = b @ b.T
-        reaction = seed_t.astype(np.longdouble) * area[:, None] / coefficient
+        reaction = np.linalg.lstsq(mobility.astype(float), q.astype(float), rcond=None)[0].astype(
+            np.longdouble
+        )
         for _ in range(8):
             residual = q - mobility @ reaction
             reaction += np.linalg.lstsq(mobility.astype(float), residual.astype(float), rcond=None)[0]
         u = -b.T @ reaction
-        traction = coefficient * reaction / area[:, None]
+        root_area = np.sqrt(area)
+        weighted = b.T * root_area[None, :]
+        pressure = seed_t.astype(np.longdouble) * root_area[:, None] / coefficient
+        for _ in range(8):
+            residual = -u - weighted @ pressure
+            pressure += np.linalg.lstsq(weighted.astype(float), residual.astype(float), rcond=None)[0]
+        traction = coefficient * pressure / root_area[:, None]
         frame = frame + np.einsum("pa,qpb->qab", u, gradient)
         normal = (
             reference[:, :1] * np.cross(frame[:, :, 1], frame[:, :, 2])

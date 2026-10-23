@@ -183,10 +183,26 @@ def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u,
     coefficient = mass[0] / dt[0] ** 2
     mobility = b @ b.T
     inverse = np.linalg.pinv(mobility, rcond=max(mobility.shape) * np.finfo(float).eps, hermitian=True)
-    reaction = area[:, None] * traction_numpy / coefficient
     seed_u = rhs_u.reshape(u_numpy.shape)
     seed_t = rhs_t.reshape(traction_numpy.shape)
-    seed_reaction = -b @ seed_u + coefficient * seed_t / area[:, None]
+
+    # First pull back the area-weighted minimum-pressure reaction. Then the
+    # displacement constraint has no area dependence, even for tiny patches.
+    root_area = np.sqrt(area)
+    weighted = b.T * root_area[None, :]
+    weighted_inverse = np.linalg.pinv(weighted, rcond=max(weighted.shape) * np.finfo(float).eps)
+    pressure = root_area[:, None] * traction_numpy / coefficient
+    seed_pressure = coefficient * seed_t / root_area[:, None]
+    force_dual = weighted_inverse.T @ seed_pressure
+    force_null = -u_numpy - weighted @ pressure
+    pressure_null = seed_pressure - weighted_inverse @ (weighted @ seed_pressure)
+    adj_weighted = -force_dual @ pressure.T
+    adj_weighted += force_null @ (weighted_inverse @ (weighted_inverse.T @ seed_pressure)).T
+    adj_weighted += (weighted_inverse.T @ pressure) @ pressure_null.T
+    seed_u = seed_u - force_dual
+
+    reaction = inverse @ q
+    seed_reaction = -b @ seed_u
     adj_q = inverse @ seed_reaction
     null = np.eye(len(q)) - mobility @ inverse
     adj_mobility = -adj_q @ reaction.T
@@ -195,8 +211,10 @@ def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u,
     gradients = [np.zeros_like(value) for value in values]
     gradients[0] = adj_q
     gradients[5] = -reaction @ seed_u.T + (adj_mobility + adj_mobility.T) @ b
-    gradients[7] = -np.sum(seed_t * traction_numpy, axis=1) / area
-    adj_coefficient = np.sum(seed_t * reaction / area[:, None])
+    gradients[5] += (adj_weighted * root_area[None, :]).T
+    gradients[7] = np.sum(adj_weighted * b.T, axis=0) / (2 * root_area)
+    gradients[7] -= np.sum(seed_t * traction_numpy, axis=1) / (2 * area)
+    adj_coefficient = np.sum(seed_t * traction_numpy) / coefficient
     gradients[8][0] = adj_coefficient / dt[0] ** 2
     gradients[9][0] = -2 * adj_coefficient * coefficient / dt[0]
 
@@ -210,7 +228,7 @@ def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u,
         ]
         fixed_u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
         fixed_t = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
-        momentum_dual = seed_u + b.T @ adj_q
+        momentum_dual = rhs_u.reshape(u_numpy.shape) + b.T @ adj_q
         with wp.Tape() as local:
             _, Ru, Rg = _evaluate(clones, fixed_u, fixed_t, compliance)
         local.backward(

@@ -13,6 +13,7 @@ import warp as wp
 from .cohesive_geometry import InterfaceGeometry, solve_geometry
 from .differentiable_cohesive import CohesiveForceStep
 from .differentiable_material import PlasticState, compute_stress, project_plastic
+from .reference_damping import decay
 
 
 GAMMA = 1.0 - 1.0 / np.sqrt(2.0)
@@ -22,6 +23,16 @@ DELTA = 1.0 - 1.0 / (2.0 * GAMMA)
 @wp.kernel
 def _duration(source: wp.array(dtype=wp.float64), factor: wp.float64, result: wp.array(dtype=wp.float64)):
     result[0] = factor * source[0]
+
+
+@wp.kernel
+def _sum_energy(
+    first: wp.array(dtype=wp.float64),
+    second: wp.array(dtype=wp.float64),
+    result: wp.array(dtype=wp.float64),
+):
+    p = wp.tid()
+    result[p] = first[p] + second[p]
 
 
 @wp.kernel
@@ -152,6 +163,7 @@ class AffineMaterialStep:
     interface: CohesiveForceStep | None
     stage: AffineState
     path_midpoint: wp.array
+    damping_energy: wp.array
 
 
 def advance_affine(
@@ -169,6 +181,7 @@ def advance_affine(
     impulse=None,
     gravity=(0.0, 0.0, -9.81),
     force=None,
+    damping_rate=None,
 ):
     """Advance material and permanent interface history over one event segment.
 
@@ -178,6 +191,8 @@ def advance_affine(
     over this segment and replaces gravity, matching MaterialTrajectory.step.
     The callback replaces both impulse and gravity. Stage plastic returns use
     the segment's initial Fp; the final return supplies the retained plastic state.
+    Transfer damping uses two symmetric half steps at a fixed rate in s^-1;
+    its default is (1 - flip_fraction) / (flip_reference_dt or config.dt).
     """
     m = transfer.model
     if not isinstance(state, AffineState) or state.affine is None:
@@ -285,8 +300,15 @@ def advance_affine(
         xp, Fp = move(x, F, moments, tau)
         return material_state(xp, moments, Fp), moments, updated, maximum, response, acceleration
 
-    z0 = transfer.pack(state.v, state.affine)
-    initial = state
+    incoming = transfer.pack(state.v, state.affine)
+    if damping_rate is None:
+        reference_dt = m.config.flip_reference_dt or m.config.dt
+        damping_rate = m.array([(1.0 - m.config.flip_fraction) / reference_dt], float, False)
+    half_dt = launch(_duration, 1, [duration, 0.5], wp.float64)
+    first_decay = decay(transfer, incoming, half_dt, damping_rate)
+    z0 = first_decay.moments
+    initial_v, initial_A = transfer.unpack(z0)
+    initial = replace(state, v=initial_v, affine=initial_A)
     if state.stress is None:
         stress = m.zeros(m.n, wp.mat33)
         m.launch(
@@ -296,7 +318,7 @@ def advance_affine(
             outputs=[stress],
             device=m.device,
         )
-        initial = replace(state, stress=stress)
+        initial = replace(initial, stress=stress)
     e0 = explicit(initial, z0, m.zeros(1, float, False))
     zbase = launch(_vector_increment, size, [z0, e0, duration, GAMMA])
     mid, z1, geometry1, history1, _, a1 = stage(state.x, state.F, zbase, geometry, history)
@@ -307,7 +329,11 @@ def advance_affine(
     zbase = launch(_vector_increment, size, [zbase, e0, duration, DELTA])
     zbase = launch(_vector_increment, size, [zbase, e1, duration, 1.0 - DELTA])
     result, zend, updated, maximum, response, _ = stage(xb, Fb, zbase, gb, history1)
-    start_rate, _ = transfer.kinematics(z0)
-    end_rate, _ = transfer.kinematics(zend)
+    last_decay = decay(transfer, zend, half_dt, damping_rate)
+    final_v, final_A = transfer.unpack(last_decay.moments)
+    result = replace(result, v=final_v, affine=final_A)
+    dissipated = launch(_sum_energy, m.n, [first_decay.energy, last_decay.energy], wp.float64)
+    start_rate, _ = transfer.kinematics(incoming)
+    end_rate, _ = transfer.kinematics(last_decay.moments)
     midpoint = launch(_path_midpoint, m.n, [state.x, result.x, start_rate, end_rate, duration])
-    return AffineMaterialStep(result, updated, maximum, response, mid, midpoint)
+    return AffineMaterialStep(result, updated, maximum, response, mid, midpoint, dissipated)

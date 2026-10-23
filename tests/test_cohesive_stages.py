@@ -1,5 +1,6 @@
 """Affine-state motion, energy, restart and multi-step stage derivatives."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -205,8 +206,10 @@ def test_material_and_interface_stage_directional_derivatives(mode):
         source.assign(original)
 
 
-def test_piecewise_backward_keeps_affine_stress_and_interface_cotangents():
+@pytest.mark.parametrize("rate", [0.0, 2000.0])
+def test_piecewise_backward_keeps_affine_stress_and_interface_cotangents(rate):
     m, initial, geometry, history, data = setup("loaded")
+    data["damping_rate"] = m.array([rate], float)
     rng = np.random.default_rng(29)
     with wp.Tape() as tape:
         direct = rollout(initial, geometry, history, data)
@@ -215,7 +218,8 @@ def test_piecewise_backward_keeps_affine_stress_and_interface_cotangents():
         for a, scale in zip(targets(direct), [0.01, 1.0, 100.0, 1.0, 1.0, 2e4, 0.001, 1.0, 0.001])
     ]
     tape.backward(grads={a: m.array(s, a.dtype, False) for a, s in zip(targets(direct), seeds)})
-    expected = [initial.v.grad.numpy().copy(), initial.affine.grad.numpy().copy()]
+    sources = [initial.v, initial.affine, data["duration"], data["damping_rate"]]
+    expected = [a.grad.numpy().copy() for a in sources]
     tape.zero()
     with wp.Tape() as prefix:
         split = rollout(initial, geometry, history, data, steps=4)
@@ -239,7 +243,7 @@ def test_piecewise_backward_keeps_affine_stress_and_interface_cotangents():
     prefix.backward(
         grads={a: m.array(b.grad.numpy(), a.dtype, False) for a, b in zip(targets(split), restored)}
     )
-    for actual, reference in zip([initial.v, initial.affine], expected):
+    for actual, reference in zip(sources, expected):
         np.testing.assert_allclose(actual.grad.numpy(), reference, rtol=1e-10, atol=1e-10)
 
 
@@ -357,3 +361,67 @@ def test_active_plastic_return_and_parameter_derivatives():
 
         assert energy(state.Fp.numpy()) - energy(actual.state.Fp.numpy()) >= -1e-18
         state, geometry, history = actual.state, actual.geometry, actual.history
+
+
+def test_damped_stages_time_rate_state_and_energy_derivatives():
+    m, initial, geometry, history, data = setup("opened")
+    rng = np.random.default_rng(918)
+    initial.v.assign(initial.v.numpy() + rng.normal(size=(m.n, 3)) * 0.03)
+    initial.affine.assign(initial.affine.numpy() + rng.normal(size=(m.n, 3, 3)) * 10.0)
+    data["damping_rate"] = m.array([2000.0], float)
+
+    def run():
+        state, g, h = initial, geometry, history
+        losses = []
+        for _ in range(8):
+            result = advance(state, g, h, data)
+            state, g, h = result.state, result.geometry, result.history
+            losses.append(result.damping_energy)
+        return targets(result) + [result.path_midpoint] + losses
+
+    with wp.Tape() as tape:
+        arrays = run()
+    assert sum(np.sum(a.numpy()) for a in arrays[10:]) > 0.0
+    scales = [0.01, 1.0, 100.0, 1.0, 1.0, 2e4, 0.001, 1.0, 0.001, 0.01] + [m.mass] * 8
+    seeds = [rng.normal(size=a.numpy().shape) / scale for a, scale in zip(arrays, scales)]
+    tape.backward(grads={a: m.array(s, a.dtype, False) for a, s in zip(arrays, seeds)})
+    for source, scale in [
+        (initial.v, 0.1),
+        (initial.affine, 10.0),
+        (data["duration"], 2e-7),
+        (data["damping_rate"], 200.0),
+    ]:
+        original = source.numpy().copy()
+        direction = rng.normal(size=original.shape) * scale
+        ad = np.sum(source.grad.numpy() * direction)
+        for eps in [1e-4, 1e-5]:
+            values = []
+            for sign in [-1, 1]:
+                source.assign(original + sign * eps * direction)
+                values.append([a.numpy() for a in run()])
+            fd = sum(np.sum((b - a) * s) for a, b, s in zip(*values, seeds)) / (2 * eps)
+            np.testing.assert_allclose(ad, fd, rtol=2e-5, atol=2e-8)
+        source.assign(original)
+
+
+def test_default_damping_rate_and_restart():
+    m, initial, geometry, history, data = setup("opened")
+    m.config = replace(m.config, flip_fraction=0.95, flip_reference_dt=25e-6)
+    rng = np.random.default_rng(79)
+    initial.v.assign(initial.v.numpy() + rng.normal(size=(m.n, 3)) * 0.03)
+    implicit = rollout(initial, geometry, history, data, steps=4)
+    explicit = rollout(initial, geometry, history, dict(data, damping_rate=m.array([2000.0], float)), steps=4)
+    for a, b in zip(
+        targets(implicit) + [implicit.damping_energy], targets(explicit) + [explicit.damping_energy]
+    ):
+        np.testing.assert_allclose(a.numpy(), b.numpy(), rtol=3e-14, atol=1e-14)
+    continued = rollout(implicit.state, implicit.geometry, implicit.history, data, steps=4)
+    resumed = rollout(
+        AffineState.restore(implicit.state.snapshot(), device=m.device),
+        InterfaceGeometry.restore(implicit.geometry.snapshot(), device=m.device),
+        m.array(implicit.history.numpy(), float),
+        data,
+        steps=4,
+    )
+    for a, b in zip(targets(continued), targets(resumed)):
+        np.testing.assert_array_equal(a.numpy(), b.numpy())

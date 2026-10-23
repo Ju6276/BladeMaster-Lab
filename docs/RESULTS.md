@@ -1639,3 +1639,24 @@ RTX 4090，`5212332`、dirty=true。6/4 mm 方块、扰动方块和圆柱六例�
 对称半步组合的纯旋转、受载开裂、塑性及含随机速度的已有损伤共 **12** 例完成。已有损伤三档的实际传递耗散 **9.6220254e-7/9.6220258e-7/9.6220259e-7 J**，能量相对残差 ≤**2.05e-12**，最细相邻速度差 **2.6805e-8 m/s**，永久历史保持 **1e-3 m**。仿射运动例的计算耗散处于舍入尺度（单步最小 **−3.69e-18 J**），按带符号原值计入账本。方法和本地推导见 METHOD；组合的时长链及接触联合推进继续核对。
 
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/affine_damping_probe.py`；`runs/e5_release_audit/stages_damping_validate.py`；`runs/e5_release_audit/stages_damping_opened.py`。报告在 `e5-grid-20261023/runs/grid_update/`，同名 JSON。
+
+
+## 2026-10-23：固定率耗散接入分阶段推进
+
+RTX 4090，`f2506bf`、dirty=true。`reference_damping.decay` 已连接 `cohesive_stages.advance_affine`，输出两半步的动能变化，半步时长、耗散率和速度矩保留反向链。六种网格/形状的 **48** 组差分最大相对误差 **8.691e-8**；200 μs 一次推进与四次等分的速度差 ≤**1.5544e-15 m/s**，全局仿射场变化 ≤**5.8634e-16 m/s**。
+
+正式入口的 **18** 例能量/步长检查完成，η=2000 s⁻¹、dt=2/1/0.5 μs。含随机速度的已有损伤例：耗散 **9.6220254e-7/9.6220258e-7/9.6220259e-7 J**，能量相对残差 ≤**2.05e-12**，相邻速度差 **1.07227e-7→2.68050e-8 m/s**。纯旋转、预载旋转均零开口、零损伤；受载开裂最细档能量相对残差 **1.37588e-9**；塑性三档残差 **5.65980e-5/2.82956e-5/1.41469e-5**。仿射场的最小单步计算耗散为 **−5.32e-18 J**，账本保留舍入后的带符号原值。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/damping_source_gradient.py`；`runs/e5_release_audit/damping_source_energy.py`；`-m pytest tests/test_reference_damping.py tests/test_cohesive_stages.py -q`。报告/日志在 `e5-grid-20261023/runs/grid_update/damping_*`。下一项连接刀/板接触、界面闭合碰撞和自然切面出生，再核对整体切割能量。
+
+定向检查 **23 passed**（174.08 s）；追加分段反向核对 **2 passed**（12.71 s），覆盖零/非零速率下速度矩、时长及速率梯度。八步联合推进新增 **8** 组输入差分通过（rtol=2e-5、atol=2e-8），同时对端点、查询中点、界面状态和耗散能量求导。对角解析算子覆盖零时长、零速率及 ηt=200；两类守恒量和重启检查通过。
+
+闭合界面非均匀速度检查：dt=2/1/0.5 μs 的开口与损伤均为 **0**，能量相对残差幅值 **1.8342e-8/9.3787e-9/4.7413e-9**；末端开口速度残差 **1.6626e-5/8.3128e-6/4.1563e-6 m/s**，随步长呈一阶下降。耗散半步不保持闭合速度约束；第 6 项将约束和耗散联合推进，再核对约束残差、能量与反向。命令 `runs/e5_release_audit/damping_closed_probe.py`，报告 `runs/grid_update/damping_closed_probe.json`。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1540 passed、8 skipped、18 subtests passed**（603.60 s），日志 `runs/grid_update/damping_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：闭合约束子空间耗散原型
+
+RTX 4090，`f2506bf`、dirty=true。闭合非均匀速度使用 ΠLΠ 的生成算子，在 dt=2/1/0.5 μs 下保持零开口、零损伤，末端开口速度残差 ≤**4.99e-16 m/s**；能量相对残差幅值 **7.6074e-11/1.9002e-11/4.7483e-12**。相邻速度差 **5.0937e-10→1.2736e-10 m/s**，比值约 4。固定秩约束映射、速度、时长、速率共 **32** 组差分最大相对误差 **7.106e-8**；约束方向导数与 SciPy `expm_frechet` 对照的相对差 ≤**7.801e-15**，4/8 点积分的伴随矩阵最大差 **1.364e-12**。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/damping_constrained_probe.py`；`runs/e5_release_audit/constrained_damping_adjoint.py`。报告 `runs/grid_update/{damping_constrained_probe,constrained_damping_adjoint}.json`。下一项整理任意三维约束映射、零/大时间率积的反向和闭合行选择，再接入正式材料推进及自然接触。

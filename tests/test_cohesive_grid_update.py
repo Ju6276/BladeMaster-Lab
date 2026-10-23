@@ -123,10 +123,15 @@ def test_fracture_energy_and_history_survive_unloading_and_restart():
     assert np.all(direct.interface.history.numpy() >= saved_history)
 
 
-def test_coupled_trajectory_input_derivatives():
+@pytest.mark.parametrize("intact", [False, True])
+def test_coupled_trajectory_input_derivatives(intact):
     m, codes, geometry, history, data = patch()
     side = np.where(codes == 1, -1.0, 1.0)[:, None]
     gap = np.array([0.0001, 0.0002, 0.0001])
+    if intact:
+        gap[:] = 0.0
+        data["duration"] = m.duration
+        data["separation_map"] = m.array(data["separation_map"].numpy(), float, False)
     state = m.state(x=m.reference + side * gap / 2, v=side * np.array([0.3, 0.2, -0.1]))
     geometry.gap.assign(np.tile(gap, (len(history), 1)))
     history.assign(np.full(len(history), 1.2 * np.linalg.norm(gap)))
@@ -146,7 +151,10 @@ def test_coupled_trajectory_input_derivatives():
         for a, scale in zip(output, [0.01, 1.0, 1.0, 0.0028, 1.0, 0.0028])
     ]
     tape.backward(grads={a: m.array(s, a.dtype, False) for a, s in zip(output, seeds)})
-    for source in [state.v, data["material"], m.young, data["duration"]]:
+    sources = [state.v, data["material"], m.young]
+    if not intact:
+        sources.append(data["duration"])
+    for source in sources:
         base = source.numpy().copy()
         direction = rng.normal(size=base.shape) * np.maximum(np.abs(base), 1e-12)
         ad = np.sum(source.grad.numpy() * direction)

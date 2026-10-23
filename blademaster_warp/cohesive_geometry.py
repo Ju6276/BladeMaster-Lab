@@ -90,7 +90,7 @@ class InterfaceGeometry:
                 rate = np.einsum("pa,qpb->qab", v, G)
                 _add_gradient(duration, np.array([np.sum(sg * (B @ v)) + np.sum(sF * rate)]))
 
-            tape.record_func(backward, [high_gap, high_frame, *sources])
+            tape.record_func(backward, [high_gap, high_frame, *[a for a in sources if a.requires_grad]])
         return result
 
 

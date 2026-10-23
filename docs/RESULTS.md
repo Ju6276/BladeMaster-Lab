@@ -1377,3 +1377,13 @@ RTX 4090，`28c08cb`、dirty=true。`reference_cut.quadrature` 的 **14 passed**
 干净 `22d421a` 的 160 步已有损伤/受载断裂扫描已完成，分别为八/六类输入、32/24 行自然差分；每类均至少两档误差 ≤**2e-5**，最差第二档 **4.93259e-6/2.74636e-7**。命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/extrinsic_grid_scan.py --solver unified --mode existing --steps 160 --output runs/reference_interface/grid_library_existing160.json`；`runs/e5_release_audit/extrinsic_grid_loaded_scan.py --solver unified --mode opening --steps 160 --output runs/reference_interface/grid_library_loaded160.json`。
 
 提交前全量 **1142 passed、8 skipped、18 subtests passed**（279.81 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/reference_cut_final_full.log`。
+
+## 2026-10-23：偏移切面的双侧网格映射
+
+RTX 4090，`b899437`、dirty=true。`reference_grid.build_trace` 六项测试通过，覆盖四个轴向/斜向切面的三线性多项式及梯度重现、切面位置/法向经过几何与网格映射的两档差分，以及四步内聚材料推进的两档差分（rtol=2e-5、atol=1e-9）。固定步长、固定网格质量的自定义反向登记已修复，闭合材料推进的初速度/材料输入差分通过。相关测试共 **16 passed**（83.01 s）：`PYTHONPATH=. .venv/bin/python -m pytest tests/test_reference_grid.py tests/test_cohesive_grid_update.py tests/test_grid_constraints.py -q`，日志 `runs/grid_update/reference_grid_coupled.log`。
+
+干净 `b899437` 的延拓原型：12 mm 方块、6 mm 网格、64 粒子、96 积分点，切面偏移 **1 mm**、推进 **200 μs**，dt=2/1/0.5 μs。旋转能量相对残差 **1.62335e-6/8.11860e-7/4.05976e-7**；预拉伸幅值 **2.09824e-4/1.04934e-4/5.24726e-5**；受载断裂 **8.62933e-5/4.44269e-5/2.25651e-5**。断裂参数 G_c=7 J/m²、强度 50 kPa，双侧加速度 ±2e5 m/s²；最终耗散 **0.001008 J=G_c A₀**。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/reference_extension_energy.py`，报告 `runs/grid_update/reference_extension_energy.json`。
+
+正式网格映射与 NumPy 原型在 6/4/3/2.4/2 mm 网格上相同（映射 atol=1e-15、梯度 atol=1e-12）。固定 1 mm 刀位、dt=2 μs 的一步旋转与未切场对照，位置 RMS 差 **44.0/42.0/17.3/5.83/5.22e-12 nm**。八个相位 −1/2…3/8 网格间距的 **40** 例均保持零损伤；各网格最大位置 RMS 差 **32.9/42.0/27.3/19.5/13.1 nm**，最大 F 分量 RMS 差 **2.2205e-5/2.8809e-5/2.4950e-5/2.2316e-5/1.1404e-5**。6→4 mm 不单调，后四档位置 RMS 上界下降；完整空间收敛继续核对。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/reference_grid_mesh.py` 及同入口 `--phase-scan`，报告 `runs/grid_update/reference_grid_{mesh,phase}.json`。
+
+提交前全量 **1149 passed、8 skipped、18 subtests passed**（335.95 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/reference_grid_full.log`。

@@ -59,5 +59,5 @@ def project_velocity(mapping, mass, velocity, active=None):
             if velocity.requires_grad:
                 velocity.grad.assign(velocity.grad.numpy() + masses[:, None] * dual)
 
-        tape.record_func(backward, [result, mapping, mass, velocity])
+        tape.record_func(backward, [result, *[a for a in [mapping, mass, velocity] if a.requires_grad]])
     return result

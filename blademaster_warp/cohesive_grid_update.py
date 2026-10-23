@@ -150,6 +150,17 @@ def advance_material(
             outputs=[mapping, gradient],
             device=model.device,
         )
+        closed_motion = None
+        if (
+            np.all(intact[support])
+            and np.all(geometry.gap.numpy()[support] == 0.0)
+            and np.all(geometry.gap_remainder[support] == 0.0)
+        ):
+            closed_motion = (
+                duration.numpy().astype(np.longdouble)[0]
+                * np.sqrt(mass.numpy().astype(np.longdouble))[:, None]
+                * data["increment"].numpy().astype(np.longdouble)
+            )
         response, updated = solve_geometry(
             free,
             reference_normal,
@@ -161,6 +172,7 @@ def advance_material(
             unit_mass,
             duration,
             integrated_force=True,
+            closed_motion=closed_motion,
         )
         velocity = model.zeros(grid.count, wp.vec3)
         wp.launch(

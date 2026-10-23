@@ -337,8 +337,7 @@ def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u,
     """Differentiate the fixed-rank closed constraint and its selected reaction."""
     q, _, _, _, _, b, _, area, mass, dt = values
     coefficient = mass[0] / dt[0] ** 2
-    mobility = b @ b.T
-    inverse = np.linalg.pinv(mobility, rcond=max(mobility.shape) * np.finfo(float).eps, hermitian=True)
+    inverse = np.linalg.pinv(b, rcond=max(b.shape) * np.finfo(float).eps)
     seed_u = rhs_u.reshape(u_numpy.shape)
     seed_t = rhs_t.reshape(traction_numpy.shape)
 
@@ -357,16 +356,14 @@ def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u,
     adj_weighted += (weighted_inverse.T @ pressure) @ pressure_null.T
     seed_u = seed_u - force_dual
 
-    reaction = inverse @ q
-    seed_reaction = -b @ seed_u
-    adj_q = inverse @ seed_reaction
-    null = np.eye(len(q)) - mobility @ inverse
-    adj_mobility = -adj_q @ reaction.T
-    adj_mobility += (inverse @ inverse @ seed_reaction) @ (null @ q).T
-    adj_mobility += (null @ seed_reaction) @ (inverse @ reaction).T
+    adj_q = -inverse.T @ seed_u
+    residual = q + b @ u_numpy
+    null_seed = seed_u - inverse @ (b @ seed_u)
     gradients = [np.zeros_like(value) for value in values]
     gradients[0] = adj_q
-    gradients[5] = -reaction @ seed_u.T + (adj_mobility + adj_mobility.T) @ b
+    gradients[5] = adj_q @ u_numpy.T
+    gradients[5] -= residual @ (inverse @ (inverse.T @ seed_u)).T
+    gradients[5] += (inverse.T @ u_numpy) @ null_seed.T
     gradients[5] += (adj_weighted * root_area[None, :]).T
     gradients[7] = np.sum(adj_weighted * b.T, axis=0) / (2 * root_area)
     gradients[7] -= np.sum(seed_t * traction_numpy, axis=1) / (2 * area)

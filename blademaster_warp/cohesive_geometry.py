@@ -113,8 +113,15 @@ def solve_geometry(
     duration,
     *,
     compliance_scale=1.0,
-    integrated_force=False
+    integrated_force=False,
+    closed_motion=None,
 ):
+    """Solve the interface response, retaining compensated geometry.
+
+    closed_motion optionally supplies d with g=B d on positive-area rows;
+    it is a factored evaluation of the same free gap, in mass-normalized metres.
+    The VJP follows g and B, whose chain rule includes that nodal motion.
+    """
     inputs, values = _validated_inputs(
         geometry.gap,
         geometry.frame,
@@ -135,6 +142,7 @@ def solve_geometry(
         geometry.frame_remainder,
         compliance_scale,
         integrated_force=integrated_force,
+        closed_motion=closed_motion,
     )
     device = geometry.gap.device
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)

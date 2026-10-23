@@ -1549,3 +1549,11 @@ RTX 4090，`c0e09f7`、dirty=true。新增 **6** 项朝向检查通过，覆盖 
 ## 2026-10-23：当前公式的 E3 六毫米下刀步长细化
 
 RTX 4090，干净 `ca90da9`，命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py cut_h6_refine`。0.24 s、15.625/7.8125/3.90625 μs 的 **12** 组自然差分全部通过，最大误差 **0.009032%**；三档 32 步检查点状态重算差 **0**。相邻位置最大差 **5.513→1.591 nm**，横向/深度梯度相邻差 **0.11836%→0.011813% / 0.18223%→0.11009%**。报告 `e3-current-20261022/runs/e3_ca90da9/cut_h6_refine/report.json`；队列继续完整轨迹细化及 4 mm 活跃释放补充检查。
+
+## 2026-10-23：闭合界面弱约束与参考边界
+
+RTX 4090，`0b279f6`、dirty=true。相关 **27 passed**（64.68 s），新增九项：6/4 mm 的平移、旋转和非均匀运动与自由材料的状态/初速度伴随一致；奇异值 **1、2⁻²⁰、2⁻³⁵** 的解析闭合约束及反向通过；外侧参考积分点保持三线性值、空间梯度和位置伴随。六组 **3.2 ms** 自然事件几何观察通过，累计 **196** 个接受段，末端 **2952/2292/2292/2637/471/471** 个积分点，多项式重现误差 ≤**1.333e-15**，恢复权重差 **0**。
+
+实际自然事件生成的 **288** 点、39 网格槽界面完成一次 **2 μs** 材料推进，耗时 **0.1533 s**，最大历史 **0**。**576** 点、47 槽例的非线性线搜索在第九次迭代失败，归一化残差 **2.55145e-14**；直接闭合候选超出原强度界。残差缩放和约束零空间原型均未解决该例，继续核对承载可行性与活跃约束切换。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_closed_motion.py tests/test_reference_grid.py -q`；`runs/e5_release_audit/birth_orientation_natural16_fixed.py`；`runs/e5_release_audit/natural_coupling_profile.py --segments 4 --output runs/grid_update/natural_coupling_factored4_final.json`（576 点使用 `--segments 8`）。报告/日志在 `e5-grid-20261023/runs/grid_update/`。提交前全量 `-m pytest tests -q` 为 **1405 passed、8 skipped、18 subtests passed**（507.17 s），日志 `closed_boundary_full.log`；8 项跳过为 CRESSim 上游构建。

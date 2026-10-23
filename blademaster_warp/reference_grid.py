@@ -176,7 +176,8 @@ def build_trace(model, topology, points, normals, sides, *, visibility=None):
     visible reference mass. Visibility is an optional boolean (point, particle)
     mask. Missing nodes use the polynomial of the closest compatible
     particle-supported cell; ties use lexicographic cell order. Cell and root
-    selection are rebuilt for each call.
+    selection are rebuilt for each call. Particle-domain faces beyond the
+    nominal grid use the boundary cell polynomial at their actual coordinates.
     """
     count = len(points)
     sides = np.asarray(sides)
@@ -206,9 +207,7 @@ def build_trace(model, topology, points, normals, sides, *, visibility=None):
     spacing = model.config.grid_spacing
     origin = -np.array([model.config.size[0] / 2, model.config.size[1] / 2, 0.0])
     cells = grid_cells(model.config.size, spacing)
-    if np.any(values < origin) or np.any(values > origin + cells * spacing):
-        raise ValueError("Trace points must lie in the reference grid")
-    bases = np.minimum(np.floor((values - origin) / spacing).astype(int), cells - 1)
+    bases = np.clip(np.floor((values - origin) / spacing).astype(int), 0, cells - 1)
     indices, coefficients = _coefficients(model, topology, bases, sides, origin, cells, visibility)
     weights = model.zeros((count, 2, topology.count), float)
     gradients = model.zeros((count, 2, topology.count), wp.vec3)

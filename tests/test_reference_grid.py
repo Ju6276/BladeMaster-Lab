@@ -334,3 +334,35 @@ def test_trace_rejects_a_side_without_any_compatible_particle():
     topology = model.topology(np.full(model.n, 2))
     with pytest.raises(ValueError, match="compatible particle support"):
         build_trace(model, topology, points, normals, sides)
+
+
+@pytest.mark.parametrize("spacing", [0.006, 0.004])
+def test_particle_domain_boundary_overhang_preserves_polynomial_and_position_vjp(spacing):
+    model = MaterialTrajectory(
+        Config(size=(0.012, 0.012, 0.012), grid_spacing=spacing, external_tool=True),
+        precision="float64",
+        ordered_transfers=True,
+    )
+    topology = model.topology(np.where(model.reference[:, 0] < 0.0007, 1, 2))
+    coordinates = np.array(
+        [
+            [0.0007, -0.006 - spacing / 8, 0.003],
+            [0.0007, 0.006 + spacing / 8, 0.013],
+            [0.0007, -0.002, -spacing / 8],
+        ]
+    )
+    points = model.array(coordinates, wp.vec3)
+    normals = model.array(np.tile([1.0, 0.0, 0.0], (len(points), 1)), wp.vec3, False)
+    nodal, _ = polynomial(nodal_coordinates(model, topology), spacing)
+    expected, gradient = polynomial(coordinates, spacing)
+    with wp.Tape() as tape:
+        trace = build_trace(model, topology, points, normals, np.tile([1, 2], (len(points), 1)))
+    for side in [0, 1]:
+        np.testing.assert_allclose(trace.weights.numpy()[:, side] @ nodal, expected, rtol=2e-14, atol=2e-15)
+        np.testing.assert_allclose(
+            np.einsum("qna,n->qa", trace.gradients.numpy()[:, side], nodal), gradient, rtol=2e-14, atol=2e-13
+        )
+    seed = np.zeros(trace.weights.numpy().shape)
+    seed[:, 1] = nodal
+    tape.backward(grads={trace.weights: model.array(seed, float, False)})
+    np.testing.assert_allclose(points.grad.numpy(), gradient, rtol=2e-14, atol=2e-13)

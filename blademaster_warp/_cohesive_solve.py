@@ -251,8 +251,9 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False, *, integ
     support = area > 0.0 if integrated_force else np.ones(count, dtype=bool)
     if np.all(history[support] == 0.0):
         active_b = b[support]
-        reaction, _, reaction_rank, _ = np.linalg.lstsq(active_b @ active_b.T, q[support], rcond=None)
-        candidate_u = -active_b.T @ reaction
+        motion, _, reaction_rank, _ = np.linalg.lstsq(active_b, q[support], rcond=None)
+        candidate_u = -motion
+        reaction = np.linalg.lstsq(active_b.T, motion, rcond=None)[0]
         root_area = np.sqrt(area)
         weighted = b.T * root_area[None, :]
         pressure = np.linalg.lstsq(weighted, -candidate_u, rcond=None)[0]
@@ -482,12 +483,94 @@ def solve_primal(values, compliance_factor=1.0, return_traction=False, *, integr
     return u, result, compliance, info
 
 
-def refine_geometry(values, gap_remainder, frame_remainder, compliance_factor=1.0, *, integrated_force=False):
+def _closed_increment(values, motion):
+    """Solve g=B(d+u)=0 from d without subtracting nearly equal point gaps.
+
+    d is the mass-normalized free nodal displacement. The supplied gap and
+    B d must agree within the rounding bound of their coordinate conversion.
+    """
+    q, frame, reference, history, material, b, gradient, area, mass, dt = values
+    support = area > 0.0
+    if not np.any(support) or np.any(history[support] != 0.0):
+        return None
+    motion = np.asarray(motion, dtype=np.longdouble)
+    if motion.shape != (b.shape[1], 3) or not np.isfinite(motion).all():
+        raise ValueError("Closed motion must match the mass-normalized grid displacement")
+    product = b @ motion
+    bound = 64 * np.finfo(float).eps * (np.abs(b) @ np.abs(motion))
+    if np.any(np.abs(q[support] - product[support]) > bound[support]):
+        raise ValueError("Closed motion must generate the supported free gap")
+    active = b[support].astype(float)
+    _, singular, right = np.linalg.svd(active, full_matrices=False)
+    rank = np.count_nonzero(singular > singular[0] * max(active.shape) * np.finfo(float).eps)
+    right = right[:rank].astype(np.longdouble)
+    u = -right.T @ (right @ motion)
+    root_area = np.sqrt(area)
+    weighted = b.T * root_area[None, :]
+    pressure = np.linalg.lstsq(weighted.astype(float), -u.astype(float), rcond=None)[0]
+    pressure = pressure.astype(np.longdouble)
+    for _ in range(8):
+        pressure += np.linalg.lstsq(
+            weighted.astype(float), (-u - weighted @ pressure).astype(float), rcond=None
+        )[0]
+    balance = u + weighted @ pressure
+    balance_bound = (
+        64 * np.finfo(float).eps * (np.linalg.norm(u) + np.linalg.norm(weighted) * np.linalg.norm(pressure))
+    )
+    if np.linalg.norm(balance) > balance_bound:
+        raise RuntimeError("Factored closed reactions failed nodal momentum balance")
+    coefficient = mass[0] / dt[0] ** 2
+    force = coefficient * pressure * root_area[:, None]
+    frame = frame + np.einsum("pa,qpb->qab", u, gradient)
+    normal = (
+        reference[:, :1] * np.cross(frame[:, :, 1], frame[:, :, 2])
+        + reference[:, 1:2] * np.cross(frame[:, :, 2], frame[:, :, 0])
+        + reference[:, 2:3] * np.cross(frame[:, :, 0], frame[:, :, 1])
+    )
+    normal /= np.linalg.norm(normal, axis=1)[:, None]
+    component = np.sum(force * normal, axis=1)
+    positive = force - np.minimum(component, 0.0)[:, None] * normal
+    if np.any(np.linalg.norm(positive, axis=1) > area * material[:, 0]):
+        return None
+    gap = q + b @ u
+    gap[support] = 0.0
+    error = float(np.max(np.abs(right @ (motion + u)), initial=0.0))
+    info = dict(
+        iterations=0,
+        initial_evaluations=0,
+        initializer="closed_linear",
+        closed_linear_solution=True,
+        closed_factorized=True,
+        residual=error,
+        extended_residual=error,
+        closed=int(np.count_nonzero(support)),
+        compressed=int(np.count_nonzero(component < 0)),
+    )
+    return u.astype(float), force.astype(float), info, gap, frame
+
+
+def refine_geometry(
+    values,
+    gap_remainder,
+    frame_remainder,
+    compliance_factor=1.0,
+    *,
+    integrated_force=False,
+    closed_motion=None,
+):
     if np.finfo(np.longdouble).nmant <= np.finfo(np.float64).nmant:
         raise RuntimeError("Interface refinement requires extended-precision CPU arithmetic")
     precise = [np.asarray(value, dtype=np.longdouble) for value in values]
     precise[0] = precise[0] + gap_remainder
     precise[1] = precise[1] + frame_remainder
+    if closed_motion is not None:
+        if not integrated_force:
+            raise ValueError("Factored closed motion requires integrated interface forces")
+        closed = _closed_increment(precise, closed_motion)
+        if closed is not None:
+            u, force, info, gap, frame = closed
+            compliance = setup(values, compliance_factor, integrated_force=True)[2]
+            return u, force, compliance, info, gap, frame
     seed_u, seed_t, seed_compliance, info = _solve_primal(
         values, compliance_factor, return_traction=True, integrated_force=integrated_force
     )
@@ -497,15 +580,14 @@ def refine_geometry(values, gap_remainder, frame_remainder, compliance_factor=1.
         coefficient = mass[0] / dt[0] ** 2
         support = area > 0.0 if integrated_force else np.ones(len(q), dtype=bool)
         active_b = b[support]
-        mobility = active_b @ active_b.T
-        reaction, _, reaction_rank, _ = np.linalg.lstsq(
-            mobility.astype(float), q[support].astype(float), rcond=None
+        motion, _, reaction_rank, _ = np.linalg.lstsq(
+            active_b.astype(float), q[support].astype(float), rcond=None
         )
-        reaction = reaction.astype(np.longdouble)
+        u = -motion.astype(np.longdouble)
         for _ in range(8):
-            residual = q[support] - mobility @ reaction
-            reaction += np.linalg.lstsq(mobility.astype(float), residual.astype(float), rcond=None)[0]
-        u = -active_b.T @ reaction
+            residual = -q[support] - active_b @ u
+            u += np.linalg.lstsq(active_b.astype(float), residual.astype(float), rcond=None)[0]
+        reaction = np.linalg.lstsq(active_b.T.astype(float), -u.astype(float), rcond=None)[0]
         root_area = np.sqrt(area)
         weighted = b.T * root_area[None, :]
         if integrated_force:

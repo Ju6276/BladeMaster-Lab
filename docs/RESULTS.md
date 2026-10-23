@@ -1263,3 +1263,24 @@ RTX 4090，`541c913` 原公式与等价应变表达对照，共 **512** 组形�
 分项扩展精度对照中，只将粒子 F 或速度在步末舍入至双精度，两档误差最大分别为 **8.674e-6/6.035e-6**；只舍入界面开口/损伤历史/面形变时，两档误差 **2.2363e-6/2.83044e-5**。界面状态舍入能重现小扰动超标，下一项分开核对这三类状态。命令为 `extrinsic_extended_reference.py --round-state deformation/velocity/interface/all --output runs/e5_release_audit/extended_<类别>64`，对应报告位于各输出目录。
 
 提交前对应源码全量 **1089 passed、8 skipped、18 subtests passed**（397.18 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，工作树 `~/Projects/BladeMaster-Warp-e5-stable-20261023`，日志 `runs/stable_stress_full.log`。源码原型的 160 步初速度四档仍通过 **1/4**，报告 `runs/e5_release_audit/stable_source_trajectory.json`；E5 继续核对界面状态精度和自然切口接入。
+
+## 2026-10-23：界面几何精度与节点面积积分对照
+
+干净 `66537e3` 上的独立原型，RTX 4090，64 粒子、dt=2 μs。仅补偿开口的 160 步初速度检查失败，两档小扰动误差 **7.52765e-6/2.01040e-5**，共 **1/4** 档通过；同时补偿开口与面形变后，四档误差为 **0.404478/0.649813/9.54776e-6/1.14416e-6**，达到 **2/4** 档。24 步八类输入各至少两档通过。原标准保持每类至少两档误差 ≤**2e-5**，160 步其余输入继续检查。
+
+节点面积积分使用 9 节点，总面积 **1.44000e-4 m²**；采样闭合步骤的约束秩 **9/9**、最小奇异值 ≥**0.1799735**。与 Gauss 算例使用完全相同的初速度和扰动方向，将节点输出插值回原积分点计算同一目标，AD **−2.1800175420**；ε=1e-4/1e-5/1e-6/1e-7 的自然差分误差为 **2.62309e-6/7.66659e-12/7.03000e-9/4.72492e-10**，四档通过。原 Gauss 离散的对应 AD 为 **−1.6345582079**；两种离散的导数变化继续用界面内部间隙及空间细化核对。独立随机目标四档也通过，最大误差 **4.09853e-7**；160 步旋转归一化状态差 **4.55191e-15**，通过 1e-10。
+
+节点原型的 200 μs、dt=2/1/0.5 μs 能量检查共 **12** 例通过。闭合承载、G_c=7/70 张开、已有损伤旋转受压的最细步长残差分别为 **0.004835%/0.108840%/−0.100459%/−0.155245%**，相邻步长残差约减半；闭合开口/损伤为 **0**，完全断裂耗散 **0.001008 J=G_c A₀**。零历史承载六类输入 × 四档自然差分通过；其余轨迹检查继续运行。
+
+命令均在 `e5-stable-20261023` 使用 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：
+
+```bash
+runs/e5_release_audit/extrinsic_precise_geometry_scan.py --solver unified --mode existing --steps 160 --inputs initial_velocity --output runs/e5_release_audit/precise_geometry160_velocity.json
+runs/e5_release_audit/extrinsic_nodal_common_velocity.py
+runs/e5_release_audit/extrinsic_nodal_rank.py
+runs/e5_release_audit/extrinsic_nodal_energy.py
+runs/e5_release_audit/extrinsic_nodal_rotation.py
+runs/e5_release_audit/extrinsic_nodal_scan.py --solver canonical --mode preload --steps 160 --output runs/e5_release_audit/nodal_preload160.json
+```
+
+报告分别为 `precise_geometry160_velocity.json`、`nodal_common_velocity.json`、`nodal_rank.json`、`nodal_energy.json`、`nodal_rotation.json`、`nodal_preload160.json`。方法与作者源码见 METHOD；本次记录未改主求解器源码，对应全量结果仍为 **1089 passed、8 skipped、18 subtests passed**。

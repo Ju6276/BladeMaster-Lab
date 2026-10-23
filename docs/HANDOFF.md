@@ -228,7 +228,7 @@ G_c=7/70/700/1400 与三档步长的 50 ms 扫描已完成，报告在 `e5-trans
 
 E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20261022`，固定干净 `ca90da9`。启动命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/e3_queue.py`；状态 `runs/e3_ca90da9/status.json`，逐项日志和报告位于同目录。8 个队列项覆盖 6 mm 活跃释放完整 Tape、4 mm 活跃释放细化、6/4 mm 下刀和完整轨迹、6 mm 下刀与完整轨迹细化。6/4 mm 基准步长及 PIC 参考时间为 15.625/13.157895 μs，接触参考时间 25 μs；每次扰动自然重建事件，梯度保留 2% 标准，失败后队列停止并保留报告。细化报告的相邻梯度和状态趋势另行核对。
 
-`e3-current/runs/e3_ca90da9/release_h6/report.json` 已通过：12 组自然差分最大误差 0.61668%，4 个粒子释放，完整 Tape 与 16/32/128 步检查点状态重算差为 0。队列已转到 `release_h4_refine`。
+`e3-current/runs/e3_ca90da9/release_h6/report.json` 已通过：12 组自然差分最大误差 0.61668%，4 个粒子释放，完整 Tape 与 16/32/128 步检查点状态重算差为 0。当前队列项为 `cut_h4`。
 
 `ca283ec` 修复内聚近端核在零开口、零历史边界的导数；7 项新增解析与单侧差分通过，全量 **1083 passed、8 skipped、18 subtests passed**（286.64 s）。当前统一界面原型工作树为 `~/Projects/BladeMaster-Warp-e5-unified-20261023`，原型 `runs/e5_release_audit/extrinsic_semismooth{,_adjoint,_probe,_validate}.py`；它用近端固定点方程连接零开口承载和张开后的移动面，16 组正向/分裂尺度和 40 类局部输入方向已通过，160 行差分保存在 `extrinsic_semismooth_validate.json`（a7df3f4、dirty=true，对应 ca283ec 源码）。该工作树已核对源码并固定干净 ca283ec；`extrinsic_unified_{surface,trajectory}.py` 接入连续粒子轨迹，包含原有 160 步正历史算例及零历史承载/起裂。自然界面生成、历史接入和完整能量扫描仍待完成。
 
@@ -261,6 +261,8 @@ E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20
 
 `extrinsic_extended_reference.py` 独立实现扩展精度 MUSL/界面前向，两档初速度差分与 AD 的误差为 3.9201e-6/3.7684e-6。`--round-state deformation/velocity/interface/all` 分别核对状态舍入，输出 `extended_{deformation,velocity,interface,all}64/`。`stable_corotated_probe.py` 对照作者稳定应变计算思路与 80 位参考；`e5-stable-20261023` 工作树验证对应源码和极旋转 VJP，全量 **1089 passed、8 skipped、18 subtests passed**，日志 `runs/stable_stress_full.log`；源码初速度轨迹仍为 1/4 档通过，报告 `runs/e5_release_audit/stable_source_trajectory.json`。方法来源、作者源码和本地推导见 METHOD。
 
-下一项解决普通双精度轨迹差分，再接自然参考面积/位置、永久历史、接触去重与完整能量扫描；参考 [Crook–Homel 的 MPM 界面定义与积分](https://www.osti.gov/servlets/purl/3003988)。
+当前原型工作树为 `~/Projects/BladeMaster-Warp-e5-stable-20261023`，干净 `66537e3`。`extrinsic_precise_geometry_scan.py` 的 24 步八类输入与 160 步初速度通过原标准；后者两档误差 9.54776e-6/1.14416e-6，余下七类输入日志为 `precise_geometry160_remaining.log`。`extrinsic_nodal_surface.py` 使用节点面积积分和平均面梯度：160 步同初态/扰动/目标对照四档通过，报告 `nodal_common_velocity.json`；12 例能量、旋转及零历史承载六类输入全部通过，报告为 `nodal_energy.json`、`nodal_rotation.json`、`nodal_preload160.json`。其余输入和张开检查日志为 `nodal160_remaining.log`、`nodal_opening160.log`，均位于 `runs/e5_release_audit/`。
+
+下一项核对上述运行结果，以及节点离散的界面内部间隙和空间细化：同一目标的 Gauss/节点 AD 分别为 −1.6345582079/−2.1800175420。然后整理通过检查的通用界面求解与离散，接自然参考面积/位置、永久历史、接触去重和完整能量扫描。已核对 Crook–Homel 作者的 GEOS `feature/crook5/czUpdate` 分支 `e068c207`：参考状态保存、节点面积、位移/力映射在 `SolidMechanicsMPM.cpp`；文件位于本机 `runs/reference_sources/GEOS/czUpdate/`，论文、固定源码链接与本地积分推导见 METHOD。原型入口和输出保留在 `runs/`，主线切割仍使用原释放公式。
 
 E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已自动开始 `three-cuts-push`。E3 的 `release_h4_refine` 已完成，12 组自然差分最大误差 **0.00043623%**、检查点状态差 **0**；三档侧码/释放/接触集合相同。深度梯度相邻变化 **0.24505%/0.27433%**，补充更细步长和事件相位核对；6 mm、0.24 s 下刀已完成，四组自然差分最大误差 **0.0224614%**、32 步检查点状态重算差 **0**；队列已进入 `cut_h4`。

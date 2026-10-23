@@ -1,8 +1,11 @@
 """Two-component float64 expansions for cancellation-sensitive linear algebra."""
 
 from dataclasses import dataclass
+import math
 
 import numpy as np
+
+from ._compensated_kernels import matrix_product
 
 
 def _two_sum(a, b):
@@ -118,9 +121,14 @@ class Expansion:
             raise ValueError("Matrix product dimensions do not match")
         batch = np.broadcast_shapes(left.shape[:-2], right.shape[:-2])
         shape = (*batch, left.shape[-2], right.shape[-1])
-        result = Expansion(np.zeros(shape))
-        for k in range(left.shape[-1]):
-            result = result + left[..., :, k, None] * right[..., None, k, :]
+        arguments = []
+        for operand in (left, right):
+            expanded = (*batch, *operand.shape[-2:])
+            flat = (math.prod(batch), *operand.shape[-2:])
+            for component in (operand.high, operand.low):
+                arguments.append(np.ascontiguousarray(np.broadcast_to(component, expanded).reshape(flat)))
+        high, low = matrix_product(*arguments)
+        result = Expansion(high.reshape(shape), low.reshape(shape))
         if self.ndim == 1:
             result = result.reshape(*batch, right.shape[-1])
         if other.ndim == 1:

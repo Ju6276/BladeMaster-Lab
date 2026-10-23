@@ -1439,3 +1439,25 @@ RTX 4090，`35153a7`、dirty=true。共享场 B=0 使用有限近端尺度；q=B
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_differentiable_cohesive.py tests/test_cohesive_grid_update.py -q`；`runs/e5_release_audit/shared_map_limit.py`；`runs/e5_release_audit/shared_energy.py`。工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，日志/报告 `runs/grid_update/{shared_solve_unit.log,shared_map_limit.json,shared_energy.json}`。
 
 提交前全量 **1223 passed、8 skipped、18 subtests passed**（366.31 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/shared_solve_full.log`。
+
+## 2026-10-23：稳定开口残差的长轨迹复验
+
+RTX 4090，`35153a7`、dirty=true，对应 `6d2ffb5` 数值源码。已有损伤的 **160** 步材料—界面轨迹，初速度、开口、历史、面形变、内聚材料、杨氏模量、时长和外加载荷共 **8** 类输入、**32** 行自然差分全部完成；每类至少两档相对误差 ≤**2e-5**，最差第二档 **1.07941e-5**。初速度的两档小扰动误差为 **2.96208e-6/1.07941e-5**。
+
+命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_grid_library_scan.py --solver unified --mode existing --steps 160 --output runs/grid_update/shared_existing160.json`，工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，报告/日志为 `shared_existing160.json/.log`。
+
+## 2026-10-23：追加参考切面的永久损伤状态
+
+RTX 4090，`6d2ffb5`、dirty=true。`CohesiveHistory` 的追加、首阶材料推进和快照共 **7** 项检查通过（12.75 s）。6/4 mm 退刀重入与交叉参考面保留旧积分点和损伤；跨追加时刻的完整反向/分段重算按 rtol=atol=2e-9 通过。三步材料轨迹的旧历史、开口、粒子形变、材料、外载、时长和新增曲面平移七类输入各两档自然差分按 rtol=2e-5、atol=1e-7 通过。
+
+四组自然事件几何累计 **31** 个接受段、**1716** 个积分点，追加时旧点状态差 **0**。16 步加载例的三个旧积分点全部断裂，耗散 **1.26e-6 J=G_c A₀**；追加三个新点时旧历史差 **0**、新历史 **0**，卸载一步的旧历史保持单调，检查点恢复后的粒子状态差 **0**。旧断裂能对前沿高度的导数为 **−0.037 J/m**，两档重建几何差分通过。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_history.py -q`；`runs/e5_release_audit/permanent_history_measure.py`。同一工作树报告/日志为 `runs/grid_update/permanent_history_{unit.log,measure.json}`。
+
+提交前全量 **1230 passed、8 skipped、18 subtests passed**（380.51 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/permanent_history_full.log`。
+
+## 2026-10-23：闭合界面不等面积拆分的历史导数
+
+RTX 4090，`6d2ffb5`、dirty=true（内聚公式同该提交）。总面积 **4e-6 m²**、自由开口 **1 μm** 的同位置积分点按 **60/40、65/35** 拆分，闭合分支的位移不变，零历史处的共同历史导数却为 **0.6510417/0.6868132**，解析值均为 **0.625**。1e-11 m 单侧差分为 **0.6249961**，两组误差 **4.0006%/9.0006%**，检查失败。闭合分支按未加权约束分配反力，使牵引依赖拆分权重；下一项统一面积加权反力与相应 VJP，并复测不等面积、零面积极限及长轨迹。1e-12 m 历史扰动还触发光滑初值的 KKT 细化失败，另核对其病态驻点求解。
+
+命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/unequal_area_limit.py`，工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，报告/日志 `runs/grid_update/unequal_area_limit.json/.log`。14 组正向、42 组单侧扰动逐项保存数值或求解错误。

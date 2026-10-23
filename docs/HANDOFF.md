@@ -287,6 +287,12 @@ E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-2026
 
 `reference_grid.build_trace` 的部分侧码映射按同节点相容场的参考质量加权，随后采用现有多项式延拓。CRAMP 来源及本地推导见 METHOD。`runs/grid_update/partial_trace_unit.log` 为 **18 passed**（61.01 s），全量 `partial_trace_full.log` 为 **1203 passed、8 skipped、18 subtests passed**（413.32 s）；`natural_surface_support.json` 的四种初态/刀角共 **31** 个接受段、**24** 个非空面、**1716** 个积分点全部建立映射；基线的十次缺失侧码错误已修复。
 
-全共享场 Q=0 的内聚平衡已处理零自由度和冗余牵引，开口残差使用代数等价的牵引形式。`shared_solve_unit.log` 为 **65 passed**（52.30 s）；全量 `shared_solve_full.log` 为 **1223 passed、8 skipped、18 subtests passed**（366.31 s）。`shared_map_limit.json` 的映射梯度与解析解一致，四档差分最大误差 **1.38103e-13**；`shared_energy.json` 的十二例能量残差随步长减半约减半，四组最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**。已有损伤八类输入的 160 步复验输出到 `shared_existing160.json`，进度见同名日志。下一项处理零面积积分项、永久历史、接触去重和 RK2 接入。
+全共享场 Q=0 的内聚平衡已处理零自由度和冗余牵引，开口残差使用代数等价的牵引形式。`shared_solve_unit.log` 为 **65 passed**（52.30 s）；全量 `shared_solve_full.log` 为 **1223 passed、8 skipped、18 subtests passed**（366.31 s）。`shared_map_limit.json` 的映射梯度与解析解一致，四档差分最大误差 **1.38103e-13**；`shared_energy.json` 的十二例能量残差随步长减半约减半，四组最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**。`shared_existing160.json` 的已有损伤八类输入均至少两档误差 ≤**2e-5**，最差第二档 **1.07941e-5**，共 **32** 行差分。
+
+永久状态入口 `cohesive_history.CohesiveHistory` 的追加、材料推进、快照及分段反向已接好，方法来源及本地映射见 METHOD。`permanent_history_unit.log` 为 **7 passed**（12.75 s）；七类输入共 **14** 组自然差分通过。`permanent_history_measure.json` 的四组自然几何共 **31** 个接受段、**1716** 个积分点，旧点状态差 **0**；材料加载后的旧断裂能 **1.26e-6 J**，追加前后旧历史差及恢复后的粒子状态差均为 **0**。下一项将永久状态接入自然双侧码、零面积物理装配、接触去重及 RK2 分段。
+
+提交前全量 `permanent_history_full.log` 为 **1230 passed、8 skipped、18 subtests passed**（380.51 s）。
+
+零面积装配前的 `unequal_area_limit.json` 暴露闭合分支的反力选择问题：同位置积分点的面积按 60/40、65/35 拆分，共同历史导数分别为 **0.6510417/0.6868132**，解析值 **0.625**，单侧差分误差 **4.0006%/9.0006%**。下一步统一闭合分支的面积加权反力和 VJP，保留零历史单侧导数并复测面积拆分；1e-12 m 历史扰动的光滑初值 KKT 失败一并定位。上述永久状态代码未修改内聚平衡公式。
 
 插入失败对照位于 `e5-interface-20261023/runs/interface_insertion/patch.json`：平移在 1.096e-23～4.386e-23 m 的间隙舍入处触发半光滑线搜索失败；刚体旋转 dt=2 μs 的假断裂耗散为 6.240e-6 J。该对照对应 `b7048c7`、dirty=true 的 `f507dc0` 源码。入口 `runs/e5_release_audit/extrinsic_insertion_patch.py`。

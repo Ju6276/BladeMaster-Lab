@@ -1294,3 +1294,20 @@ RTX 4090，独立原型基于干净 `66537e3`，固定 12 mm 方块、E=20 kPa�
 可复用全局接口的验证源码基于 `7456cbc`、dirty=true，工作树 `e5-interface-20261023`。**10** 项单步测试通过（5.73 s），覆盖四类状态 × 十类输入 × 四档差分、总内力、旋转、面积拆分和冗余约束反向。24 步八类输入各至少两档 ≤**2e-5**，最差第二档 **4.84531e-6**；已有损伤、零历史承载、零历史张开三种 160 步 TLMPM 轨迹与原型的逐步状态/能量/外功差均为 **0**。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_cohesive.py -q`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_library_scan.py --solver canonical --mode existing --steps 24 --output runs/interface_extract/trajectory24.json`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_library_compare.py`。
 
 提交前全量 **1099 passed、8 skipped、18 subtests passed**（277.54 s），命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/interface_extract/full.log`；8 项跳过为 CRESSim 上游构建。全局接口已整理，下一项接入自然参考面、永久历史、接触去重与 RK2，并重复完整能量扫描。
+
+## 2026-10-23：补偿界面几何与检查点
+
+RTX 4090，`b7048c7`、dirty=true。`cohesive_geometry.InterfaceGeometry` 同时保存开口、面形变及舍入余量；普通与补偿存储共 **23 passed**（14.83 s）。11 步界面轨迹的 3/4 步检查点重算状态完全一致，初态和参数梯度按 rtol=atol=1e-10 通过。全量 **1112 passed、8 skipped、18 subtests passed**（287.52 s）；8 项跳过为 CRESSim 上游构建。
+
+64 粒子、16 Gauss 点、dt=2 μs、160 步，已有损伤、零历史承载和零历史张开三种实际 TLMPM 轨迹与扩展精度原型的最大归一化状态差分别为 **7.661e-15/5.552e-16/0**，能量差 ≤**4.337e-19 J**。已有损伤的初速度 AD **−1.634558208340304**，四档差分相对误差 **0.404478/0.649813/6.42872e-6/9.62676e-8**，达到原要求的至少两档 ≤2e-5；其余输入继续复核。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_cohesive.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_geometry_compare.py
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_library_geometry_scan.py --solver unified --mode existing --steps 160 --inputs initial_velocity --output runs/interface_precision/velocity160.json
+```
+
+日志和报告位于 `runs/interface_precision/`，工作树见 HANDOFF。
+
+干净 `66537e3` 的扩展精度原型已完成 160 步其余七类输入，加上初速度共 **8/8** 类均至少两档通过；其余七类的最差第二档误差 **1.42430e-6**。2 mm 节点空间对照的四档差分全部通过，最大误差 **4.02542e-6**，内部 Gauss 位置的最小间隙 **−1.54109 μm**。命令分别为 `extrinsic_precise_geometry_scan.py --solver unified --mode existing --steps 160 --inputs initial_gap initial_history initial_frame material young duration acceleration --output runs/e5_release_audit/precise_geometry160_remaining.json` 和 `extrinsic_fast_mesh_validate.py --spacing .002 --quadrature nodal --output runs/e5_release_audit/nodal_mesh_h002.json`，均使用 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/<入口>`。

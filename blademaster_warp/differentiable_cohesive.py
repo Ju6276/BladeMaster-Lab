@@ -158,7 +158,7 @@ def _evaluate(inputs, u, traction, compliance):
     return (result, Ru, Rg)
 
 
-def _solve_arrays(inputs, compliance_scale=1.0):
+def _implicit_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t):
     device = inputs[0].device
 
     def array(value, vector=False, grad=False):
@@ -166,68 +166,76 @@ def _solve_arrays(inputs, compliance_scale=1.0):
             np.asarray(value), dtype=wp.vec3d if vector else wp.float64, device=device, requires_grad=grad
         )
 
+    (_, _, weights) = geometry(values[0], values[1], values[2], values[5], values[6])
+    matrix = weights.transpose(1, 0, 2).reshape(-1, values[5].shape[1])
+    (_, singular, Vt) = np.linalg.svd(matrix, full_matrices=False)
+    rank = np.count_nonzero(singular > singular[0] * max(matrix.shape) * np.finfo(float).eps)
+    basis = np.kron(Vt[:rank].T, np.eye(3))
+    size = basis.shape[1]
+    rhs = np.r_[basis.T @ rhs_u, rhs_t]
+    clones = [
+        wp.array(v, dtype=a.dtype, device=a.device, requires_grad=True) for (v, a) in zip(values, inputs)
+    ]
+    fixed_u = array(u_numpy, True, True)
+    fixed_t = array(traction_numpy, True, True)
+    with wp.Tape() as local:
+        (_, Ru, Rg) = _evaluate(clones, fixed_u, fixed_t, compliance)
+    rows = []
+    for column in basis.T:
+        local.zero()
+        local.backward(grads={Ru: array(column.reshape(-1, 3), True)})
+        rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), fixed_t.grad.numpy().ravel() / compliance])
+    shape = Rg.numpy().shape
+    for index in range(np.prod(shape)):
+        local.zero()
+        unit = np.zeros(shape)
+        unit.ravel()[index] = 1.0
+        local.backward(grads={Rg: array(unit, True)})
+        rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), fixed_t.grad.numpy().ravel() / compliance])
+    J = np.array(rows)
+    dual = np.linalg.lstsq(J.T, rhs, rcond=None)[0]
+    # The orthogonal momentum block is identity; retain its map derivatives.
+    au = basis @ dual[:size] + rhs_u - basis @ (basis.T @ rhs_u)
+    ag = dual[size:].reshape(shape)
+    local.zero()
+    local.backward(grads={Ru: array(au.reshape(-1, 3), True), Rg: array(ag, True)})
+    full_error = max(
+        np.max(np.abs(fixed_u.grad.numpy().ravel() - rhs_u)),
+        np.max(np.abs(fixed_t.grad.numpy().ravel() / compliance - rhs_t)),
+    )
+    scale = max(np.max(np.abs(rhs_u)), np.max(np.abs(rhs_t)), 1.0)
+    if full_error > 1e-10 * scale:
+        raise RuntimeError(f"Full implicit adjoint residual: {full_error}")
+    local.zero()
+    local.backward(grads={Ru: array(-au.reshape(-1, 3), True), Rg: array(-ag, True)})
+    return [a.grad.numpy().copy() for a in clones]
+
+
+def _solve_arrays(inputs, compliance_scale=1.0):
+    device = inputs[0].device
     values = [a.numpy().copy() for a in inputs]
-    (u_numpy, traction_numpy, compliance, info) = solve_primal(values, compliance_scale, return_traction=True)
-    (u, traction) = (array(u_numpy, True, True), array(traction_numpy, True, True))
+    u_numpy, traction_numpy, compliance, info = solve_primal(values, compliance_scale, return_traction=True)
+    u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
+    traction = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     tape = wp._src.context.runtime.tape
     if tape is not None:
-        (_, _, weights) = geometry(values[0], values[1], values[2], values[5], values[6])
-        matrix = weights.transpose(1, 0, 2).reshape(-1, values[5].shape[1])
-        (_, singular, Vt) = np.linalg.svd(matrix, full_matrices=False)
-        rank = np.count_nonzero(singular > singular[0] * max(matrix.shape) * np.finfo(float).eps)
-        basis = np.kron(Vt[:rank].T, np.eye(3))
-        size = basis.shape[1]
 
         def backward():
-            rhs_u = u.grad.numpy().ravel()
-            rhs_t = traction.grad.numpy().ravel() / compliance
-            rhs = np.r_[basis.T @ rhs_u, rhs_t]
-            clones = [
-                wp.array(v, dtype=a.dtype, device=a.device, requires_grad=True)
-                for (v, a) in zip(values, inputs)
-            ]
-            fixed_u = array(u_numpy, True, True)
-            fixed_t = array(traction_numpy, True, True)
-            with wp.Tape() as local:
-                (_, Ru, Rg) = _evaluate(clones, fixed_u, fixed_t, compliance)
-            rows = []
-            for column in basis.T:
-                local.zero()
-                local.backward(grads={Ru: array(column.reshape(-1, 3), True)})
-                rows.append(
-                    np.r_[basis.T @ fixed_u.grad.numpy().ravel(), fixed_t.grad.numpy().ravel() / compliance]
-                )
-            shape = Rg.numpy().shape
-            for index in range(np.prod(shape)):
-                local.zero()
-                unit = np.zeros(shape)
-                unit.ravel()[index] = 1.0
-                local.backward(grads={Rg: array(unit, True)})
-                rows.append(
-                    np.r_[basis.T @ fixed_u.grad.numpy().ravel(), fixed_t.grad.numpy().ravel() / compliance]
-                )
-            J = np.array(rows)
-            dual = np.linalg.lstsq(J.T, rhs, rcond=None)[0]
-            # The orthogonal momentum block is identity; retain its map derivatives.
-            au = basis @ dual[:size] + rhs_u - basis @ (basis.T @ rhs_u)
-            ag = dual[size:].reshape(shape)
-            local.zero()
-            local.backward(grads={Ru: array(au.reshape(-1, 3), True), Rg: array(ag, True)})
-            full_error = max(
-                np.max(np.abs(fixed_u.grad.numpy().ravel() - rhs_u)),
-                np.max(np.abs(fixed_t.grad.numpy().ravel() / compliance - rhs_t)),
+            gradients = _implicit_pullback(
+                inputs,
+                values,
+                u_numpy,
+                traction_numpy,
+                compliance,
+                u.grad.numpy().ravel(),
+                traction.grad.numpy().ravel() / compliance,
             )
-            scale = max(np.max(np.abs(rhs_u)), np.max(np.abs(rhs_t)), 1.0)
-            if full_error > 1e-10 * scale:
-                raise RuntimeError(f"Full implicit adjoint residual: {full_error}")
-            local.zero()
-            local.backward(grads={Ru: array(-au.reshape(-1, 3), True), Rg: array(-ag, True)})
-            for source, clone in zip(inputs, clones):
+            for source, gradient in zip(inputs, gradients):
                 if source.requires_grad:
-                    source.grad.assign(source.grad.numpy() + clone.grad.numpy())
+                    source.grad.assign(source.grad.numpy() + gradient)
 
         tape.record_func(backward, [u, traction, *[a for a in inputs if a.requires_grad]])
-    (result, _, _) = _evaluate(inputs, u, traction, compliance)
+    result, _, _ = _evaluate(inputs, u, traction, compliance)
     return CohesiveStep(*result, u, info)
 
 
@@ -245,7 +253,7 @@ class CohesiveStep:
     info: dict
 
 
-def solve(
+def _validated_inputs(
     free_gap,
     free_frame,
     reference_normal,
@@ -327,4 +335,35 @@ def solve(
         raise ValueError("History must be nonnegative; material, area, mass and duration must be positive")
     if np.any(np.linalg.norm(values[2], axis=1) == 0):
         raise ValueError("Reference normals must be nonzero")
+    return inputs, values
+
+
+def solve(
+    free_gap,
+    free_frame,
+    reference_normal,
+    history,
+    material,
+    separation_map,
+    frame_map,
+    area,
+    particle_mass,
+    duration,
+    *,
+    compliance_scale=1.0,
+):
+    """Return equilibrium displacement and response per reference interface area."""
+    inputs, _ = _validated_inputs(
+        free_gap,
+        free_frame,
+        reference_normal,
+        history,
+        material,
+        separation_map,
+        frame_map,
+        area,
+        particle_mass,
+        duration,
+        compliance_scale=compliance_scale,
+    )
     return _solve_arrays(inputs, compliance_scale)

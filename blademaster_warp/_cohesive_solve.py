@@ -273,18 +273,20 @@ def proximal(z, normal, history, material, compliance):
     return (gap, dz, dn, compression, closed)
 
 
-def setup(values, compliance_factor=1.0):
+def setup(values, compliance_factor=1.0, *, extended=False):
     (q, frame, normal, history, material, b, gradient, area, mass, dt) = values
-    coefficient = float(mass[0] / dt[0] ** 2)
+    coefficient = (
+        np.longdouble(mass[0]) / np.longdouble(dt[0]) ** 2 if extended else float(mass[0] / dt[0] ** 2)
+    )
     (base, full_L, weights) = geometry(q, frame, normal, b, gradient)
     matrix = weights.transpose(1, 0, 2).reshape(-1, b.shape[1])
-    (_, singular, vt) = np.linalg.svd(matrix, full_matrices=False)
+    (_, singular, vt) = np.linalg.svd(matrix.astype(float), full_matrices=False)
     rank = np.count_nonzero(singular > singular.max() * max(matrix.shape) * np.finfo(float).eps)
     basis = np.kron(vt[:rank].T, np.eye(3))
     L = full_L @ basis
     softening = np.max(material[:, 0] ** 2 / (2 * material[:, 1]))
     mobility = np.sqrt(area[:, None] * area[None, :]) * (b @ b.T) / coefficient
-    inverse_mobility = 1 / np.linalg.eigvalsh(mobility).max()
+    inverse_mobility = 1 / np.linalg.eigvalsh(mobility.astype(float)).max()
     compliance = compliance_factor / (inverse_mobility + 2 * softening)
     if compliance * softening >= 1:
         raise ValueError("Proximal subproblem is not strictly convex")
@@ -292,6 +294,8 @@ def setup(values, compliance_factor=1.0):
     size = basis.shape[1]
 
     def at(y):
+        if extended:
+            y = np.asarray(y, dtype=np.longdouble)
         u = length * y[:size]
         dual = length * y[size:].reshape(-1, 3)
         local = (base + np.einsum("qia,a->qi", L, u)).reshape(-1, 3, 3)
@@ -299,7 +303,7 @@ def setup(values, compliance_factor=1.0):
         normals = np.cross(tangent_a, tangent_b)
         measure = np.linalg.norm(normals, axis=1)
         normals /= measure[:, None]
-        normal_gradient = np.empty((len(q), 3, size))
+        normal_gradient = np.empty((len(q), 3, size), dtype=np.longdouble if extended else float)
         for i in range(len(q)):
             normal_gradient[i] = (
                 (np.eye(3) - np.outer(normals[i], normals[i]))
@@ -335,7 +339,7 @@ def setup(values, compliance_factor=1.0):
         R = np.r_[Ru, Rg.ravel()] / length
         return (R, J, dict(gap=gap, proximal_gap=prox, compression=compression, normal=normals))
 
-    return (at, basis, compliance, length)
+    return (at, basis, float(compliance), length)
 
 
 def _solve_primal(values, compliance_factor=1.0, return_traction=False):
@@ -451,8 +455,7 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False):
     )
 
 
-def solve_primal(values, compliance_factor=1.0, return_traction=False):
-    (u, traction, compliance, info) = _solve_primal(values, compliance_factor, return_traction=True)
+def canonical_reaction(values, u, traction, compliance, info):
     (q, frame, reference, history, material, b, gradient, area, mass, dt) = values
     if np.all(history > 0.0):
         (base, L, _) = geometry(q, frame, reference, b, gradient)
@@ -500,5 +503,70 @@ def solve_primal(values, compliance_factor=1.0, return_traction=False):
                     if error >= 256 * np.finfo(float).eps * max(np.max(np.abs(force)), np.finfo(float).tiny):
                         raise RuntimeError(f"Equivalent reaction changed momentum: {error}")
                     info["reaction_nullity"] = int(len(active) - rank)
+    return traction, info
+
+
+def solve_primal(values, compliance_factor=1.0, return_traction=False):
+    u, traction, compliance, info = _solve_primal(values, compliance_factor, return_traction=True)
+    traction, info = canonical_reaction(values, u, traction, compliance, info)
     result = traction if return_traction else compliance * traction
-    return (u, result, compliance, info)
+    return u, result, compliance, info
+
+
+def refine_geometry(values, gap_remainder, frame_remainder, compliance_factor=1.0):
+    if np.finfo(np.longdouble).nmant <= np.finfo(np.float64).nmant:
+        raise RuntimeError("Interface refinement requires extended-precision CPU arithmetic")
+    precise = [np.asarray(value, dtype=np.longdouble) for value in values]
+    precise[0] = precise[0] + gap_remainder
+    precise[1] = precise[1] + frame_remainder
+    seed_u, seed_t, seed_compliance, info = _solve_primal(values, compliance_factor, return_traction=True)
+    if info["initializer"] == "closed_linear":
+        # With zero opening and history, equilibrium is independent of cohesive parameters.
+        q, frame, reference, _, material, b, gradient, area, mass, dt = precise
+        coefficient = mass[0] / dt[0] ** 2
+        mobility = b @ b.T
+        reaction = seed_t.astype(np.longdouble) * area[:, None] / coefficient
+        for _ in range(8):
+            residual = q - mobility @ reaction
+            reaction += np.linalg.lstsq(mobility.astype(float), residual.astype(float), rcond=None)[0]
+        u = -b.T @ reaction
+        traction = coefficient * reaction / area[:, None]
+        frame = frame + np.einsum("pa,qpb->qab", u, gradient)
+        normal = (
+            reference[:, :1] * np.cross(frame[:, :, 1], frame[:, :, 2])
+            + reference[:, 1:2] * np.cross(frame[:, :, 2], frame[:, :, 0])
+            + reference[:, 2:3] * np.cross(frame[:, :, 0], frame[:, :, 1])
+        )
+        normal /= np.linalg.norm(normal, axis=1)[:, None]
+        normal_force = np.sum(traction * normal, axis=1)
+        active = traction - np.minimum(normal_force, 0.0)[:, None] * normal
+        error = float(np.max(np.abs(q + b @ u)))
+        scale = max(np.max(np.abs(q)), np.finfo(float).tiny)
+        if error <= 64 * np.finfo(float).eps * scale and np.all(
+            np.linalg.norm(active, axis=1) <= material[:, 0]
+        ):
+            info["extended_residual"] = error / float(np.min(2 * material[:, 1] / material[:, 0]))
+            return u.astype(float), traction.astype(float), seed_compliance, info, np.zeros_like(q), frame
+    at, basis, compliance, length = setup(precise, compliance_factor, extended=True)
+    basis = basis.astype(np.longdouble)
+    size = basis.shape[1]
+    y = np.r_[
+        basis.T @ seed_u.astype(np.longdouble).ravel() / length,
+        compliance * seed_t.astype(np.longdouble).ravel() / length,
+    ]
+    for _ in range(8):
+        residual, jacobian, _ = at(y)
+        correction = np.linalg.lstsq(jacobian.astype(float), -residual.astype(float), rcond=None)[0]
+        y += correction
+    residual, _, response = at(y)
+    error = float(np.max(np.abs(residual)))
+    scale = max(np.max(np.abs(y)), np.max(np.abs(precise[0])) / length, np.finfo(float).tiny)
+    if not np.isfinite(error) or error > 64 * np.finfo(float).eps * scale:
+        raise RuntimeError(f"Refined interface residual: {error}")
+    precise_u = (length * basis @ y[:size]).reshape(seed_u.shape)
+    u = precise_u.astype(float)
+    traction = (length * y[size:] / compliance).astype(float).reshape(seed_t.shape)
+    traction, info = canonical_reaction(values, u, traction, compliance, info)
+    info["extended_residual"] = error
+    frame = precise[1] + np.einsum("pa,qpb->qab", precise_u, precise[6])
+    return u, traction, compliance, info, response["proximal_gap"], frame

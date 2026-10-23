@@ -7,6 +7,7 @@ import pytest
 import warp as wp
 
 from blademaster_warp.differentiable_cohesive import solve
+from blademaster_warp.cohesive_geometry import InterfaceGeometry, solve_geometry
 
 
 DTYPES = [
@@ -21,6 +22,11 @@ DTYPES = [
     wp.float64,
     wp.float64,
 ]
+
+
+def solve_compensated(*sources, compliance_scale=1.0):
+    geometry = InterfaceGeometry(sources[0], sources[1])
+    return solve_geometry(geometry, *sources[2:], compliance_scale=compliance_scale)[0]
 
 
 def arrays(values):
@@ -65,13 +71,14 @@ def outputs(result):
     return [getattr(result, field.name) for field in fields(result) if field.name != "info"]
 
 
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
 @pytest.mark.parametrize("scenario", ["closed", "opening", "mixed", "opened"])
-def test_moving_interface_momentum_and_all_input_derivatives(scenario):
+def test_moving_interface_momentum_and_all_input_derivatives(scenario, interface_solver):
     rng = np.random.default_rng(6193)
     values = fixture(scenario)
     sources = arrays(values)
     with wp.Tape() as tape:
-        result = solve(*sources)
+        result = interface_solver(*sources)
     if scenario == "closed":
         np.testing.assert_allclose(result.gap.numpy(), 0.0, atol=1e-17)
         np.testing.assert_array_equal(result.history.numpy(), 0.0)
@@ -112,7 +119,7 @@ def test_moving_interface_momentum_and_all_input_derivatives(scenario):
             trials, frames = [], []
             for sign in [-1, 1]:
                 source.assign(base + sign * epsilon * direction)
-                trial = solve(*sources)
+                trial = interface_solver(*sources)
                 trials.append([a.numpy() for a in outputs(trial)])
                 frames.append(
                     (
@@ -129,15 +136,16 @@ def test_moving_interface_momentum_and_all_input_derivatives(scenario):
         assert sum(error <= 2e-5 for error in errors) >= 2, (scenario, index, ad, errors)
 
 
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
 @pytest.mark.parametrize("scenario", ["closed", "opening", "mixed", "opened"])
-def test_area_partition_compliance_and_rigid_rotation(scenario):
+def test_area_partition_compliance_and_rigid_rotation(scenario, interface_solver):
     values = fixture(scenario)
-    reference = solve(*arrays(values))
+    reference = interface_solver(*arrays(values))
     rotation, _ = np.linalg.qr(np.random.default_rng(45).normal(size=(3, 3)))
     transformed = [a.copy() for a in values]
     transformed[0] = values[0] @ rotation.T
     transformed[1] = rotation @ values[1]
-    rotated = solve(*arrays(transformed))
+    rotated = interface_solver(*arrays(transformed))
     for name in ["gap", "traction", "displacement"]:
         np.testing.assert_allclose(
             getattr(rotated, name).numpy(),
@@ -155,7 +163,7 @@ def test_area_partition_compliance_and_rigid_rotation(scenario):
     for scale in [0.5, 1.0, 2.0]:
         duplicated = [np.repeat(a, 2, axis=0) if i < 8 else a for i, a in enumerate(values)]
         duplicated[7] = duplicated[7] / 2
-        result = solve(*arrays(duplicated), compliance_scale=scale)
+        result = interface_solver(*arrays(duplicated), compliance_scale=scale)
         np.testing.assert_allclose(result.displacement.numpy(), reference.displacement.numpy(), atol=1e-15)
         for name in ["gap", "history", "storage", "fracture", "frame"]:
             actual = getattr(result, name).numpy().reshape(3, 2, *getattr(reference, name).numpy().shape[1:])
@@ -163,8 +171,9 @@ def test_area_partition_compliance_and_rigid_rotation(scenario):
             np.testing.assert_allclose(actual[:, 1], actual[:, 0], rtol=1e-10, atol=1e-12)
 
 
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
 @pytest.mark.parametrize("scenario", ["closed", "opened"])
-def test_redundant_quadrature_preserves_physical_adjoint(scenario):
+def test_redundant_quadrature_preserves_physical_adjoint(scenario, interface_solver):
     values = fixture(scenario)
     rng = np.random.default_rng(771)
     scales = [0.0028, 5e4, 0.0028, 70.0, 70.0, 1.0, 70.0, 0.0028, 0.0028]
@@ -175,7 +184,7 @@ def test_redundant_quadrature_preserves_physical_adjoint(scenario):
         duplicated[7] = duplicated[7] / copies
         sources = arrays(duplicated)
         with wp.Tape() as tape:
-            result = solve(*sources)
+            result = interface_solver(*sources)
         target = outputs(result)
         if seeds is None:
             seeds = [rng.normal(size=a.numpy().shape) / scale for a, scale in zip(target, scales)]
@@ -195,3 +204,139 @@ def test_redundant_quadrature_preserves_physical_adjoint(scenario):
     for index, (base, duplicate) in enumerate(zip(*gradients)):
         scale = max(np.max(np.abs(base)), np.max(np.abs(duplicate)), 1.0)
         np.testing.assert_allclose(base, duplicate, rtol=1e-8, atol=1e-10 * scale, err_msg=str(index))
+
+
+def test_compensated_geometry_advection_and_snapshot():
+    rng = np.random.default_rng(872)
+    values = fixture("opened")
+    sources = arrays(values)
+    velocity = wp.array(rng.normal(scale=0.03, size=(8, 3)), dtype=wp.vec3d, requires_grad=True)
+    geometry = InterfaceGeometry(sources[0], sources[1])
+    B, G, duration = sources[5], sources[6], sources[9]
+    with wp.Tape() as tape:
+        result = geometry.advance(B, G, velocity, duration)
+    low = np.longdouble
+    expected_gap = values[0].astype(low) + low(values[9][0]) * (
+        values[5].astype(low) @ velocity.numpy().astype(low)
+    )
+    expected_frame = values[1].astype(low) + low(values[9][0]) * np.einsum(
+        "pa,qpb->qab", velocity.numpy().astype(low), values[6].astype(low)
+    )
+    np.testing.assert_array_equal(result.gap.numpy().astype(low) + result.gap_remainder, expected_gap)
+    np.testing.assert_array_equal(result.frame.numpy().astype(low) + result.frame_remainder, expected_frame)
+    assert np.any(result.gap_remainder != 0) and np.any(result.frame_remainder != 0)
+    restored = InterfaceGeometry.restore(result.snapshot(), device=geometry.gap.device)
+    for key, value in result.snapshot().items():
+        np.testing.assert_array_equal(restored.snapshot()[key], value)
+    seed_gap = rng.normal(size=(3, 3)) / 0.0028
+    seed_frame = rng.normal(size=(3, 3, 3))
+    tape.backward(
+        grads={
+            result.gap: wp.array(seed_gap, dtype=wp.vec3d),
+            result.frame: wp.array(seed_frame, dtype=wp.mat33d),
+        }
+    )
+    for source in [geometry.gap, geometry.frame, B, G, velocity, duration]:
+        base = source.numpy()
+        direction = rng.normal(size=base.shape) * np.maximum(np.abs(base), 1e-5)
+        ad = np.sum(source.grad.numpy() * direction)
+        for epsilon in [1e-4, 1e-5]:
+            trials = []
+            for sign in [-1, 1]:
+                source.assign(base + sign * epsilon * direction)
+                trial = geometry.advance(B, G, velocity, duration)
+                trials.append(
+                    (
+                        trial.gap.numpy().astype(low) + trial.gap_remainder,
+                        trial.frame.numpy().astype(low) + trial.frame_remainder,
+                    )
+                )
+            fd = (
+                np.sum((trials[1][0] - trials[0][0]) * seed_gap)
+                + np.sum((trials[1][1] - trials[0][1]) * seed_frame)
+            ) / (2 * epsilon)
+            np.testing.assert_allclose(ad, fd, rtol=2e-5, atol=1e-10)
+        source.assign(base)
+
+
+@wp.kernel
+def interface_velocity(
+    velocity: wp.array(dtype=wp.vec3d),
+    displacement: wp.array(dtype=wp.vec3d),
+    duration: wp.array(dtype=wp.float64),
+    result: wp.array(dtype=wp.vec3d),
+):
+    p = wp.tid()
+    result[p] = velocity[p] + displacement[p] / duration[0]
+
+
+@pytest.mark.parametrize("segment_steps", [3, 4])
+def test_compensated_checkpoint_matches_complete_tape(segment_steps):
+    rng = np.random.default_rng(23)
+    source = arrays(fixture("opened"))
+    initial_velocity = wp.array(rng.normal(scale=0.02, size=(8, 3)), dtype=wp.vec3d, requires_grad=True)
+    initial = (InterfaceGeometry(source[0], source[1]), source[3], initial_velocity)
+    parameters = [source[2], *source[4:]]
+
+    def advance(state):
+        geometry, history, velocity = state
+        free = geometry.advance(source[5], source[6], velocity, source[9])
+        result, updated = solve_geometry(free, source[2], history, *source[4:])
+        next_velocity = wp.zeros_like(velocity, requires_grad=True)
+        wp.launch(
+            interface_velocity,
+            len(velocity),
+            inputs=[velocity, result.displacement, source[9]],
+            outputs=[next_velocity],
+        )
+        return updated, result.history, next_velocity
+
+    def state_arrays(state):
+        return [state[0].gap, state[0].frame, state[1], state[2]]
+
+    def snapshot(state):
+        return state[0].snapshot(), state[1].numpy().copy(), state[2].numpy().copy()
+
+    def restore(saved):
+        return (
+            InterfaceGeometry.restore(saved[0], device=source[0].device),
+            wp.array(saved[1], dtype=wp.float64, requires_grad=True),
+            wp.array(saved[2], dtype=wp.vec3d, requires_grad=True),
+        )
+
+    checkpoints = [(0, snapshot(initial))]
+    with wp.Tape() as tape:
+        state = initial
+        for step in range(11):
+            state = advance(state)
+            if (step + 1) % segment_steps == 0 or step == 10:
+                checkpoints.append((step + 1, snapshot(state)))
+    target = state_arrays(state)
+    seeds = [rng.normal(size=a.numpy().shape) / scale for a, scale in zip(target, [0.0028, 1.0, 0.0028, 2.0])]
+    tape.backward(grads={a: wp.array(seed, dtype=a.dtype) for a, seed in zip(target, seeds)})
+    expected_initial = [a.grad.numpy().copy() for a in state_arrays(initial)]
+    expected_parameters = [a.grad.numpy().copy() for a in parameters]
+    tape.zero()
+    parameter_gradients = [np.zeros_like(value) for value in expected_parameters]
+    for (first, saved), (last, expected) in reversed(list(zip(checkpoints[:-1], checkpoints[1:]))):
+        start = restore(saved)
+        for parameter in parameters:
+            parameter.grad.zero_()
+        with wp.Tape() as local:
+            state = start
+            for _ in range(first, last):
+                state = advance(state)
+        actual = snapshot(state)
+        for key in expected[0]:
+            np.testing.assert_array_equal(actual[0][key], expected[0][key])
+        for a, b in zip(actual[1:], expected[1:]):
+            np.testing.assert_array_equal(a, b)
+        local.backward(
+            grads={a: wp.array(seed, dtype=a.dtype) for a, seed in zip(state_arrays(state), seeds)}
+        )
+        seeds = [a.grad.numpy().copy() for a in state_arrays(start)]
+        for accumulated, parameter in zip(parameter_gradients, parameters):
+            accumulated += parameter.grad.numpy()
+        local.zero()
+    for actual, expected in zip(seeds + parameter_gradients, expected_initial + expected_parameters):
+        np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)

@@ -1519,3 +1519,15 @@ RTX 4090，`4e5a892`、dirty=true。几何/历史/参考坐标共 **59 passed**�
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_reference_coordinates.py tests/test_reference_surface.py tests/test_cohesive_history.py -q`；`-m pytest tests/test_cohesive_history.py -k withdrawal_zero -q`；`runs/e5_release_audit/reference_sampling_compare.py`；`runs/e5_release_audit/exact_reference_material_measure.py`。报告/日志位于 `e5-grid-20261023/runs/grid_update/{exact_reference_unit2.log,exact_reference_material2.log,reference_sampling_compare.json,exact_reference_material.json}`。
 
 提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1375 passed、8 skipped、18 subtests passed**（487.88 s），日志 `runs/grid_update/exact_reference_full.log`；新增 **40** 项检查，8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：有限切面可见性与交叉界面材料耦合
+
+RTX 4090，原型干净 `a211caf`、接口测试 `a211caf` dirty=true。相关 **36 passed**（93.80 s），新增 **8** 项检查。64 粒子完整/部分交叉扫掠为 **612/462** 积分点；完整交叉映射与解析分区的权重差 **0**，三线性值/空间梯度重现误差 ≤**8.882e-16/1.706e-13**。两点交叉例中沿用所属粒子的另一刀侧码产生最大权重差 **1.05215**；有限面映射与解析值一致，位置两档差分误差 ≤**7.013e-11**。原型两种扫掠映射分别耗时 **11.57/6.52 s**。
+
+实际双切面 **12** 积分点、**32 μs** 的预应变/受载两组、**2/1/0.5 μs** 三档能量对照：相对残差幅值分别为 **0.0027535%/0.0013976%/0.00072282%** 和 **0.29614%/0.14903%/0.075308%**。粒子推进、界面储能/断裂功与网格中点外功共同核算。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_reference_visibility.py tests/test_reference_grid.py tests/test_cohesive_history.py -q`；`runs/e5_release_audit/visibility_trace_validate.py`；`runs/e5_release_audit/visibility_natural.py`；`runs/e5_release_audit/visibility_energy.py`。报告/日志在 `e5-grid-20261023/runs/grid_update/visibility_{unit.log,trace.json,natural.json,energy.json}`。
+
+`runs/e5_release_audit/visibility_gradient.py` 的双切面四步材料轨迹覆盖八类输入、六档扰动，共 **48** 组自然差分；每类至少两档相对误差 ≤**2e-5**，最差第二档 **4.647e-6**。两刀位的 ε=0.1/0.03 跨过可见性分支，ε≤0.01 的分支保持一致；`--branches` 保存逐步支撑集合变化。杨氏模量方向 AD 为 **7.39318e-11**，ε=0.1/0.03/0.01 的误差为 **3.322e-6/4.647e-6/6.751e-6**。同一目标用分量差的扩展精度求和核对，报告同时保留标量相减结果及全部六档差分：`visibility_gradient.json`、`visibility_branches.json`。
+
+提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1383 passed、8 skipped、18 subtests passed**（502.67 s），日志 `runs/grid_update/visibility_full_final.log`；8 项跳过为 CRESSim 上游构建。

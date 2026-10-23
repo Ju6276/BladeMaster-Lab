@@ -101,43 +101,54 @@ def _compatible(codes, side):
     return result
 
 
-def _coefficients(model, topology, bases, sides, origin, cells):
+def _coefficients(model, topology, bases, sides, origin, cells, visibility):
     spacing = model.config.grid_spacing
     keys = topology.keys.numpy()
     slots = topology.slots.numpy()
     codes = keys // model.node_count
     particle_codes = codes[slots[:, 0]]
-    masses = np.bincount(
-        slots.ravel(), weights=model.weights.numpy().ravel() * model.mass, minlength=topology.count
-    )
+    particle_mass = model.weights.numpy() * model.mass
     particle_cells = np.floor((model.reference - origin) / spacing).astype(int)
-    roots, nodal = {}, {}
-    for code in np.unique(sides):
-        code = int(code)
-        roots[code] = np.unique(particle_cells[_compatible(particle_codes, code)], axis=0)
+    supports = {}
+
+    def support(code, visible):
+        key = (code, None if visible is None else visible.tobytes())
+        if key in supports:
+            return key, supports[key]
+        selected = _compatible(particle_codes, code)
+        if visible is not None:
+            selected &= visible
+        roots = np.unique(particle_cells[selected], axis=0)
+        if not len(roots):
+            raise ValueError("Each trace side requires compatible particle support")
+        masses = np.bincount(
+            slots[selected].ravel(), weights=particle_mass[selected].ravel(), minlength=topology.count
+        )
         groups = {}
-        for slot in np.flatnonzero(_compatible(codes, code) & (masses > 0)):
+        for slot in np.flatnonzero(masses > 0):
             groups.setdefault(int(keys[slot] % model.node_count), []).append(int(slot))
-        nodal[code] = {}
+        nodal = {}
         for node, group in groups.items():
             total = np.sum(masses[group])
-            nodal[code][node] = [(slot, masses[slot] / total) for slot in group]
-    if any(len(value) == 0 for value in roots.values()):
-        raise ValueError("Each trace side requires compatible particle support")
+            nodal[node] = [(slot, masses[slot] / total) for slot in group]
+        supports[key] = roots, nodal
+        return key, supports[key]
+
     extension = {}
     indices, coefficients = [], []
     for q, base in enumerate(bases):
         nodes = np.ravel_multi_index((base + CORNERS).T, tuple(cells + 1))
         for side, code in enumerate(sides[q]):
             code = int(code)
+            support_key, (roots, nodal) = support(code, None if visibility is None else visibility[q])
             row = {}
             for a, (node, index) in enumerate(zip(nodes, base + CORNERS)):
-                key = (code, int(node))
+                key = (support_key, int(node))
                 if key not in extension:
-                    if node in nodal[code]:
-                        extension[key] = nodal[code][node]
+                    if node in nodal:
+                        extension[key] = nodal[node]
                     else:
-                        candidates = roots[code]
+                        candidates = roots
                         distance = np.maximum(np.maximum(candidates - index, index - candidates - 1), 0)
                         root = candidates[np.argmin(np.sum(distance**2, axis=1))]
                         local = index - root
@@ -147,7 +158,7 @@ def _coefficients(model, topology, bases, sides, origin, cells):
                             (slot, float(value) * coefficient)
                             for node_id, value in zip(root_nodes, values)
                             if value != 0
-                            for slot, coefficient in nodal[code][node_id]
+                            for slot, coefficient in nodal[node_id]
                         ]
                 for slot, coefficient in extension[key]:
                     row.setdefault(slot, np.zeros(8))[a] += coefficient
@@ -157,12 +168,13 @@ def _coefficients(model, topology, bases, sides, origin, cells):
     return indices, coefficients
 
 
-def build_trace(model, topology, points, normals, sides):
+def build_trace(model, topology, points, normals, sides, *, visibility=None):
     """Return double-sided values, spatial derivatives and cohesive grid maps.
 
     Sides is an integer array (point, 2) of cut codes. Zero ternary digits are
     shared sides. Compatible fields at a node contribute in proportion to their
-    reference mass. Missing nodes use the polynomial of the closest compatible
+    visible reference mass. Visibility is an optional boolean (point, particle)
+    mask. Missing nodes use the polynomial of the closest compatible
     particle-supported cell; ties use lexicographic cell order. Cell and root
     selection are rebuilt for each call.
     """
@@ -180,6 +192,10 @@ def build_trace(model, topology, points, normals, sides):
         raise ValueError("Reference-grid traces require matching float64 points and normals")
     if sides.shape != (count, 2) or not np.issubdtype(sides.dtype, np.integer) or np.any(sides < 0):
         raise ValueError("Each point requires two nonnegative integer cut codes")
+    if visibility is not None:
+        visibility = np.asarray(visibility)
+        if visibility.dtype != bool or visibility.shape != (count, model.n):
+            raise ValueError("Trace visibility must be a boolean (point, particle) mask")
     values, normal_values = points.numpy(), normals.numpy()
     if (
         not np.isfinite(values).all()
@@ -193,7 +209,7 @@ def build_trace(model, topology, points, normals, sides):
     if np.any(values < origin) or np.any(values > origin + cells * spacing):
         raise ValueError("Trace points must lie in the reference grid")
     bases = np.minimum(np.floor((values - origin) / spacing).astype(int), cells - 1)
-    indices, coefficients = _coefficients(model, topology, bases, sides, origin, cells)
+    indices, coefficients = _coefficients(model, topology, bases, sides, origin, cells, visibility)
     weights = model.zeros((count, 2, topology.count), float)
     gradients = model.zeros((count, 2, topology.count), wp.vec3)
     separation = model.zeros((count, topology.count), float)

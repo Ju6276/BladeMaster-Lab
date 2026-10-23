@@ -312,3 +312,7 @@ E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-2026
 自然参考面采用 `ReferenceCoordinates.sampled` 与精确交点构造，材料入口使用 `model.reference_coordinates`；解析 VJP 与参考坐标公式见 METHOD。`exact_reference_unit2.log` 为 **59 passed**（82.01 s），`exact_reference_material2.log` 的实际退刀材料推进为 **1 passed**（1.16 s）。`exact_reference_material.json` 中旧 **6** 个正面积点保留，退刀新增 **45** 个点的面积全为 **0**；x/v/F/Fp/应力差 **0**，动能同为 **9.504e-6 J**。`reference_sampling_compare.json` 的 18 种配置与 `4e5a892` 逐位一致。下一项是自然多刀侧码、接触去重与 RK2 分段，然后复测完整能量扫描和受影响的 E1–E4。
 
 精确参考面提交前全量 **1375 passed、8 skipped、18 subtests passed**（487.88 s），日志 `e5-grid-20261023/runs/grid_update/exact_reference_full.log`。
+
+有限切面多刀映射入口为 `CohesiveHistory.reference_trace` 与 `advance(..., positive_sides=...)`；正法向侧码由调用方提供。`visibility_unit.log` 为 **36 passed**（93.80 s）。`visibility_natural.json` 的完整/部分交叉扫掠为 **612/462** 积分点，完整交叉与解析分区的权重差 **0**、三线性重现误差 ≤**8.882e-16**。`visibility_energy.json` 的两组 32 μs、12 点轨迹，2/1/0.5 μs 能量残差约随步长减半，最细档相对残差 **0.00072282%/0.075308%**。上述报告在 `e5-grid-20261023/runs/grid_update/`。下一项保存出生朝向并接入自然事件、接触去重及 RK2；有限面判定的时间见报告，调度/存储优化单独提交。
+
+四步双切面材料轨迹的八类输入各至少两档自然差分通过 **2e-5** 标准，最差第二档 **4.647e-6**；48 组原始数据及可见性分支对照为 `visibility_gradient.json`、`visibility_branches.json`。提交前全量 **1383 passed、8 skipped、18 subtests passed**（502.67 s），日志 `visibility_full_final.log`。精确判定的区间过滤原型为 `runs/e5_release_audit/visibility_filtered.py`，`visibility_filter.json` 的完整/部分交叉及三种尺度随机三角片共五例与精确判定的可见性差均为 **0**；完整/部分交叉耗时由 **8.960/4.746 s** 降至 **1.346/0.719 s**。继续核对退化/窄片/大坐标，再单独整理性能提交。

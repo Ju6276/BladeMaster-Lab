@@ -15,6 +15,7 @@ from .cohesive_grid_update import advance_material
 from .reference_cut import CutQuadrature
 from .reference_grid import build_trace
 from .reference_surface import ReferenceSurface
+from .reference_visibility import ReferenceVisibility
 
 
 @wp.kernel
@@ -155,13 +156,27 @@ class CohesiveHistory:
         return replace(self, geometry=geometry, history=history)
 
     def advance(
-        self, model, state, *, topology, sides, duration=None, impulse=None, gravity=(0.0, 0.0, -9.81)
+        self,
+        model,
+        state,
+        *,
+        topology,
+        sides=None,
+        positive_sides=None,
+        duration=None,
+        impulse=None,
+        gravity=(0.0, 0.0, -9.81)
     ):
         """Advance retained points using side codes ordered along each face normal."""
         if not len(self.history):
             result = model.step(state, topology=topology, duration=duration, impulse=impulse, gravity=gravity)
             return result, self
-        trace = build_trace(model, topology, self.quadrature.points, self.quadrature.normals, sides)
+        if positive_sides is not None:
+            if sides is not None:
+                raise ValueError("Specify explicit side codes or natural face orientations")
+            trace = self.reference_trace(model, topology, positive_sides)
+        else:
+            trace = build_trace(model, topology, self.quadrature.points, self.quadrature.normals, sides)
         step = advance_material(
             model,
             state,
@@ -178,6 +193,37 @@ class CohesiveHistory:
             gravity=gravity,
         )
         return step.state, self.updated(step.geometry, step.interface.history)
+
+    def reference_trace(self, model, topology, positive_sides):
+        """Map both sides using birth orientation and current finite cut geometry.
+
+        Positive sides are ternary digits (1 or 2) on the positive reference
+        normal side of each quadrature point. Other cuts use segment visibility.
+        """
+        positive = np.asarray(positive_sides)
+        if positive.shape != self.cut_indices.shape or not np.isin(positive, [1, 2]).all():
+            raise ValueError("Each quadrature point requires its positive-normal cut side")
+        digits = np.asarray([3 ** int(cut) for cut in self.cut_indices], dtype=object)
+        if any(2 * digit > np.iinfo(np.int64).max for digit in digits):
+            raise ValueError("Trace cut codes exceed the integer field range")
+        sides = np.asarray(digits[:, None] * np.stack([3 - positive, positive], axis=1), dtype=np.int64)
+        face_cuts, start = [], 0
+        for polygon in self.surface.polygons:
+            count = 3 * (len(polygon) - 2)
+            labels = self.cut_indices[start : start + count]
+            if len(labels) != count or not np.all(labels == labels[0]):
+                raise ValueError("Surface polygons and quadrature cut labels must agree")
+            face_cuts.append(labels[0])
+            start += count
+        if start != len(self.cut_indices):
+            raise ValueError("Surface polygons and quadrature counts must agree")
+        faces = ReferenceVisibility.from_surface(
+            self.surface, model.reference, np.asarray(face_cuts, dtype=np.int64)
+        )
+        visible = faces.particle_mask(self.quadrature.points.numpy(), model.reference, self.cut_indices)
+        return build_trace(
+            model, topology, self.quadrature.points, self.quadrature.normals, sides, visibility=visible
+        )
 
     def snapshot(self):
         return dict(

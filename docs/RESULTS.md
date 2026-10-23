@@ -1395,3 +1395,19 @@ RTX 4090，`fb687af`、dirty=true。`reference_cut.quadrature` 增加逐半平�
 命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_reference_cut.py tests/test_reference_clip.py tests/test_blade_quadrature.py tests/test_reference_grid.py -q`，工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，日志 `runs/grid_update/reference_blade_unit.log`。
 
 提交前全量 **1163 passed、8 skipped、18 subtests passed**（334.54 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/reference_blade_full.log`。
+
+## 2026-10-23：当前公式的 E3 六毫米完整轨迹
+
+干净 `ca90da9`，RTX 4090，6 mm、1452 粒子、1.05 s、67200 步、G_c=700；dt/PIC 参考时间 15.625 μs。三类刀路控制量与屈服应力共 **8** 组自然差分通过，最大相对误差 **0.0668341%**。16/32/128 步 CPU 检查点状态重算差 **0**；控制量/初始位置梯度最大差 **7.550e-15/3.383e-12**。释放数 **0**，峰值刀力 **12.5424 N**，峰值 CUDA 数组 **3.4193 GiB**。
+
+命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py full_h6`，工作树 `~/Projects/BladeMaster-Warp-e3-current-20261022`，报告 `runs/e3_ca90da9/full_h6/report.json`；队列继续执行 `full_h4`。
+
+## 2026-10-23：材料参考刀刃扫掠与重复面积扣除
+
+RTX 4090，`0447687`、dirty=true。`reference_surface.swept_edge`、`ReferenceSurface.subtract` 的新旧几何检查共 **41 passed**（9.08 s）：6/4 mm 网格的解析面积与二次矩、刚体共动零面积、退刀重入与交叉切面、十一类输入的两档差分（rtol=2e-6、atol=1e-8）。旧前沿位于 **6/6.3 mm** 时，新增面积对前沿高度的导数均为 **0.0074 m**；两个网格、四个前沿高度的共享边界面积导数只计一次。
+
+刀刃宽 **4 mm**、下降 **6 mm**、转角 **0.6 rad** 的螺旋面：空间/时间共同取 4/8/16 段，相对面积误差 **7.57245e-4/1.90330e-4/4.76464e-5**；固定刀刃四段、时间细化至同一空间离散极限的误差 **5.48573e-5/1.37447e-5/3.43806e-6**，均约二阶。宽 **7.4 mm** 刀刃前沿依次为 15/9/3/9/1 mm，累计面积 **2.22e-5/6.66e-5/6.66e-5/8.14e-5 m²**，旧顶点保持原值。退刀后保留零测度边界片用于面积导数；最小有符号积分权重为舍入量 **−5.482e-22 m²**。物理装配继续核对零面积极限、永久损伤与自然事件推进。
+
+命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_reference_surface.py tests/test_reference_cut.py tests/test_reference_clip.py tests/test_blade_quadrature.py -q`；`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/reference_surface_measure.py`。工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，日志与报告 `runs/grid_update/reference_surface_{unit.log,measure.json}`。
+
+提交前全量 **1176 passed、8 skipped、18 subtests passed**（334.29 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/reference_surface_full.log`。

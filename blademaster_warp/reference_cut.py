@@ -163,6 +163,34 @@ def _sections(position, deformation, half_extent, point, normal, selected):
     return vertex_owners, vertex_edges, vertex_values, polygons, polygon_owners
 
 
+def _clip_polygon(values, polygon, levelset, *, boundary_intersections=False, include_boundary=True):
+    descriptors, locations = [], []
+
+    def append(pair, value):
+        if not descriptors or pair != descriptors[-1]:
+            descriptors.append(pair)
+            locations.append(value)
+
+    for j, b in enumerate(polygon):
+        a = polygon[j - 1]
+        ga, gb = levelset[j - 1], levelset[j]
+        inside_a = ga <= 0 if include_boundary else ga < 0
+        inside_b = gb <= 0 if include_boundary else gb < 0
+        if inside_a != inside_b:
+            if ga == 0 and not boundary_intersections:
+                append((a, a), values[a])
+            elif gb == 0 and not boundary_intersections:
+                append((b, b), values[b])
+            else:
+                append((a, b), values[a] + ga / (ga - gb) * (values[b] - values[a]))
+        if inside_b:
+            append((b, b), values[b])
+    if len(descriptors) > 1 and descriptors[0] == descriptors[-1]:
+        descriptors.pop()
+        locations.pop()
+    return descriptors, locations
+
+
 def _clip_polygons(values, polygons, owners, position, deformation, point, normal):
     next_values, next_polygons, next_owners, edges, vertex_owners = [], [], [], [], []
     for polygon, p in zip(polygons, owners):
@@ -172,29 +200,7 @@ def _clip_polygons(values, polygons, owners, position, deformation, point, norma
         epsilon = np.finfo(np.float64).eps
         roundoff = 16 * epsilon / (1 - 16 * epsilon) * (scale @ np.abs(normal))
         levelset[np.abs(levelset) <= roundoff] = 0.0
-        descriptors = []
-        locations = []
-
-        def append(pair, value):
-            if not descriptors or pair != descriptors[-1]:
-                descriptors.append(pair)
-                locations.append(value)
-
-        for j, b in enumerate(polygon):
-            a = polygon[j - 1]
-            ga, gb = levelset[j - 1], levelset[j]
-            if (ga <= 0) != (gb <= 0):
-                if ga == 0:
-                    append((a, a), values[a])
-                elif gb == 0:
-                    append((b, b), values[b])
-                else:
-                    append((a, b), values[a] + ga / (ga - gb) * (values[b] - values[a]))
-            if gb <= 0:
-                append((b, b), values[b])
-        if len(descriptors) > 1 and descriptors[0] == descriptors[-1]:
-            descriptors.pop()
-            locations.pop()
+        descriptors, locations = _clip_polygon(values, polygon, levelset)
         if len(descriptors) < 3:
             continue
         start = len(next_values)

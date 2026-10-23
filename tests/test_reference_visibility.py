@@ -44,6 +44,63 @@ def test_sub_float_reference_triangle_width_is_preserved():
     np.testing.assert_array_equal(faces.particle_mask(points, particles, np.array([0])), False)
 
 
+def determinant(a, b, c):
+    return (
+        a[0] * (b[1] * c[2] - b[2] * c[1])
+        + a[1] * (b[2] * c[0] - b[0] * c[2])
+        + a[2] * (b[0] * c[1] - b[1] * c[0])
+    )
+
+
+def exact_barycentric_hit(start, end, triangle):
+    a, b, c = triangle
+    d, s, e1, e2 = end - start, start - a, b - a, c - a
+    denominator = determinant(e1, d, e2)
+    if denominator == 0:
+        return False
+    u = determinant(s, d, e2) / denominator
+    v = determinant(d, s, e1) / denominator
+    t = determinant(e2, s, e1) / denominator
+    return 0 < t < 1 and u >= 0 and v >= 0 and u + v <= 1
+
+
+@pytest.mark.parametrize("scale", [1e-150, 1e-3, 1.0, 1e150])
+def test_filtered_predicates_match_independent_rational_barycentric_intersections(scale):
+    rng = np.random.default_rng(619)
+    triangles = rng.normal(size=(7, 3, 3)) * scale
+    points = rng.normal(size=(8, 3)) * scale
+    particles = rng.normal(size=(9, 3)) * scale
+    faces = ReferenceVisibility(triangles, np.ones(len(triangles), dtype=int))
+    expected = np.ones((len(points), len(particles)), dtype=bool)
+    for q, start in enumerate(rational(points)):
+        for p, end in enumerate(rational(particles)):
+            expected[q, p] = not any(
+                exact_barycentric_hit(start, end, triangle) for triangle in rational(triangles)
+            )
+    np.testing.assert_array_equal(
+        faces.particle_mask(points, particles, np.zeros(len(points), dtype=int)), expected
+    )
+    assert np.any(expected) and np.any(~expected)
+
+
+@pytest.mark.parametrize("offset", [1e12, 1e150])
+def test_interval_filter_retains_sub_ulp_faces_at_large_coordinates(offset):
+    triangles = rational(np.array([[[offset, 0.0, 0.0], [offset, 1.0, 0.0], [offset, 0.0, 1.0]]]))
+    triangles[:, :, 0] += Fraction(1, 2**60)
+    faces = ReferenceVisibility(triangles, np.array([1]))
+    points = np.array([[offset, 0.2, 0.2]])
+    particles = np.array([[np.nextafter(offset, np.inf), 0.2, 0.2]])
+    np.testing.assert_array_equal(faces.particle_mask(points, particles, np.array([0])), False)
+
+
+def test_zero_area_and_zero_length_segments_are_not_crossings():
+    triangles = np.array([[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 2.0, 0.0]]])
+    faces = ReferenceVisibility(triangles, np.array([1]))
+    points = np.array([[0.0, 0.2, 0.0], [-1.0, 0.2, 0.0]])
+    particles = np.array([[0.0, 0.2, 0.0], [1.0, 0.2, 0.0]])
+    np.testing.assert_array_equal(faces.particle_mask(points, particles, np.array([0, 0])), True)
+
+
 def crossing():
     m, _, _, _ = setup(0.0007, [1.0, 0.0, 0.0])
     x, y, _ = m.reference.T

@@ -10,6 +10,7 @@ from fractions import Fraction
 import numpy as np
 
 from ._exact_surface import cross
+from ._interval_predicates import bounds, segment_triangles
 from .reference_coordinates import rational
 
 
@@ -19,6 +20,8 @@ class ReferenceVisibility:
     cut_indices: np.ndarray
     lower: np.ndarray = field(init=False, repr=False)
     upper: np.ndarray = field(init=False, repr=False)
+    vertex_lower: np.ndarray = field(init=False, repr=False)
+    vertex_upper: np.ndarray = field(init=False, repr=False)
 
     def __post_init__(self):
         triangles = np.asarray(self.triangles)
@@ -34,11 +37,14 @@ class ReferenceVisibility:
         rounded = np.asarray(exact, dtype=float)
         if not np.isfinite(rounded).all():
             raise ValueError("Reference faces must be finite")
+        vertex_lower, vertex_upper = bounds(exact)
         for name, values in [
             ("triangles", exact),
             ("cut_indices", cuts.astype(np.int64, copy=True)),
             ("lower", np.nextafter(rounded.min(axis=1), -np.inf)),
             ("upper", np.nextafter(rounded.max(axis=1), np.inf)),
+            ("vertex_lower", vertex_lower),
+            ("vertex_upper", vertex_upper),
         ]:
             values.flags.writeable = False
             object.__setattr__(self, name, values)
@@ -75,25 +81,30 @@ class ReferenceVisibility:
         exact_points, exact_particles = rational(points), rational(particles)
         for q, start in enumerate(points):
             lower, upper = np.minimum(start, particles), np.maximum(start, particles)
-            for face in np.flatnonzero(self.cut_indices != cuts[q]):
-                candidates = np.flatnonzero(
-                    result[q]
-                    & np.all(upper >= self.lower[face], axis=1)
-                    & np.all(lower <= self.upper[face], axis=1)
-                )
-                if not len(candidates):
+            candidates = (
+                np.all(upper[:, None] >= self.lower[None], axis=2)
+                & np.all(lower[:, None] <= self.upper[None], axis=2)
+                & (self.cut_indices[None] != cuts[q])
+            )
+            particle_ids, face_ids = np.nonzero(candidates)
+            if not len(particle_ids):
+                continue
+            crossed, missed = segment_triangles(
+                start, particles[particle_ids], self.vertex_lower[face_ids], self.vertex_upper[face_ids]
+            )
+            result[q, particle_ids[crossed]] = False
+            for i in np.flatnonzero(~(crossed | missed)):
+                p, face = particle_ids[i], face_ids[i]
+                if not result[q, p]:
                     continue
                 a, b, c = self.triangles[face]
                 normal = cross(b - a, c - a)
                 initial = np.dot(normal, exact_points[q] - a)
-                if initial == 0:
+                final = np.dot(normal, exact_particles[p] - a)
+                if initial * final >= 0:
                     continue
-                for p in candidates:
-                    final = np.dot(normal, exact_particles[p] - a)
-                    if initial * final >= 0:
-                        continue
-                    fraction = initial / (initial - final)
-                    hit = exact_points[q] + fraction * (exact_particles[p] - exact_points[q])
-                    if all(np.dot(normal, cross(v - u, hit - u)) >= 0 for u, v in [(a, b), (b, c), (c, a)]):
-                        result[q, p] = False
+                fraction = initial / (initial - final)
+                hit = exact_points[q] + fraction * (exact_particles[p] - exact_points[q])
+                if all(np.dot(normal, cross(v - u, hit - u)) >= 0 for u, v in [(a, b), (b, c), (c, a)]):
+                    result[q, p] = False
         return result

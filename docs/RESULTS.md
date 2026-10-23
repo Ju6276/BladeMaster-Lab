@@ -1531,3 +1531,9 @@ RTX 4090，原型干净 `a211caf`、接口测试 `a211caf` dirty=true。相关 *
 `runs/e5_release_audit/visibility_gradient.py` 的双切面四步材料轨迹覆盖八类输入、六档扰动，共 **48** 组自然差分；每类至少两档相对误差 ≤**2e-5**，最差第二档 **4.647e-6**。两刀位的 ε=0.1/0.03 跨过可见性分支，ε≤0.01 的分支保持一致；`--branches` 保存逐步支撑集合变化。杨氏模量方向 AD 为 **7.39318e-11**，ε=0.1/0.03/0.01 的误差为 **3.322e-6/4.647e-6/6.751e-6**。同一目标用分量差的扩展精度求和核对，报告同时保留标量相减结果及全部六档差分：`visibility_gradient.json`、`visibility_branches.json`。
 
 提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1383 passed、8 skipped、18 subtests passed**（502.67 s），日志 `runs/grid_update/visibility_full_final.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：有限面精确判定的区间筛选
+
+RTX 4090，`4d6e6ac`、dirty=true。相关 **15 passed**（3.65 s），新增 **7** 项，覆盖 1e-150～1e150 尺度的独立有理数重心求交对照、大坐标下 2⁻⁶⁰ 偏移、零面积和零长度。完整/部分交叉的 **38784/29184** 条射线与 `4d6e6ac` 的精确判定差均为 **0**，耗时从 **8.556/4.735 s** 降至 **1.294/0.7021 s**；三种尺度随机三角片的判定差也均为 **0**。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_reference_visibility.py -q`；`runs/e5_release_audit/visibility_filter_validate.py`。报告/日志为 `e5-grid-20261023/runs/grid_update/visibility_filter_{unit.log,source.json,source.log}`。提交前全量 **1390 passed、8 skipped、18 subtests passed**（485.87 s），日志 `visibility_filter_full.log`；8 项跳过为 CRESSim 上游构建。

@@ -1334,3 +1334,20 @@ OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/close
 插入对照使用 `b7048c7`、dirty=true（对应 `f507dc0` 源码）。普通粒子界面更新在平移的约 **1e-23 m** 间隙舍入处求解失败，旋转 dt=2 μs 产生假断裂耗散 **6.240e-6 J**。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_insertion_patch.py`，报告 `runs/interface_insertion/patch.json`。
 
 相同源码的 160 步几何精度核对已完成八类输入，各至少两档误差 ≤**2e-5**；其余七类的最差第二档误差 **1.39787e-6**。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_library_geometry_scan.py --solver unified --mode existing --steps 160 --inputs initial_gap initial_history initial_frame material young duration acceleration --output runs/interface_precision/remaining160.json`。
+
+## 2026-10-23：闭合网格与内聚响应的统一推进
+
+RTX 4090，独立原型基于干净 `7f31460`，64 粒子、16 Gauss 点。24 步平移/旋转保持零开口、零损伤。200 μs、dt=2/1/0.5 μs 共 **12** 例，闭合承载、G_c=7/70 受载断裂、已有损伤的能量残差随步长减半约减半，最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**。受载断裂使用双侧 ±2e5 m/s²，强度 50 kPa；16 个积分点均完全断裂，耗散 **0.001008/0.01008 J=G_c A₀**。
+
+24 步闭合/已有损伤/受载断裂分别检查六/八/六类输入，每类至少两档自然差分误差 ≤**2e-5**；三组最差第二档 **1.81311e-8/2.74149e-6/3.23489e-7**。命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：
+
+```bash
+runs/e5_release_audit/extrinsic_grid_energy.py
+runs/e5_release_audit/extrinsic_grid_scan.py --solver unified --mode preload --steps 24 --output runs/reference_interface/grid_preload24.json
+runs/e5_release_audit/extrinsic_grid_scan.py --solver unified --mode existing --steps 24 --output runs/reference_interface/grid_existing24.json
+runs/e5_release_audit/extrinsic_grid_loaded_scan.py --solver unified --mode opening --steps 24 --output runs/reference_interface/grid_loaded24.json
+```
+
+`7f31460`、dirty=true 的 `grid_constraints.project_velocity` 单元测试 **3 passed**（0.39 s），覆盖质量加权共享速度、动量、投影能量、旋转、三类输入反向和冗余约束。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_grid_constraints.py -q`，日志 `runs/reference_interface/grid_projection_unit.log`。
+
+提交前全量 **1122 passed、8 skipped、18 subtests passed**（330.79 s），8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/reference_interface/grid_projection_full.log`。

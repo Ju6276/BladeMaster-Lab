@@ -241,25 +241,37 @@ def proximal(z, normal, history, material, compliance):
     radius = np.linalg.norm(positive, axis=1)
     opened = radius.copy()
     derivative = np.ones(count)
+    traction_ratio = np.zeros(count)
+    traction_derivative = np.zeros(count)
     for i in range(count):
         if history[i] >= failure[i]:
             continue
         opened[i] = 0.0
         derivative[i] = 0.0
+        traction_ratio[i] = 1.0
+        traction_derivative[i] = 1.0
         if history[i] > 0:
             stiffness = strength[i] * (1 - history[i] / failure[i]) / history[i]
             derivative[i] = 1 / (1 + compliance * stiffness)
             opened[i] = radius[i] * derivative[i]
+            traction_ratio[i] = compliance * stiffness / (1 + compliance * stiffness)
+            traction_derivative[i] = traction_ratio[i]
         if opened[i] > history[i] or (history[i] == 0 and radius[i] > compliance * strength[i]):
             derivative[i] = 1 / (1 - compliance * strength[i] / failure[i])
             opened[i] = (radius[i] - compliance * strength[i]) * derivative[i]
+            traction_ratio[i] = compliance * strength[i] * (1 / radius[i] - 1 / failure[i]) * derivative[i]
+            traction_derivative[i] = -compliance * strength[i] / failure[i] * derivative[i]
             if opened[i] >= failure[i]:
                 opened[i] = radius[i]
                 derivative[i] = 1.0
+                traction_ratio[i] = 0.0
+                traction_derivative[i] = 0.0
     gap = np.zeros_like(z)
     dz = np.zeros((count, 3, 3))
     dn = np.zeros((count, 3, 3))
+    traction_dz = np.zeros((count, 3, 3))
     for i in range(count):
+        radial_traction = traction_ratio[i] * np.eye(3)
         if radius[i] == 0:
             radial = derivative[i] * np.eye(3)
         else:
@@ -267,10 +279,17 @@ def proximal(z, normal, history, material, compliance):
             ratio = opened[i] / radius[i]
             gap[i] = ratio * positive[i]
             radial = ratio * np.eye(3) + (derivative[i] - ratio) * np.outer(direction, direction)
+            radial_traction += (traction_derivative[i] - traction_ratio[i]) * np.outer(direction, direction)
         projection = np.eye(3) - closed[i] * np.outer(normal[i], normal[i])
         dz[i] = radial @ projection
         dn[i] = -float(closed[i]) * radial @ (component[i] * np.eye(3) + np.outer(normal[i], z[i]))
-    return (gap, dz, dn, compression, closed)
+        traction_dz[i] = radial_traction + float(closed[i]) * radial @ np.outer(normal[i], normal[i])
+    dual_traction = compression[:, None] * normal + traction_ratio[:, None] * positive
+    return (gap, dz, dn, compression, closed, dual_traction, traction_dz, -dn)
+
+
+def shared_intact_rows(q, history, mapping):
+    return (history == 0.0) & np.all(q == 0.0, axis=1) & np.all(mapping == 0.0, axis=1)
 
 
 def setup(values, compliance_factor=1.0, *, extended=False):
@@ -286,12 +305,16 @@ def setup(values, compliance_factor=1.0, *, extended=False):
     L = full_L @ basis
     softening = np.max(material[:, 0] ** 2 / (2 * material[:, 1]))
     mobility = np.sqrt(area[:, None] * area[None, :]) * (b @ b.T) / coefficient
-    inverse_mobility = 1 / np.linalg.eigvalsh(mobility.astype(float)).max()
+    maximum_mobility = np.linalg.eigvalsh(mobility.astype(float)).max()
+    # A shared field has B=0. Its proximal scale is set by the constitutive
+    # convexity bound; there is no displacement stiffness to invert.
+    inverse_mobility = 0.0 if maximum_mobility == 0.0 else 1 / maximum_mobility
     compliance = compliance_factor / (inverse_mobility + 2 * softening)
     if compliance * softening >= 1:
         raise ValueError("Proximal subproblem is not strictly convex")
     length = np.min(2 * material[:, 1] / material[:, 0])
     size = basis.shape[1]
+    shared = shared_intact_rows(q, history, b)
 
     def at(y):
         if extended:
@@ -311,7 +334,9 @@ def setup(values, compliance_factor=1.0, *, extended=False):
                 @ (-skew(tangent_b[i]) @ L[i, 3:6] + skew(tangent_a[i]) @ L[i, 6:9])
             )
         z = gap + dual
-        (prox, D_z, D_n, compression, closed) = proximal(z, normals, history, material, compliance)
+        (prox, D_z, D_n, compression, closed, dual_traction, T_z, T_n) = proximal(
+            z, normals, history, material, compliance
+        )
         proximal_base = base.copy()
         proximal_base[:, :3] += prox - gap
         (c, C, Hc) = constraints(proximal_base, L, u)
@@ -319,7 +344,9 @@ def setup(values, compliance_factor=1.0, *, extended=False):
         weights = area / (coefficient * compliance)
         Ru = u + np.einsum("qai,qa,q->i", L[:, :3], dual, weights)
         Ru += np.einsum("qi,q,q->i", face, compression, weights)
-        Rg = gap - prox
+        # g - prox(g + lambda*T) = lambda*(T_prox - T). Evaluate the
+        # traction form to retain small corrections to a finite opening.
+        Rg = dual_traction - dual
         Juu = np.eye(size)
         Jus = np.zeros((size, len(q), 3))
         Jgu = np.empty((len(q), 3, size))
@@ -333,9 +360,22 @@ def setup(values, compliance_factor=1.0, *, extended=False):
             Jus[:, i] = weights[i] * (
                 B.T + compression[i] * N.T @ D_z[i] + closed[i] * np.outer(face[i], normals[i])
             )
-            Jgu[i] = B - proximal_u
-            Jgs[i, :, i, :] = -D_z[i]
-        J = np.block([[Juu, Jus.reshape(size, -1)], [Jgu.reshape(-1, size), Jgs.reshape(len(q) * 3, -1)]])
+            Jgu[i] = T_z[i] @ B + T_n[i] @ N
+            Jgs[i, :, i, :] = T_z[i] - np.eye(3)
+        # These opening constraints are identically zero. Their minimum-norm
+        # reaction is zero; use that equation to fix the undetermined multiplier.
+        Rg[shared] = dual[shared]
+        Jgu[shared] = 0.0
+        Jgs[shared] = 0.0
+        for i in np.flatnonzero(shared):
+            Jgs[i, :, i, :] = np.eye(3)
+        dual_size = len(q) * 3
+        J = np.block(
+            [
+                [Juu, Jus.reshape(size, dual_size)],
+                [Jgu.reshape(dual_size, size), Jgs.reshape(dual_size, dual_size)],
+            ]
+        )
         R = np.r_[Ru, Rg.ravel()] / length
         return (R, J, dict(gap=gap, proximal_gap=prox, compression=compression, normal=normals))
 
@@ -402,7 +442,7 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False):
     traction = (trial - gap) / compliance
     initial_u = -b.T @ (area[:, None] * traction) / coefficient
     initializer = "fixed_normal_admm"
-    if np.all(history > 0):
+    if np.all(history > 0) and size > 0:
         (initial_u, nu, _, _, _) = smooth_primal(values)
         gap = q + b @ initial_u
         updated_frame = frame + np.einsum("pa,qpb->qab", initial_u, gradient)

@@ -1429,3 +1429,13 @@ RTX 4090，`9765655`、dirty=true。6/4 mm 方块/圆柱、共享场/单侧/交�
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_reference_grid.py -q`；`runs/e5_release_audit/natural_surface_support.py`。工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，日志/报告 `runs/grid_update/{partial_trace_unit.log,natural_surface_support.json,natural_surface_support_baseline.json}`。
 
 提交前全量 **1203 passed、8 skipped、18 subtests passed**（413.32 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/partial_trace_full.log`。
+
+## 2026-10-23：共享场的内聚平衡与稳定开口残差
+
+RTX 4090，`35153a7`、dirty=true。共享场 B=0 使用有限近端尺度；q=B=κ=0 的冗余约束选择零牵引；开口残差按等价牵引形式计算。新增 **20** 项检查覆盖混合历史、空位移块、映射导数、追加共享点和 6 mm 方块/4 mm 圆柱的六步材料状态与梯度对照，相关测试 **65 passed**（52.30 s）。已有损伤、有限开口而 B=G=0 的解析映射梯度为 **−2.769216607024814e-6**；四档自然差分最大相对误差 **1.38103e-13**。
+
+材料—界面推进的闭合承载、G_c=7/70 受载断裂及已有损伤四组 200 μs 轨迹，在 dt=2/1/0.5 μs 共 **12** 例的能量残差均随步长减半约减半。最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**；完全断裂耗散 **0.001008/0.01008 J=G_c A₀**，闭合承载保持零开口和零损伤。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_differentiable_cohesive.py tests/test_cohesive_grid_update.py -q`；`runs/e5_release_audit/shared_map_limit.py`；`runs/e5_release_audit/shared_energy.py`。工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，日志/报告 `runs/grid_update/{shared_solve_unit.log,shared_map_limit.json,shared_energy.json}`。
+
+提交前全量 **1223 passed、8 skipped、18 subtests passed**（366.31 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/shared_solve_full.log`。

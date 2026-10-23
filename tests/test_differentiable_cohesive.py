@@ -222,6 +222,125 @@ def closed_pair(area, free_gap):
 
 
 @pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
+@pytest.mark.parametrize("moving_frame", [False, True])
+@pytest.mark.parametrize("history", [[0.0, 0.0, 0.0], [1e-4, 2e-4, 4e-3], [0.0, 2e-4, 4e-3]])
+def test_zero_opening_map_preserves_history_energy_and_adjoint(interface_solver, moving_frame, history):
+    values = fixture("closed")
+    values[0][:] = 0.0
+    values[3][:] = history
+    values[5][:] = 0.0
+    if not moving_frame:
+        values[6][:] = 0.0
+    sources = arrays(values)
+    with np.errstate(divide="raise", invalid="raise"):
+        with wp.Tape() as tape:
+            result = interface_solver(*sources)
+    for name in ["gap", "traction", "storage", "surface_stress", "normal_gap", "displacement"]:
+        np.testing.assert_array_equal(getattr(result, name).numpy(), 0.0)
+    np.testing.assert_array_equal(result.frame.numpy(), values[1])
+    np.testing.assert_array_equal(result.history.numpy(), values[3])
+    failure = 2 * values[4][:, 1] / values[4][:, 0]
+    np.testing.assert_allclose(result.fracture.numpy(), 0.5 * values[4][:, 0] * np.minimum(history, failure))
+    rng = np.random.default_rng(459)
+    target = outputs(result)
+    scales = [0.0028, 5e4, 0.0028, 70.0, 70.0, 1.0, 70.0, 0.0028, 0.0028]
+    seeds = [rng.normal(size=a.numpy().shape) / scale for a, scale in zip(target, scales)]
+    tape.backward(grads={a: wp.array(seed, dtype=a.dtype) for a, seed in zip(target, seeds)})
+    for source in sources:
+        assert np.isfinite(source.grad.numpy()).all()
+    # Perturbations retain the shared-field identity B=0, q=0.
+    for index in [1, 2, 3, 4, 6, 7, 8, 9]:
+        source = sources[index]
+        base = source.numpy().copy()
+        direction = rng.normal(size=base.shape) * np.maximum(np.abs(base), 1e-12)
+        if index == 3:
+            direction[base == 0.0] = 0.0
+        ad = float(np.sum(source.grad.numpy() * direction))
+        for epsilon in [1e-4, 1e-5]:
+            trials = []
+            for sign in [-1, 1]:
+                source.assign(base + sign * epsilon * direction)
+                trials.append([a.numpy() for a in outputs(interface_solver(*sources))])
+            fd = sum(np.sum(seed * (b - a)) for a, b, seed in zip(*trials, seeds)) / (2 * epsilon)
+            np.testing.assert_allclose(ad, fd, rtol=2e-5, atol=1e-8)
+        source.assign(base)
+    for scale in [0.5, 1.0, 1.5]:
+        scaled = interface_solver(*sources, compliance_scale=scale)
+        for a, b in zip(target, outputs(scaled)):
+            np.testing.assert_allclose(a.numpy(), b.numpy(), rtol=2e-14, atol=1e-15)
+
+
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
+def test_shared_intact_point_preserves_loaded_interface_and_its_adjoint(interface_solver):
+    values = fixture("opened")
+    extra = [a[:1].copy() for a in values[:8]]
+    for index in [0, 3, 5]:
+        extra[index][:] = 0.0
+    extended = [np.concatenate([a, b]) for a, b in zip(values[:8], extra)] + values[8:]
+    rng = np.random.default_rng(881)
+    seeds = None
+    results, gradients = [], []
+    for data in [values, extended]:
+        sources = arrays(data)
+        with wp.Tape() as tape:
+            result = interface_solver(*sources)
+        target = outputs(result)
+        if seeds is None:
+            scales = [0.0028, 5e4, 0.0028, 70.0, 70.0, 1.0, 70.0, 0.0028, 0.0028]
+            seeds = [rng.normal(size=a.numpy().shape) / scale for a, scale in zip(target, scales)]
+            actual_seeds = seeds
+        else:
+            actual_seeds = [
+                np.concatenate([s, np.zeros_like(s[:1])]) if i < 8 else s for i, s in enumerate(seeds)
+            ]
+            actual_seeds[1][-1] = 1.0 / 5e4
+            for name in ["gap", "traction", "history", "storage", "fracture", "surface_stress"]:
+                np.testing.assert_array_equal(getattr(result, name).numpy()[-1], 0.0)
+        tape.backward(grads={a: wp.array(s, dtype=a.dtype) for a, s in zip(target, actual_seeds)})
+        results.append([a.numpy()[:3] if i < 8 else a.numpy() for i, a in enumerate(target)])
+        gradients.append([a.grad.numpy()[:3] if i < 8 else a.grad.numpy() for i, a in enumerate(sources)])
+    for before, after in zip(*results):
+        np.testing.assert_allclose(after, before, rtol=2e-12, atol=1e-10)
+    for before, after in zip(*gradients):
+        scale = max(np.max(np.abs(before)), 1.0)
+        np.testing.assert_allclose(after, before, rtol=2e-8, atol=1e-9 * scale)
+
+
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
+def test_zero_mobility_retains_prescribed_opening_response_and_map_derivative(interface_solver):
+    values = closed_pair(4e-6, [3e-5, 4e-5, -2e-5])
+    values[3][:] = 2e-4
+    values[5][:] = 0.0
+    sources = arrays(values)
+    with wp.Tape() as tape:
+        result = interface_solver(*sources)
+    failure = 2 * values[4][0, 1] / values[4][0, 0]
+    stiffness = values[4][0, 0] * (1 - values[3][0] / failure) / values[3][0]
+    np.testing.assert_allclose(result.gap.numpy(), values[0], rtol=2e-14, atol=1e-18)
+    np.testing.assert_allclose(result.traction.numpy(), stiffness * values[0], rtol=2e-14, atol=1e-10)
+    np.testing.assert_array_equal(result.displacement.numpy(), 0.0)
+    rng = np.random.default_rng(435)
+    target = outputs(result)
+    scales = [0.0028, 5e4, 0.0028, 70.0, 70.0, 1.0, 70.0, 0.0028, 0.0028]
+    seeds = [rng.normal(size=a.numpy().shape) / scale for a, scale in zip(target, scales)]
+    tape.backward(grads={a: wp.array(s, dtype=a.dtype) for a, s in zip(target, seeds)})
+    for index, source in enumerate(sources):
+        base = source.numpy().copy()
+        direction = rng.normal(size=base.shape) * np.maximum(
+            np.abs(base), 0.1 if index in [1, 2, 5, 6] else 1e-12
+        )
+        ad = np.sum(source.grad.numpy() * direction)
+        for epsilon in [1e-4, 1e-5]:
+            trials = []
+            for sign in [-1, 1]:
+                source.assign(base + sign * epsilon * direction)
+                trials.append([a.numpy() for a in outputs(interface_solver(*sources))])
+            fd = sum(np.sum((b - a) * s) for a, b, s in zip(*trials, seeds)) / (2 * epsilon)
+            np.testing.assert_allclose(ad, fd, rtol=2e-5, atol=1e-8, err_msg=str(index))
+        source.assign(base)
+
+
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
 @pytest.mark.parametrize("ratio", [1.0, 1e-4, 1e-8])
 @pytest.mark.parametrize("mode", ["compression", "tension"])
 def test_closed_area_limit_retains_displacement_and_pressure_derivatives(interface_solver, ratio, mode):

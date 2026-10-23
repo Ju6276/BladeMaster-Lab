@@ -11,7 +11,7 @@ import warp as wp
 
 from .cohesive import cohesive_proximal_response, cohesive_contact_response, surface_normal
 from .precision import launch_double
-from ._cohesive_solve import geometry, solve_primal
+from ._cohesive_solve import geometry, shared_intact_rows, solve_primal
 
 
 @wp.func
@@ -105,9 +105,17 @@ def kinematics(
 
 
 @wp.kernel
-def subtract(a: wp.array(dtype=wp.vec3), b: wp.array(dtype=wp.vec3), result: wp.array(dtype=wp.vec3)):
+def opening_residual(
+    proximal_traction: wp.array(dtype=wp.vec3),
+    traction: wp.array(dtype=wp.vec3),
+    shared: wp.array(dtype=int),
+    compliance: float,
+    result: wp.array(dtype=wp.vec3),
+):
     i = wp.tid()
-    result[i] = a[i] - b[i]
+    result[i] = compliance * (proximal_traction[i] - traction[i])
+    if shared[i] != 0:
+        result[i] = compliance * traction[i]
 
 
 @wp.kernel
@@ -153,7 +161,18 @@ def _evaluate(inputs, u, traction, compliance):
         outputs=[Ru],
         device=device,
     )
-    launch_double(subtract, count, inputs=[raw[0], prox[0]], outputs=[Rg], device=device)
+    shared = wp.array(
+        shared_intact_rows(inputs[0].numpy(), inputs[3].numpy(), inputs[5].numpy()).astype(np.int32),
+        dtype=int,
+        device=device,
+    )
+    launch_double(
+        opening_residual,
+        count,
+        inputs=[prox[1], traction, shared, compliance],
+        outputs=[Rg],
+        device=device,
+    )
     result = [prox[0], raw[5], prox[2], prox[3], prox[4], raw[2], stress, constraint]
     return (result, Ru, Rg)
 

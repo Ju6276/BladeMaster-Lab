@@ -10,6 +10,7 @@ from blademaster_warp.cohesive_geometry import InterfaceGeometry
 from blademaster_warp.cohesive_grid_update import advance_material
 from blademaster_warp.differentiable_material import MaterialTrajectory
 from blademaster_warp.geometry import points, stencil
+from blademaster_warp.reference_grid import build_trace
 from blademaster_warp.solver import Config
 
 
@@ -121,6 +122,73 @@ def test_fracture_energy_and_history_survive_unloading_and_restart():
             getattr(direct.state, name).numpy(), getattr(restored.state, name).numpy()
         )
     assert np.all(direct.interface.history.numpy() >= saved_history)
+
+
+@pytest.mark.parametrize("spacing,shape", [(0.006, "block"), (0.004, "cylinder")])
+@pytest.mark.parametrize("previous", [[0.0, 0.0], [0.0, 2e-4]])
+def test_shared_surface_preserves_material_trajectory_and_gradient(spacing, shape, previous):
+    cfg = Config(
+        size=(0.012, 0.012, 0.012),
+        grid_spacing=spacing,
+        shape=shape,
+        dt=2e-6,
+        young_modulus=20000.0,
+        yield_stress=0.0,
+        external_tool=True,
+    )
+    m = MaterialTrajectory(cfg, precision="float64", ordered_transfers=True)
+    location = m.array([[0.0004, 0.0, 0.004], [-0.0007, 0.001, 0.007]], wp.vec3)
+    normal = m.array([[1.0, 0.0, 0.0], [1.0, 0.2, -0.1]], wp.vec3)
+    maps = build_trace(m, m.uncut, location, normal, [[1, 2], [1, 2]])
+    np.testing.assert_array_equal(maps.separation_map.numpy(), 0.0)
+    F = np.eye(3)
+    F[0, 1] = 0.03
+    initial = m.state(
+        x=m.reference @ F.T,
+        F=np.tile(F, (m.n, 1, 1)),
+        v=np.cross([30.0, -20.0, 200.0], m.reference - [0.0, 0.0, 0.006]),
+    )
+    history = m.array(previous, float)
+    geometry = InterfaceGeometry(m.zeros(2, wp.vec3), m.array(np.tile(F, (2, 1, 1)), wp.mat33))
+    data = dict(
+        topology=m.uncut,
+        reference_normal=normal,
+        material=m.array(np.tile([5e4, 70.0, 0.0], (2, 1)), wp.vec3),
+        separation_map=maps.separation_map,
+        frame_map=maps.frame_map,
+        area=m.array([1e-6, 3e-6], float),
+        duration=m.array([cfg.dt], float),
+    )
+    rng = np.random.default_rng(52)
+    seeds = None
+    trajectories, gradients = [], []
+    for with_surface in [False, True]:
+        state, surface, maximum = initial, geometry, history
+        with wp.Tape() as tape:
+            for _ in range(6):
+                if with_surface:
+                    result = advance_material(m, state, surface, maximum, **data)
+                    state, surface, maximum = result.state, result.geometry, result.interface.history
+                    np.testing.assert_array_equal(surface.gap.numpy(), 0.0)
+                    np.testing.assert_array_equal(maximum.numpy(), previous)
+                    np.testing.assert_array_equal(result.interface.storage.numpy(), 0.0)
+                    np.testing.assert_allclose(result.interface.fracture.numpy(), 2.5e4 * np.array(previous))
+                else:
+                    state = m.step(state, duration=data["duration"])
+            target = [getattr(state, name) for name in ["x", "v", "F", "Fp", "stress"]]
+        if seeds is None:
+            seeds = [
+                rng.normal(size=a.numpy().shape) / scale for a, scale in zip(target, [0.01, 1, 1, 1, 1e4])
+            ]
+        tape.backward(grads={a: m.array(s, a.dtype, False) for a, s in zip(target, seeds)})
+        trajectories.append([a.numpy() for a in target])
+        gradients.append([a.grad.numpy().copy() for a in [initial.v, m.young, data["duration"]]])
+        tape.zero()
+    for before, after in zip(*trajectories):
+        np.testing.assert_allclose(after, before, rtol=1e-11, atol=1e-10)
+    for before, after in zip(*gradients):
+        scale = max(np.max(np.abs(before)), 1.0)
+        np.testing.assert_allclose(after, before, rtol=2e-9, atol=1e-10 * scale)
 
 
 @pytest.mark.parametrize("intact", [False, True])

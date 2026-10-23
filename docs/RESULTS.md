@@ -1351,3 +1351,19 @@ runs/e5_release_audit/extrinsic_grid_loaded_scan.py --solver unified --mode open
 `7f31460`、dirty=true 的 `grid_constraints.project_velocity` 单元测试 **3 passed**（0.39 s），覆盖质量加权共享速度、动量、投影能量、旋转、三类输入反向和冗余约束。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_grid_constraints.py -q`，日志 `runs/reference_interface/grid_projection_unit.log`。
 
 提交前全量 **1122 passed、8 skipped、18 subtests passed**（330.79 s），8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/reference_interface/grid_projection_full.log`。
+
+## 2026-10-23：E4 当前公式的五种长轨迹复验
+
+干净 `ca90da9`，RTX 4090。6 mm 三刀后推块 **2.18 s、139520 步、1452 粒子**，四组自然差分最大误差 **0.0946834%**；32/127 步检查点状态重算差 **0**，控制量/初始位置梯度差 **2.759e-14/7.152e-11**。最终 **380/346/302/424** 四块，暂停损伤增量 **0**，推块后最大塑性形变偏差 **0.0953027**，峰值数组显存 **3.4224 GiB**。
+
+`ca90da9` 的暂停续切、平行两刀、交叉两刀、三刀后推块和 4 mm 交叉窗口共 **20** 组自然差分全部通过；各组最大误差 **0.005113%/0.078791%/0.037159%/0.094683%/0.009204%**，检查点状态重算差及暂停损伤增量均为 **0**。E5 界面接入后复测受影响组合。
+
+命令 `PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate --output runs/e4_ca90da9/three-cuts-push --cases three-cuts-push --spacings .006 --dt .000015625 --flip-reference-dt .000015625 --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7`。报告 `runs/e4_ca90da9/three-cuts-push/report.json`，队列 `continue_status.json` 的全部任务返回码为 **0**。
+
+## 2026-10-23：内聚网格与材料推进接口
+
+RTX 4090，`22d421a`、dirty=true。`cohesive_grid_update.advance_material` 将闭合约束、内聚响应和首阶 MUSL 接入同一步推进。新增 **6** 项测试核对四类完整运动、完全断裂的 G_c A 耗散、卸载历史、状态重启及四类输入的两档梯度；连同网格载荷测试为 **13 passed**（25.94 s）。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_cohesive_grid_update.py tests/test_grid_load.py -q`。
+
+闭合承载、已有损伤、受载断裂三种 **160** 步实际 TLMPM 轨迹，正式接口与原型的逐步粒子/界面状态、能量和外功差均为 **0**。24 步八类输入各至少两档自然差分误差 ≤**2e-5**，最差第二档 **2.74149e-6**。命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/extrinsic_grid_library_compare.py`；`runs/e5_release_audit/extrinsic_grid_library_scan.py --solver unified --mode existing --steps 24 --output runs/grid_update/gradient24.json`。工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，报告 `runs/grid_update/{compare160,gradient24}.json`。
+
+提交前全量 **1128 passed、8 skipped、18 subtests passed**（330.77 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/full.log`。

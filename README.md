@@ -61,7 +61,7 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 
 `report.json` 记录材料、机器人、表面与发布耗时；`runs/` 不进 Git。数值扫描使用干净提交，配置或版本变化时换输出目录。
 
-`blademaster_warp.differentiable_cohesive.solve` 提供移动内聚界面的全局平衡与隐式反向；`cohesive_geometry.InterfaceGeometry` 保存几何舍入余量和检查点，`reference_interface.reconstruct` 重建参考表面，`grid_constraints.project_velocity` 提供质量加权的闭合网格约束与反向。运行 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_cohesive.py tests/test_reference_interface.py tests/test_grid_constraints.py -q` 核对内力、旋转、面积拆分、输入导数及检查点。自然切口接入进度见可微分计划。
+`blademaster_warp.differentiable_cohesive.solve` 提供移动内聚界面的全局平衡与隐式反向；`cohesive_geometry.InterfaceGeometry` 保存几何舍入余量和检查点，`reference_interface.reconstruct` 重建参考表面。`grid_constraints.project_velocity` 提供闭合网格约束，`cohesive_grid_update.advance_material` 连接首阶 MUSL 与内聚损伤。运行 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_cohesive.py tests/test_reference_interface.py tests/test_grid_constraints.py tests/test_cohesive_grid_update.py -q` 核对内力、能量、运动、输入导数及检查点。自然切口接入进度见可微分计划。
 
 ## 文档
 

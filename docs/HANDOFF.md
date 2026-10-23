@@ -150,7 +150,7 @@ scp -q -o BatchMode=yes 'dong@100.70.97.92:/tmp/bmv/*' <Mac 上的目标目录>/
 | M2 | 多步状态与分段重算 VJP | 两网格、32/128/512 步的梯度、耗时和显存扫描完成 |
 | M3 | 刀与砧板接触、摩擦、推压轨迹优化对照 | 接触分段重算及 8/16 控制量扩展；八控制量 AD/FD/CMA-ES 成功 5/2/5（各五组），长轨迹见 RESULTS |
 | M4 | 固定切割分支、多场、塑性和刀路梯度 | 已完成：12 个窗口的正向与梯度、活跃网格约束、完整检查点及 67200 步切割/退刀/推块通过 |
-| M5 | 损伤达阈值和切开事件的梯度 | E1 几何事件、E2 接触切换及 E3 初态展开完整轨迹通过；下一项 E4 多刀与永久历史 |
+| M5 | 损伤达阈值和切开事件的梯度 | E1–E3 原版本通过，E3 当前公式复验进行中；E4 的 ca90da9 五种长轨迹通过；继续 E5 能量与界面接入 |
 
 当前实现：`differentiable.py`、`differentiable_contact.py`、`differentiable_material.py`、`differentiable_cutting.py`、`differentiable_constraint.py`、`differentiable_events.py`；M5 自然事件与阶段积分位于 `differentiable_natural.py`、`differentiable_geometry.py`、`differentiable_midpoint.py`。`precision.py` 从同一份 Warp 函数定义生成双精度核。原求解器作为正向对照。记录器、表面显示和遥操作不参与梯度链。
 
@@ -267,12 +267,14 @@ E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20
 
 下一项采用 Gauss 积分接自然参考面积/位置，加入永久界面历史、接触去重、RK2 事件分段和检查点，再复测完整能量扫描及受影响的 E1–E4。几何舍入余量接口为 `cohesive_geometry.InterfaceGeometry` 与 `solve_geometry`；主线自然切割当前使用原释放公式。Crook–Homel 作者 GEOS `feature/crook5/czUpdate` 分支 `e068c207` 的参考状态、节点面积、位移/力映射已核对，文件位于本机 `runs/reference_sources/GEOS/czUpdate/`，固定源码链接及本地推导见 METHOD。
 
-E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已自动开始 `three-cuts-push`。E3 的 `release_h4_refine` 已完成，12 组自然差分最大误差 **0.00043623%**、检查点状态差 **0**；三档侧码/释放/接触集合相同。深度梯度相邻变化 **0.24505%/0.27433%**，补充更细步长和事件相位核对；6 mm、0.24 s 下刀已完成，四组自然差分最大误差 **0.0224614%**、32 步检查点状态重算差 **0**；4 mm 下刀已完成十组自然差分，最大误差 **0.37406%**、32/128 步检查点状态差 **0**；队列已进入 `full_h6`。
+E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已完成 `three-cuts-push`，四项差分最大误差 **0.09468%**、32/127 步检查点状态差 **0**；最终 **380/346/302/424** 四块。当前 `ca90da9` 五种 E4 组合共 **20** 项差分全部通过。E3 的 `release_h4_refine` 已完成，12 组自然差分最大误差 **0.00043623%**、检查点状态差 **0**；三档侧码/释放/接触集合相同。深度梯度相邻变化 **0.24505%/0.27433%**，补充更细步长和事件相位核对；6 mm、0.24 s 下刀已完成，四组自然差分最大误差 **0.0224614%**、32 步检查点状态重算差 **0**；4 mm 下刀已完成十组自然差分，最大误差 **0.37406%**、32/128 步检查点状态差 **0**；队列已进入 `full_h6`。
 
 补偿几何接口在 `e5-interface-20261023` 的 `b7048c7`、dirty=true 源码上完成 **23** 项局部测试（14.83 s），包括 11 步界面轨迹的 3/4 步检查点状态与梯度对照；全量 **1112 passed、8 skipped、18 subtests passed**（287.52 s）。日志为 `runs/interface_precision/{unit,full}.log`。三种 160 步实际 TLMPM 轨迹与扩展精度原型的归一化状态差 ≤**7.661e-15**，报告 `compare160.json`。初速度两档小扰动误差 **6.42872e-6/9.62676e-8**，报告 `velocity160.json`；其余七类输入也已全部通过原标准，最差第二档 **1.39787e-6**，报告 `remaining160.json`；该工作树已同步至干净 `f507dc0`。主线的自然参考面、永久历史、接触去重及 RK2 接入仍待完成。
 
 E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-20261023`，源码基于 `f507dc0`。`reference_interface.reconstruct` 的 **7** 项测试通过；全量 **1119 passed、8 skipped、18 subtests passed**（284.42 s），日志 `runs/reference_interface/{unit,full}.log`。`kinematics.json` 核对静态表面重建和实际 TLMPM 推进：统一仿射状态的重建间隙 ≤5.067e-18 m；分侧后旋转推进仍产生 1.465e-6 m 间隙，未切场为 2.108e-18 m。`closed_grid.json` 的 12 例闭合约束对照全部通过，位置差 0，速度差 ≤5.552e-17 m/s，均匀牵引误差 ≤3.184e-12 Pa。方法推导见 METHOD。
 
-`7f31460` 的统一网格原型完成 **12** 例 200 μs 能量检查，四组残差随步长减半约减半，最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**。24 步闭合/已有损伤/受载断裂的六/八/六类输入各至少两档误差 ≤2e-5。报告在同工作树 `runs/reference_interface/grid_{energy,preload24,existing24,loaded24}.json`，命令和配置见 RESULTS；原型入口为 `runs/e5_release_audit/extrinsic_grid_surface.py`。可复用的闭合投影已整理到 `grid_constraints.project_velocity`，**3** 项单元测试通过；提交前全量 **1122 passed、8 skipped、18 subtests passed**（330.79 s），日志 `runs/reference_interface/grid_projection_full.log`。下一项整理完整网格推进接口，接自然参考面、永久历史、接触去重与 RK2，并重复 30 例能量扫描及受影响的 E1–E4。
+`7f31460` 的统一网格原型完成 **12** 例 200 μs 能量检查，四组残差随步长减半约减半，最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**。24 步闭合/已有损伤/受载断裂的六/八/六类输入各至少两档误差 ≤2e-5。报告在同工作树 `runs/reference_interface/grid_{energy,preload24,existing24,loaded24}.json`，命令和配置见 RESULTS；原型入口为 `runs/e5_release_audit/extrinsic_grid_surface.py`。可复用的闭合投影已整理到 `grid_constraints.project_velocity`，**3** 项单元测试通过；提交前全量 **1122 passed、8 skipped、18 subtests passed**（330.79 s），日志 `runs/reference_interface/grid_projection_full.log`。完整网格推进入口及后续接入项见下。
+
+正式首阶接口为 `cohesive_grid_update.advance_material`，工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`。新增 **6** 项测试，加网格载荷为 **13 passed**（25.94 s）；全量 **1128 passed、8 skipped、18 subtests passed**（330.77 s），日志 `runs/grid_update/full.log`。`runs/grid_update/compare160.json` 的三种 160 步轨迹与原型状态/能量/外功差均为 **0**；`gradient24.json` 的八类输入均至少两档通过，最差第二档 **2.74149e-6**。下一项接自然参考面、永久历史、接触去重与 RK2 事件分段。参考工作树仍在干净 `22d421a` 运行 `grid_library_{existing,loaded}160` 的更长输入扫描，日志和报告位于 `runs/reference_interface/`。
 
 插入失败对照位于 `e5-interface-20261023/runs/interface_insertion/patch.json`：平移在 1.096e-23～4.386e-23 m 的间隙舍入处触发半光滑线搜索失败；刚体旋转 dt=2 μs 的假断裂耗散为 6.240e-6 J。该对照对应 `b7048c7`、dirty=true 的 `f507dc0` 源码。入口 `runs/e5_release_audit/extrinsic_insertion_patch.py`。

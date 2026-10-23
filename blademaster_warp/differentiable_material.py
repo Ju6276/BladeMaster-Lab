@@ -526,8 +526,13 @@ class MaterialTrajectory(ElasticTrajectory):
         return result
 
     def step(self, state, gravity=(0.0, 0.0, -9.81), impulse=None, topology=None, fixed_yielded=None,
-             grid_transform=None, duration=None, stage_base=None, trace=None, grid_load=None):
-        """grid_load is an impulse in N s per topology slot, applied before cut-field coupling."""
+             grid_transform=None, duration=None, stage_base=None, trace=None, grid_load=None,
+             momentum_transform=None):
+        """grid_load is an impulse in N s per topology slot, before cut-field coupling.
+
+        momentum_transform(grid, mass, momentum, phase) follows field coupling.
+        phase is state, load, base (an RK stage), or remap (a MUSL update).
+        """
         cfg = self.config
         duration = self.duration if duration is None else duration
         grid = self.uncut if topology is None else topology
@@ -571,6 +576,9 @@ class MaterialTrajectory(ElasticTrajectory):
             grid_impulse = combined
         coupled_momentum = self.couple(grid, momentum)
         coupled_impulse = self.couple(grid, grid_impulse)
+        if momentum_transform is not None:
+            coupled_momentum = momentum_transform(grid, grid_mass, coupled_momentum, 'state')
+            coupled_impulse = momentum_transform(grid, grid_mass, coupled_impulse, 'load')
         self.launch(m.grid_vel, grid.count, inputs=[grid_mass, coupled_momentum, coupled_impulse],
                   outputs=[old_v, new_v], device=self.device)
         unconstrained_v = new_v
@@ -585,8 +593,11 @@ class MaterialTrajectory(ElasticTrajectory):
                             inputs=[grid.particle_offsets, grid.particles, grid.corners, self.weights,
                                     stage_base.v, self.mass], outputs=[base_momentum], device=self.device)
                 candidate = self.zeros(grid.count, wp.vec3)
+                coupled_base = self.couple(grid, base_momentum)
+                if momentum_transform is not None:
+                    coupled_base = momentum_transform(grid, grid_mass, coupled_base, 'base')
                 self.launch(stage_grid_candidate, grid.count,
-                            inputs=[self.couple(grid, base_momentum), grid_mass, old_v, new_v],
+                            inputs=[coupled_base, grid_mass, old_v, new_v],
                             outputs=[candidate], device=self.device)
                 projected = grid_transform(grid, grid_mass, candidate)
                 corrected = self.zeros(grid.count, wp.vec3)
@@ -615,6 +626,8 @@ class MaterialTrajectory(ElasticTrajectory):
                       outputs=[result.x, result.v, remapped], device=self.device)
         if stage_base is None:
             coupled = self.couple(grid, remapped)
+            if momentum_transform is not None:
+                coupled = momentum_transform(grid, grid_mass, coupled, 'remap')
         base = state if stage_base is None else stage_base
         self.launch(timed_deformation, self.n,
                   inputs=[base.F, grid.slots, self.gradients, grid_mass, coupled, duration],

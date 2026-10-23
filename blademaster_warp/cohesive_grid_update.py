@@ -6,7 +6,7 @@ import numpy as np
 import warp as wp
 
 from .cohesive_geometry import InterfaceGeometry, solve_geometry
-from .differentiable_cohesive import CohesiveStep
+from .differentiable_cohesive import CohesiveForceStep
 from .differentiable_material import PlasticState
 from .grid_constraints import project_velocity
 
@@ -69,7 +69,7 @@ def add_velocity(
 class CohesiveMaterialStep:
     state: PlasticState
     geometry: InterfaceGeometry
-    interface: CohesiveStep
+    interface: CohesiveForceStep
     old_velocity: wp.array
     new_velocity: wp.array
 
@@ -93,14 +93,16 @@ def advance_material(
     """Advance material and interface geometry with the same grid velocity.
 
     Maps use reference coordinates; area is in m² and history is in metres.
-    The zero-history set is intact. Positive history remains active on unloading.
+    Positive-area, zero-history points are intact. Reactions are integrated forces
+    in N; storage and fracture outputs remain densities per reference area.
     """
     duration = model.duration if duration is None else duration
     if model.precision != "float64":
         raise ValueError("Cohesive grid updates require float64 material arrays")
     if separation_map.shape != (len(history), topology.count):
         raise ValueError("Interface maps must match the history and topology slots")
-    intact = history.numpy() == 0.0
+    support = area.numpy() > 0.0
+    intact = (history.numpy() == 0.0) & support
     active = model.array(intact.astype(np.int32), int, False)
     unit_mass = model.array([1.0], float, False)
     data = {}
@@ -111,7 +113,7 @@ def advance_material(
         if phase == "load":
             data["increment"] = velocity
             return momentum
-        mask = intact if phase == "state" else data["response"].history.numpy() == 0.0
+        mask = intact if phase == "state" else (data["response"].history.numpy() == 0.0) & support
         velocity = project_velocity(separation_map, mass, velocity, mask)
         if phase == "state":
             data["old_velocity"] = velocity
@@ -149,7 +151,16 @@ def advance_material(
             device=model.device,
         )
         response, updated = solve_geometry(
-            free, reference_normal, history, material, mapping, gradient, area, unit_mass, duration
+            free,
+            reference_normal,
+            history,
+            material,
+            mapping,
+            gradient,
+            area,
+            unit_mass,
+            duration,
+            integrated_force=True,
         )
         velocity = model.zeros(grid.count, wp.vec3)
         wp.launch(

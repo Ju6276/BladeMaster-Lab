@@ -299,8 +299,12 @@ E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-2026
 
 提交前全量 `measure_proximal_full.log` 为 **1270 passed、8 skipped、18 subtests passed**（357.68 s）。
 
-积分总力全局入口 `solve_force` 与 `solve_geometry(..., integrated_force=True)` 共用当前半光滑方程，含零面积、扩展精度残差细化和反力选择的 VJP。`force_global_unit7.log` 为 **132 passed**（74.98 s）；补充 **6** 例载荷尺度检查通过（1.80 s），日志 `force_scaled_constraint2.log`。`force_compare160.json` 比较共用代码更新前后的首阶轨迹，三种 160 步状态归一化差 ≤**6.006e-13**、能量差 ≤**8.882e-16 J**。下一项在 `cohesive_grid_update.advance_material` 连接总力接口与正面积闭合掩码，同时处理 `ReferenceSurface.quadrature` 的退化片舍入，保留其面积导数；随后接自然双侧码、接触去重及 RK2 分段。
+积分总力全局入口 `solve_force` 与 `solve_geometry(..., integrated_force=True)` 共用当前半光滑方程，含零面积、扩展精度残差细化和反力选择的 VJP。`force_global_unit7.log` 为 **132 passed**（74.98 s）；补充 **6** 例载荷尺度检查通过（1.80 s），日志 `force_scaled_constraint2.log`。`force_compare160.json` 比较共用代码更新前后的首阶轨迹，三种 160 步状态归一化差 ≤**6.006e-13**、能量差 ≤**8.882e-16 J**。`cohesive_grid_update.advance_material` 已连接总力接口与正面积闭合掩码；下一项处理 `ReferenceSurface.quadrature` 的退化片舍入及参考单元边界表示，保留其面积导数，随后接自然双侧码、接触去重及 RK2 分段。
 
 插入失败对照位于 `e5-interface-20261023/runs/interface_insertion/patch.json`：平移在 1.096e-23～4.386e-23 m 的间隙舍入处触发半光滑线搜索失败；刚体旋转 dt=2 μs 的假断裂耗散为 6.240e-6 J。该对照对应 `b7048c7`、dirty=true 的 `f507dc0` 源码。入口 `runs/e5_release_audit/extrinsic_insertion_patch.py`。
 
 积分总力全局接口提交前全量 `force_global_final_full.log` 为 **1330 passed、8 skipped、18 subtests passed**（413.20 s）；新增 60 项检查。
+
+总力材料装配的相关检查 `force_material_unit.log` 为 **41 passed**（107.00 s），新增 **5** 项零面积运动、状态梯度及面积单侧导数检查。`force_material_compare160.json` 比较 `016b255` 牵引装配与总力装配，闭合承载/已有损伤/受载断裂三种 160 步的归一化状态差 ≤**8.994e-15**、能量差 ≤**8.674e-19 J**、外功差 ≤**5.422e-20 J**。自然表面几何仍存在退化片舍入；相关原型位于 `runs/e5_release_audit/exact_construction/`，精确裁剪与边界输入表示需一起处理。
+
+总力材料装配提交前全量 `force_material_full.log` 为 **1335 passed、8 skipped、18 subtests passed**（427.09 s）。E3 补充任务 `e3-current/runs/e3_ca90da9/after_queue.py` 等待当前八项队列成功退出，随后执行 `release_h4_more.py`：4 mm、50 ms、G_c=7 的 dt/8 与 dt/16；dt/8 含两档刀路差分，dt/16 比较梯度与状态细化趋势。状态文件 `after_queue_status.json`，日志 `release_h4_more.log`。

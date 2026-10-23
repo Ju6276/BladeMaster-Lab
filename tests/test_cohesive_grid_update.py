@@ -124,6 +124,67 @@ def test_fracture_energy_and_history_survive_unloading_and_restart():
     assert np.all(direct.interface.history.numpy() >= saved_history)
 
 
+@pytest.mark.parametrize("previous", [0.0, 3e-3])
+@pytest.mark.parametrize("direction", [-1.0, 1.0])
+def test_zero_area_interface_preserves_free_split_motion_and_state_gradient(previous, direction):
+    m, codes, geometry, history, data = patch()
+    data["area"].zero_()
+    history.assign(np.full(len(history), previous))
+    side = np.where(codes == 1, -1.0, 1.0)[:, None]
+    initial = m.state(v=side * np.array([direction * 0.1, 0.02, -0.03]))
+    rng = np.random.default_rng(87)
+    outputs, gradients = [], []
+    seeds = None
+    for with_surface in [False, True]:
+        state, surface, maximum = initial, geometry, history
+        with wp.Tape() as tape:
+            for _ in range(3):
+                if with_surface:
+                    step = advance_material(m, state, surface, maximum, **data, gravity=(0, 0, 0))
+                    state, surface, maximum = step.state, step.geometry, step.interface.history
+                    np.testing.assert_allclose(step.interface.force.numpy(), 0.0, atol=1e-20)
+                    np.testing.assert_allclose(step.interface.surface_moment.numpy(), 0.0, atol=1e-20)
+                else:
+                    state = m.step(
+                        state, topology=data["topology"], duration=data["duration"], gravity=(0, 0, 0)
+                    )
+            target = [getattr(state, name) for name in ["x", "v", "F", "Fp", "stress"]]
+        if seeds is None:
+            seeds = [
+                rng.normal(size=a.numpy().shape) / scale for a, scale in zip(target, [0.01, 1, 1, 1, 1e4])
+            ]
+        tape.backward(grads={a: m.array(s, a.dtype, False) for a, s in zip(target, seeds)})
+        outputs.append([a.numpy().copy() for a in target])
+        gradients.append([a.grad.numpy().copy() for a in [initial.v, initial.F, m.young, data["duration"]]])
+        tape.zero()
+    for actual, expected in zip(outputs[1], outputs[0]):
+        np.testing.assert_allclose(actual, expected, rtol=1e-13, atol=1e-13)
+    for actual, expected in zip(gradients[1], gradients[0]):
+        np.testing.assert_allclose(actual, expected, rtol=2e-10, atol=1e-9)
+
+
+def test_zero_area_material_response_retains_opening_area_derivative():
+    m, codes, geometry, history, data = patch()
+    data["area"].zero_()
+    history.assign(np.full(len(history), 1e-3))
+    geometry.gap.assign(np.tile([2e-4, 1e-4, 0.0], (len(history), 1)))
+    state = m.state(v=np.where(codes == 1, -1.0, 1.0)[:, None] * np.array([0.1, 0.02, 0.0]))
+    with wp.Tape() as tape:
+        result = advance_material(m, state, geometry, history, **data, gravity=(0, 0, 0))
+    seed = np.tile([1.0, 0.3, -0.2], (len(history), 1))
+    tape.backward(grads={result.interface.force: m.array(seed, wp.vec3, False)})
+    direction = np.linspace(0.1, 1.0, len(history)) * 1e-6
+    ad = data["area"].grad.numpy() @ direction
+    assert abs(ad) > 1e-4
+    losses = []
+    for epsilon in [1e-3, 1e-4, 1e-5]:
+        data["area"].assign(epsilon * direction)
+        trial = advance_material(m, state, geometry, history, **data, gravity=(0, 0, 0))
+        losses.append(np.sum(trial.interface.force.numpy() * seed) / epsilon)
+    assert abs(losses[-1] - ad) < abs(losses[0] - ad)
+    np.testing.assert_allclose(losses[-1], ad, rtol=2e-5)
+
+
 @pytest.mark.parametrize("spacing,shape", [(0.006, "block"), (0.004, "cylinder")])
 @pytest.mark.parametrize("previous", [[0.0, 0.0], [0.0, 2e-4]])
 def test_shared_surface_preserves_material_trajectory_and_gradient(spacing, shape, previous):

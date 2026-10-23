@@ -1499,3 +1499,13 @@ RTX 4090，`77d5721`、dirty=true。普通和补偿几何的总力接口接受�
 干净 `ca90da9`，RTX 4090，4 mm、4892 粒子、1.05 s / 79800 步、G_c=70；dt/PIC 参考时间 13.157895 μs。三类刀路与 G_c 倍数各两档自然差分，共 **8** 组全部通过，最大相对误差 **0.0927014%**。32 步 CPU 检查点连续状态重算差 **0**；释放 **5** 粒子，峰值刀力 **11.4993 N**，CUDA 数组峰值 **5.6271 GiB**。
 
 独立正向 **701.26 s**，检查点正向/重算/反向 **732.55/770.44/300.66 s**；完整差分任务耗时 **14700.59 s**。命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py full_h4`，工作树 `~/Projects/BladeMaster-Warp-e3-current-20261022`，报告 `runs/e3_ca90da9/full_h4/report.json`。队列继续 6 mm 下刀与完整轨迹的步长细化。
+
+## 2026-10-23：积分总力材料装配与零面积自由运动
+
+RTX 4090，`016b255`、dirty=true。`advance_material` 使用积分总力接口，初态和 MUSL 重映射仅约束正面积、零历史界面。相关 **41 passed**（107.00 s），新增 **5** 项检查覆盖零面积点的分离/压缩、零/已有损伤历史、三步粒子状态及其反向，以及张开处面积从零增大的力导数。
+
+闭合承载、已有损伤和受载断裂三种 **160** 步轨迹，与 `016b255` 的牵引装配逐步比较：归一化状态差 ≤**8.994e-15**、能量差 ≤**8.674e-19 J**、外功差 ≤**5.422e-20 J**；受载闭合三项差均为 **0**。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_grid_update.py tests/test_cohesive_history.py tests/test_reference_grid.py -q`；`runs/e5_release_audit/force_material_compare.py`。报告/日志为 `e5-grid-20261023/runs/grid_update/{force_material_unit.log,force_material_compare160.json,force_material_compare.log}`。
+
+提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1335 passed、8 skipped、18 subtests passed**（427.09 s），日志 `runs/grid_update/force_material_full.log`；8 项跳过为 CRESSim 上游构建。

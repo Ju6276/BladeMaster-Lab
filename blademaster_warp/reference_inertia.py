@@ -6,6 +6,9 @@ import numpy as np
 from scipy.sparse.linalg import LinearOperator, cg
 import warp as wp
 
+from ._compensated import Expansion
+from .compensated_state import CompensatedArray, as_compensated, add_gradient
+
 
 @wp.kernel
 def _grid_velocity(
@@ -79,6 +82,9 @@ class ReferenceInertia:
         return result
 
     def generator(self, value):
+        if isinstance(value, Expansion):
+            masses = self.masses if value.ndim == 1 else self.masses[:, None]
+            return value - Expansion(self.mapping.T) @ (masses * (Expansion(self.mapping) @ value))
         value = np.asarray(value)
         vector = value.ndim == 1
         x = value[:, None] if vector else value
@@ -88,41 +94,55 @@ class ReferenceInertia:
         return result[:, 0] if vector else result
 
     def apply(self, value):
+        if isinstance(value, Expansion):
+            theta = Expansion(self.values[0]) * self.values[1]
+            return value + theta * self.generator(value)
         value = np.asarray(value)
         return value + value.dtype.type(self.theta) * self.generator(value)
 
-    def solve(self, rhs):
-        rhs = np.asarray(rhs)
-        vector = rhs.ndim == 1
-        values = rhs[:, None] if vector else rhs
-        if values.shape[0] != self.size or not np.isfinite(values).all():
-            raise ValueError("Inertia right hand sides must be finite and match the transfer")
+    def solve_compensated(self, rhs):
+        rhs = Expansion.from_value(rhs)
+        if rhs.ndim not in (1, 2) or rhs.shape[0] != self.size:
+            raise ValueError("Inertia right hand sides must match the transfer")
+        if not np.isfinite(rhs.high).all() or not np.isfinite(rhs.low).all():
+            raise ValueError("Inertia right hand sides must be finite")
         if self.theta == 0:
-            return rhs.copy()
+            return rhs
+        vector = rhs.ndim == 1
+        values = rhs.reshape(-1, 1) if vector else rhs
         operator = LinearOperator((self.size, self.size), matvec=self.apply, dtype=np.float64)
-        solution = np.zeros(values.shape, dtype=np.longdouble)
-        precise_rhs = values.astype(np.longdouble)
-        for column in range(values.shape[1]):
-            scale = max(np.linalg.norm(precise_rhs[:, column]), np.finfo(float).tiny)
-            for _ in range(4):
-                residual = precise_rhs[:, column] - self.apply(solution[:, column])
-                if np.linalg.norm(residual) <= 16 * np.finfo(np.longdouble).eps * scale:
-                    break
-                correction, status = cg(
+        solution = Expansion(np.zeros(values.shape))
+        scale = np.maximum(np.max(np.abs(values.high), axis=0), np.finfo(float).tiny)
+        epsilon = np.finfo(float).eps ** 2
+        for _ in range(4):
+            residual = values - self.apply(solution)
+            active = np.max(np.abs(residual.high), axis=0) > 16 * epsilon * scale
+            if not np.any(active):
+                break
+            correction = np.zeros(values.shape)
+            for column in np.flatnonzero(active):
+                correction[:, column], status = cg(
                     operator,
-                    residual.astype(float),
+                    residual[:, column].numpy(),
                     rtol=8 * np.finfo(float).eps,
                     atol=0.0,
                     maxiter=max(20, 4 * self.size),
                 )
                 if status:
                     raise RuntimeError(f"Reference inertia CG failed: {status}")
-                solution[:, column] += correction
-            residual = precise_rhs[:, column] - self.apply(solution[:, column])
-            if np.linalg.norm(residual) > 64 * np.finfo(float).eps * scale:
-                raise RuntimeError("Reference inertia residual exceeds roundoff")
-        result = solution.astype(rhs.dtype)
-        return result[:, 0] if vector else result
+            solution = solution + correction
+        residual = values - self.apply(solution)
+        if not np.isfinite(residual.high).all() or np.any(
+            np.max(np.abs(residual.high), axis=0) > 64 * epsilon * scale
+        ):
+            raise RuntimeError("Compensated reference inertia residual exceeds roundoff")
+        return solution[:, 0] if vector else solution
+
+    def solve(self, rhs):
+        rhs = np.asarray(rhs)
+        if not np.issubdtype(rhs.dtype, np.floating):
+            raise ValueError("Inertia solves require floating-point right hand sides")
+        return self.solve_compensated(rhs).numpy(rhs.dtype)
 
     def add_momentum(self, original, value):
         m = self.transfer.model
@@ -141,28 +161,29 @@ class ReferenceInertia:
         )
         return result
 
-    def solve_array(self, value):
-        """Apply D^-1 with its implicit state, duration and rate pullback."""
-        self.transfer._check(value, wp.vec3d, (self.size,))
+    def solve_state(self, value):
+        """Apply D^-1 to a state while retaining its rounding remainder."""
+        value = as_compensated(value)
+        self.transfer._check(value.high, wp.vec3d, (self.size,))
         bound = self.frozen()
-        advanced = bound.solve(value.numpy().astype(np.longdouble))
-        result = self.transfer.model.array(advanced, wp.vec3, True)
+        advanced = bound.solve_compensated(value.cpu())
+        result = CompensatedArray.from_cpu(advanced, dtype=wp.vec3d, device=value.high.device)
         tape = wp._src.context.runtime.tape
         if tape is not None:
 
             def backward():
-                adjoint = bound.solve(result.grad.numpy().astype(np.longdouble))
-                if value.requires_grad:
-                    value.grad.assign(value.grad.numpy() + adjoint)
-                power = np.sum(adjoint * bound.generator(advanced))
-                for parameter, derivative in zip(
-                    bound.parameters, [-bound.values[1] * power, -bound.values[0] * power]
-                ):
-                    if parameter.requires_grad:
-                        parameter.grad.assign(parameter.grad.numpy() + [derivative])
+                adjoint = bound.solve_compensated(result.high.grad.numpy())
+                add_gradient(value.high, adjoint)
+                power = (adjoint * bound.generator(advanced)).sum()
+                for parameter, coefficient in zip(bound.parameters, [-bound.values[1], -bound.values[0]]):
+                    add_gradient(parameter, (coefficient * power).reshape(1))
 
-            tape.record_func(backward, [a for a in [result, value, *bound.parameters] if a.requires_grad])
+            sources = [value.high, *bound.parameters]
+            tape.record_func(backward, [result.high, *[a for a in sources if a.requires_grad]])
         return result
+
+    def solve_array(self, value):
+        return self.solve_state(value).high
 
 
 def apply_inertia(inertia, value):

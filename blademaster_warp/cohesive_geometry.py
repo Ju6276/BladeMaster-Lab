@@ -9,6 +9,8 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
+from ._compensated import Expansion
+from .compensated_state import as_compensated, add_gradient as _add_gradient
 from ._cohesive_solve import refine_geometry
 from .differentiable_cohesive import (
     CohesiveStep,
@@ -21,11 +23,6 @@ from .differentiable_cohesive import (
 
 
 EXTENDED = np.longdouble
-
-
-def _add_gradient(source, value):
-    if source.requires_grad:
-        source.grad.assign(source.grad.numpy() + value)
 
 
 @dataclass(frozen=True)
@@ -65,38 +62,50 @@ class InterfaceGeometry:
         )
 
     def advance(self, separation_map, frame_map, velocity, duration):
-        if np.finfo(EXTENDED).nmant <= np.finfo(np.float64).nmant:
-            raise RuntimeError("Interface geometry requires extended-precision CPU arithmetic")
-        sources = [self.gap, self.frame, separation_map, frame_map, velocity, duration]
-        values = [a.numpy().copy() for a in sources]
-        g, F, B, G, v, dt = [a.astype(EXTENDED) for a in values]
-        gap = g + self.gap_remainder + dt[0] * (B @ v)
-        frame = F + self.frame_remainder + dt[0] * np.einsum("pa,qpb->qab", v, G)
-        high_gap = wp.array(gap.astype(float), dtype=wp.vec3d, device=self.gap.device, requires_grad=True)
+        velocity, duration = as_compensated(velocity), as_compensated(duration)
+        sources = [self.gap, self.frame, separation_map, frame_map, velocity.high, duration.high]
+        B = Expansion(separation_map.numpy())
+        G = [Expansion(frame_map.numpy()[:, :, c]) for c in range(3)]
+        v, dt = velocity.cpu(), duration.cpu()[0]
+        gap_rate = B @ v
+        frame_rate = [g @ v for g in G]
+        gap = Expansion(self.gap.numpy(), self.gap_remainder) + dt * gap_rate
+        frames = [
+            Expansion(self.frame.numpy()[:, :, c], self.frame_remainder[:, :, c]) + dt * rate
+            for c, rate in enumerate(frame_rate)
+        ]
+        high_gap = wp.array(gap.high, dtype=wp.vec3d, device=self.gap.device, requires_grad=True)
         high_frame = wp.array(
-            frame.astype(float), dtype=wp.mat33d, device=self.frame.device, requires_grad=True
+            np.stack([f.high for f in frames], axis=-1),
+            dtype=wp.mat33d,
+            device=self.frame.device,
+            requires_grad=True,
         )
-        result = InterfaceGeometry(
-            high_gap,
-            high_frame,
-            gap - high_gap.numpy().astype(EXTENDED),
-            frame - high_frame.numpy().astype(EXTENDED),
-        )
+        result = InterfaceGeometry(high_gap, high_frame, gap.low, np.stack([f.low for f in frames], axis=-1))
         tape = wp._src.context.runtime.tape
         if tape is not None:
 
             def backward():
-                g, F, B, G, v, dt = [a.astype(EXTENDED) for a in values]
-                sg = high_gap.grad.numpy().astype(EXTENDED)
-                sF = high_frame.grad.numpy().astype(EXTENDED)
+                sg = Expansion(high_gap.grad.numpy())
+                sF = [Expansion(high_frame.grad.numpy()[:, :, c]) for c in range(3)]
                 _add_gradient(self.gap, sg)
-                _add_gradient(self.frame, sF)
-                _add_gradient(separation_map, dt[0] * (sg @ v.T))
-                _add_gradient(frame_map, dt[0] * np.einsum("qab,pa->qpb", sF, v))
-                dv = dt[0] * (B.T @ sg + np.einsum("qab,qpb->pa", sF, G))
-                _add_gradient(velocity, dv)
-                rate = np.einsum("pa,qpb->qab", v, G)
-                _add_gradient(duration, np.array([np.sum(sg * (B @ v)) + np.sum(sF * rate)]))
+                _add_gradient(self.frame, high_frame.grad.numpy())
+                _add_gradient(separation_map, dt * (sg @ v.T))
+                map_gradients = [dt * (seed @ v.T) for seed in sF]
+                _add_gradient(
+                    frame_map,
+                    Expansion(
+                        np.stack([a.high for a in map_gradients], axis=-1),
+                        np.stack([a.low for a in map_gradients], axis=-1),
+                    ),
+                )
+                dv = B.T @ sg
+                time = (sg * gap_rate).sum()
+                for g, seed, rate in zip(G, sF, frame_rate):
+                    dv = dv + g.T @ seed
+                    time = time + (seed * rate).sum()
+                _add_gradient(velocity.high, dt * dv)
+                _add_gradient(duration.high, time.reshape(1))
 
             tape.record_func(backward, [high_gap, high_frame, *[a for a in sources if a.requires_grad]])
         return result
@@ -110,18 +119,18 @@ class InterfaceGeometry:
         outputs, remainders = [], []
         for name in ("gap", "frame"):
             a, b = getattr(self, name), getattr(other, name)
-            av = a.numpy().astype(EXTENDED) + getattr(self, name + "_remainder")
-            bv = b.numpy().astype(EXTENDED) + getattr(other, name + "_remainder")
-            value = av + EXTENDED(fraction) * (bv - av)
-            out = wp.array(value.astype(float), dtype=a.dtype, device=a.device, requires_grad=True)
+            av = Expansion(a.numpy(), getattr(self, name + "_remainder"))
+            bv = Expansion(b.numpy(), getattr(other, name + "_remainder"))
+            value = av + fraction * (bv - av)
+            out = wp.array(value.high, dtype=a.dtype, device=a.device, requires_grad=True)
             outputs.append(out)
-            remainders.append(value - out.numpy().astype(EXTENDED))
+            remainders.append(value.low)
             tape = wp._src.context.runtime.tape
             if tape is not None:
 
                 def backward(a=a, b=b, out=out):
-                    seed = out.grad.numpy()
-                    _add_gradient(a, (1.0 - fraction) * seed)
+                    seed = Expansion(out.grad.numpy())
+                    _add_gradient(a, (Expansion(1.0) - fraction) * seed)
                     _add_gradient(b, fraction * seed)
 
                 tape.record_func(backward, [out, *[a for a in (a, b) if a.requires_grad]])

@@ -65,7 +65,7 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 
 `CohesiveHistory.append(..., tool_rotation=...)` 保存切面出生朝向；`reference_trace` 用它和有限切面可见性选择多刀界面的双侧网格场，`advance(...)` 用于材料推进。对应检查为 `tests/test_reference_visibility.py` 和 `tests/test_cohesive_orientation.py`。
 
-`reference_affine.build_transfer` 提供仿射速度及功配对映射；`cohesive_stages.AffineState` 分别保存平移速度和参考速度梯度，`CohesiveHistory.advance` 对该状态执行 ARS 分阶段推进。能量使用 `energy_snapshot(..., affine_transfer=transfer)` 计入仿射矩。`advance_affine` 按固定率组合传递耗散，`damping_energy` 返回其带符号逐粒子能量变化（J）。检查入口为 `tests/test_reference_affine.py`、`tests/test_reference_damping.py`、`tests/test_cohesive_stages.py`。
+`compensated_state.CompensatedArray` 保存状态舍入余量、线性增量和快照，`reference_inertia.ReferenceInertia.solve_state` 将余量传给惯性求解与界面运动。`reference_affine.build_transfer` 提供仿射速度及功配对映射；`cohesive_stages.AffineState` 分别保存平移速度和参考速度梯度，`CohesiveHistory.advance` 对该状态执行 ARS 分阶段推进。能量使用 `energy_snapshot(..., affine_transfer=transfer)` 计入仿射矩。`advance_affine` 按固定率组合传递耗散，`damping_energy` 返回其带符号逐粒子能量变化（J）。检查入口为 `tests/test_reference_affine.py`、`tests/test_reference_damping.py`、`tests/test_cohesive_stages.py`。
 
 `cohesive_impact.project_velocity` 处理闭合界面的无摩擦非弹性速度冲量；`normal_velocity_map` 包含面法向转动。解析碰撞、动量/耗散和输入导数检查为 `tests/test_cohesive_impact.py`。
 

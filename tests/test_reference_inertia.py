@@ -230,7 +230,7 @@ def test_closed_history_derivative_matches_compliance_limit(theta):
     np.testing.assert_allclose(source[3].grad.numpy()[0], expected, rtol=2e-10, atol=1e-10)
 
 
-@pytest.mark.parametrize("large", [2.0**54, 2.0**58])
+@pytest.mark.parametrize("large", [2.0**54, 2.0**58, 2.0**80])
 def test_inverse_parameter_pullback_keeps_cancelling_seed_remainder(large):
     tr = transfer(3, wp.get_device())
     m = tr.model

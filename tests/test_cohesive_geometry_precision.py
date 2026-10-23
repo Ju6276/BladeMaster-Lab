@@ -7,7 +7,7 @@ import warp as wp
 from blademaster_warp.cohesive_geometry import InterfaceGeometry
 
 
-@pytest.mark.parametrize("large", [2.0**54, 2.0**56])
+@pytest.mark.parametrize("large", [2.0**54, 2.0**56, 2.0**80])
 def test_geometry_pullback_preserves_small_remainder_between_opposing_seeds(large):
     def array(value, kind):
         return wp.array(value, dtype=kind, requires_grad=True)

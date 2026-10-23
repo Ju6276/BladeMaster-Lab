@@ -1716,3 +1716,11 @@ RTX 4090 主机，`9250750`、dirty=false；状态与隐式反向在 GPU，高�
 两阶段弹性原型保留广义速度线性更新的 55 位副本，κ=1e-15 m、dt=2 μs、η=2000 s⁻¹。原三档扰动 1e-2/1e-3/1e-4 共 **6/6** 组差分通过 rtol=2e-5：时长相对误差 **6.168e-7/6.123e-7/6.124e-7**，历史 **1.038e-6/3.172e-9/3.065e-8**。基准反力与独立高精度参考最大差 **2.169e-19 N**；时长/历史隐式梯度误差 **6.123e-7/7.196e-9**。命令 `runs/e5_release_audit/shadow_moment_rollout.py`，报告 `runs/grid_update/shadow_moment_rollout.json`。仅提高局部残差精度或另保留材料 H 时，最小历史扰动误差均约 **4.017e-4**；阶段间速度余量需同时保留。
 
 下一项：将补偿作用量、局部平衡细化及广义速度余量接入正式联合推进，核对塑性、重复约束、接触和能量。E5 第 6 项继续，第 7–8 项待完成。正式源码 `9250750` 的全量结果为 **1585 passed、8 skipped、18 subtests passed**，上述原型和报告保存在 runs。
+
+## 2026-10-23：补偿状态与惯性／几何接口
+
+RTX 4090，`f555c3f`、dirty=true。`CompensatedArray` 保存高位/余量、线性增量和快照；`ReferenceInertia.solve_state` 及 `InterfaceGeometry.advance/extrapolate` 使用两分量作用量。原型中替换惯性／自由几何计算后的六组差分 **6/6** 通过，最大相对误差 **1.132e-6**；基准反力与 55 位参考最大差 **2.169e-19 N**。时长/历史梯度相对参考误差 **1.132e-6/7.198e-9**。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/formal_geometry_rollout.py`；报告 `runs/grid_update/formal_geometry_rollout.json`。
+
+局部残差/Jacobian 的两分量原型通过 **10** 组本构分支、**16** 组时长/历史差分，最大相对误差 **7.190e-8**。两阶段基准的反力差 **2.169e-19 N**，时长/历史梯度误差 **2.492e-7/7.196e-9**；99 维 Jacobian 与 55 位表达式的相对差 ≤**5.458e-33**。该对照的基底构造和阶段速度副本仍用 55 位计算。命令前缀同上：`runs/e5_release_audit/compensated_residual_branches.py`、`compensated_residual_rollout.py`；报告为 `runs/grid_update/` 下同名 JSON。下一项接入补偿局部平衡、位移余量与完整阶段状态。
+
+正式代码的解析检查覆盖 **2⁸⁰** 相消余量、**2⁻¹⁰²⁰/2¹⁰²⁰** 输入的乘积、90 位 Decimal 独立惯性解、零率导数和状态重启。全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1599 passed、8 skipped、18 subtests passed**（712.26 s），日志 `runs/grid_update/compensated_state_full.log`；8 项跳过为 CRESSim 上游构建。

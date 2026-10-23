@@ -1367,3 +1367,13 @@ RTX 4090，`22d421a`、dirty=true。`cohesive_grid_update.advance_material` 将�
 闭合承载、已有损伤、受载断裂三种 **160** 步实际 TLMPM 轨迹，正式接口与原型的逐步粒子/界面状态、能量和外功差均为 **0**。24 步八类输入各至少两档自然差分误差 ≤**2e-5**，最差第二档 **2.74149e-6**。命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/extrinsic_grid_library_compare.py`；`runs/e5_release_audit/extrinsic_grid_library_scan.py --solver unified --mode existing --steps 24 --output runs/grid_update/gradient24.json`。工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，报告 `runs/grid_update/{compare160,gradient24}.json`。
 
 提交前全量 **1128 passed、8 skipped、18 subtests passed**（330.77 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/full.log`。
+
+## 2026-10-23：切面参考面积及双侧支撑
+
+RTX 4090，`28c08cb`、dirty=true。`reference_cut.quadrature` 的 **14 passed**（0.40 s），包括解析切面面积/二次矩、仿射变换、六类输入的两档差分及真实粒子网格三个坐标方向、正反法向的共享面计数。12 mm 方块、6 mm 网格，0/0.3/1/2/3 mm 切平面偏移均得到 **1.44e-4 m²**。直接切点网格插值在 0.3/1 mm 偏移时缺少一侧 **5%/16.67%** 权重；完整双侧参考迹与实际材料推进的转置力映射继续接入。
+
+命令：`PYTHONPATH=. .venv/bin/python -m pytest tests/test_reference_cut.py -q`；`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/reference_cut_support.py`。日志和报告位于 `e5-grid-20261023/runs/grid_update/reference_cut_{unit.log,support.json}`。
+
+干净 `22d421a` 的 160 步已有损伤/受载断裂扫描已完成，分别为八/六类输入、32/24 行自然差分；每类均至少两档误差 ≤**2e-5**，最差第二档 **4.93259e-6/2.74636e-7**。命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/extrinsic_grid_scan.py --solver unified --mode existing --steps 160 --output runs/reference_interface/grid_library_existing160.json`；`runs/e5_release_audit/extrinsic_grid_loaded_scan.py --solver unified --mode opening --steps 160 --output runs/reference_interface/grid_library_loaded160.json`。
+
+提交前全量 **1142 passed、8 skipped、18 subtests passed**（279.81 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/reference_cut_final_full.log`。

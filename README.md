@@ -61,6 +61,8 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 
 `report.json` 记录材料、机器人、表面与发布耗时；`runs/` 不进 Git。数值扫描使用干净提交，配置或版本变化时换输出目录。
 
+`blademaster_warp.differentiable_cohesive.solve` 提供移动内聚界面的全局平衡与隐式反向；运行 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_cohesive.py -q` 核对内力、旋转、面积拆分和输入导数。自然切口接入进度见可微分计划。
+
 ## 文档
 
 - [运行指南](docs/RUNNING.md)：遥操作、论文场景、录制与分析命令。

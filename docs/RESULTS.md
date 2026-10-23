@@ -1284,3 +1284,13 @@ runs/e5_release_audit/extrinsic_nodal_scan.py --solver canonical --mode preload 
 ```
 
 报告分别为 `precise_geometry160_velocity.json`、`nodal_common_velocity.json`、`nodal_rank.json`、`nodal_energy.json`、`nodal_rotation.json`、`nodal_preload160.json`。方法与作者源码见 METHOD；本次记录未改主求解器源码，对应全量结果仍为 **1089 passed、8 skipped、18 subtests passed**。
+
+## 2026-10-23：全局内聚接口与空间积分对照
+
+RTX 4090，独立原型基于干净 `66537e3`，固定 12 mm 方块、E=20 kPa、ρ=1100 kg/m³、dt=2 μs、160 步及同一解析初速度/目标。6/4/3 mm Gauss 离散分别为 64/216/512 粒子、16/36/64 积分点，四档差分通过 **4/4、4/4、2/4**，最差第二档误差 **8.784e-8**；积分点最大负间隙幅值 ≤**1.458e-19 m**。节点离散在 4/3/2.4/2 mm 的内部 Gauss 位置测得负间隙 **1.554/2.088/1.973/1.541 μm**；前三档分别通过 **2/4、2/4、3/4**，2 mm 差分继续运行。空间收敛继续核对，自然切口接入采用 Gauss 积分。
+
+命令：`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_fast_mesh_validate.py --spacing .003 --quadrature gauss --output runs/e5_release_audit/gauss_mesh_h003.json`。替换 spacing 和 quadrature 得到各档，报告为 `gauss_mesh_h{006,004,003}.json`、`nodal_mesh_h{006,004,003,0024,002}.json`；节点 6/4/3 mm 使用同方程的 `extrinsic_mesh_validate.py`。
+
+可复用全局接口的验证源码基于 `7456cbc`、dirty=true，工作树 `e5-interface-20261023`。**10** 项单步测试通过（5.73 s），覆盖四类状态 × 十类输入 × 四档差分、总内力、旋转、面积拆分和冗余约束反向。24 步八类输入各至少两档 ≤**2e-5**，最差第二档 **4.84531e-6**；已有损伤、零历史承载、零历史张开三种 160 步 TLMPM 轨迹与原型的逐步状态/能量/外功差均为 **0**。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_cohesive.py -q`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_library_scan.py --solver canonical --mode existing --steps 24 --output runs/interface_extract/trajectory24.json`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_library_compare.py`。
+
+提交前全量 **1099 passed、8 skipped、18 subtests passed**（277.54 s），命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/interface_extract/full.log`；8 项跳过为 CRESSim 上游构建。全局接口已整理，下一项接入自然参考面、永久历史、接触去重与 RK2，并重复完整能量扫描。

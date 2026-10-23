@@ -1744,3 +1744,15 @@ RTX 4090，`74971d6`、dirty=true，工作树 `~/Projects/BladeMaster-Warp-e5-st
 `74971d6` 的非线性原型在三档不相容自由间隙上与 70 位接触参考解一致，原方程相对残差为 **9.923e-31/9.910e-31/9.949e-31**；十组旋转面／本构分支和 16 组参数差分通过，最大相对误差 **7.190e-8**。重复切面加载的面积加权反力选择通过 **18** 组输入方向差分（124.46 s）；加载、混合历史、卸载和强度边界四例的反力差 ≤**2.443e-15 N**。强度边界两入口共 **8** 组差分通过（15.69 s）；三档载荷的面积／载荷方向共 **12** 组差分通过，载荷方向最大相对误差 **2.454e-12**，面积方向最大绝对误差 **1.557e-15**。原型以递减正则项生成初值，接受解仍核对原方程；下一项是其余冗余约束导数、边界接触集合与完整阶段状态。命令前缀同上，入口 `runs/e5_release_audit/regularized_contact_nonmonotone.py`、`regularized_contact_large.py`、`regularized_equilibrium_branches.py`、`regularized_reaction_tests.py`、`regularized_forward_checks.py`、`regularized_boundary_tests.py`、`regularized_contact_compensated.py`；报告／日志在 `runs/grid_update/` 下同名文件。接触与分支报告 dirty=false，反力选择报告 dirty=true。
 
 提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1611 passed、8 skipped、18 subtests passed**（936.22 s）。日志 `runs/grid_update/geometry_output_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-24：总间隙分支与联合推进数值核对
+
+RTX 4090，`1ecc419`、dirty=true。共享界面判断改用推进后的总间隙；压力／积分力形式、主值／余量两种存储共四例的平衡残差和解析导数通过，相关检查 **7 passed**（0.58 s）。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_cohesive_geometry_precision.py -q`；日志 `runs/grid_update/shared_remainder_after.log`。
+
+近端尺度平衡原型的两阶段时长／历史差分 **6/6** 通过，最大相对误差 **1.0464e-6**；反力与高精度参考最大差 **1.0843e-19 N**，两项 AD 与参考导数误差分别为 **1.4622e-7/1.9010e-12**。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=.:runs/e5_release_audit .venv/bin/python runs/e5_release_audit/scaled_equilibrium_fd.py`；报告 `runs/grid_update/scaled_equilibrium_fd_balanced_response.json`。活跃塑性 8 步的 16 个前向平衡通过，反向在隐式伴随残差检查失败（**1.1934e6**）；继续核对其矩阵尺度、秩和原方程 VJP。入口 `runs/e5_release_audit/scaled_plastic_stages.py`，日志 `runs/grid_update/scaled_plastic_stages_dual_forcing.log`。
+
+仿射状态补偿原型的速度往返差 **0**，仿射梯度往返差 **2.308e-32 s⁻¹**；与 90 位十进制矩乘参考差 **6.878e-35 m/s**，虚功转置差 **7.100e-29**。状态快照保留全部主值／余量，坐标转换反向与恒等映射一致。命令前缀同上，入口 `runs/e5_release_audit/persistent_affine_probe.py`；报告 `runs/grid_update/persistent_affine_probe.json`。两步轨迹的连续／恢复状态逐项一致，包含位置、速度、仿射梯度、形变及界面余量；入口 `runs/e5_release_audit/persistent_stage_probe.py`。两步完整／检查点反向的速度、仿射梯度、时长和耗散率导数按 rtol=atol=1e-10 通过，入口 `runs/e5_release_audit/persistent_stage_backward.py`。下一项为完整塑性伴随和联合接触。
+
+联合伴随原型对历史 **1e-5/1e-15/1e-22 m** 的两粒子解析梯度均通过，最大相对误差 **1.234e-16**；最小历史例的原方程伴随残差 **1.939e-11**。实际塑性轨迹捕获的 **99×99** 系统在反力收缩及伴随状态都保留余量后，残差 **1.987e-10**，右端尺度 **5.506e6**，通过原 `1e-10 × RHS` 检查。命令前缀同上，入口 `runs/e5_release_audit/adjoint_scale_analytic.py`、`replay_compensated_momentum.py runs/grid_update/implicit_failure_1213893.npz`；报告 `runs/grid_update/adjoint_scale_analytic.json`、`implicit_failure_1213893_compensated_momentum.json`。完整塑性参数差分及冗余约束复验继续运行。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1615 passed、8 skipped、18 subtests passed**（984.20 s）。日志 `runs/grid_update/full_shared_geometry.log`；8 项跳过为 CRESSim 上游构建。

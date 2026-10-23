@@ -181,8 +181,9 @@ def solve_geometry(
         closed_motion=closed_motion,
         inertia=inertia,
     )
-    u_numpy = precise_u.astype(float)
-    displacement_remainder = (precise_u - u_numpy).astype(float)
+    displacement = Expansion.from_value(precise_u)
+    u_numpy = displacement.high
+    displacement_remainder = displacement.low
     remainders = (geometry.gap_remainder, geometry.frame_remainder, displacement_remainder)
     device = geometry.gap.device
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)

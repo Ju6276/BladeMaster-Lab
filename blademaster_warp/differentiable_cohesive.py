@@ -17,6 +17,7 @@ from .cohesive import (
     surface_normal_pullback,
 )
 from .precision import launch_double
+from ._compensated import Expansion
 from .compensated_state import CompensatedArray
 from ._cohesive_solve import geometry, shared_intact_rows, solve_primal, refine_geometry
 
@@ -358,7 +359,7 @@ def _evaluate(
     )
     if inertia is not None:
         Ru = inertia.add_momentum(Ru, u)
-    shared_rows = shared_intact_rows(inputs[0].numpy(), inputs[3].numpy(), inputs[5].numpy())
+    shared_rows = shared_intact_rows(raw[0].numpy(), inputs[3].numpy(), inputs[5].numpy())
     if integrated_force:
         shared_rows &= inputs[7].numpy() > 0.0
     shared = wp.array(
@@ -760,8 +761,9 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inert
             integrated_force=True,
             inertia=inertia,
         )
-        u_numpy = precise_u.astype(float)
-        displacement_remainder = (precise_u - u_numpy).astype(float)
+        displacement = Expansion.from_value(precise_u)
+        u_numpy = displacement.high
+        displacement_remainder = displacement.low
     else:
         u_numpy, traction_numpy, compliance, info = solve_primal(
             values, compliance_scale, return_traction=True, inertia=inertia

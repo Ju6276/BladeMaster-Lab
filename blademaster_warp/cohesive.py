@@ -149,6 +149,70 @@ def cohesive_proximal_response(
 
 
 @wp.kernel
+def cohesive_measure_proximal_response(
+    free_gap: wp.array(dtype=wp.vec3), normals: wp.array(dtype=wp.vec3),
+    previous: wp.array(dtype=float), parameters: wp.array(dtype=wp.vec3),
+    area: wp.array(dtype=float), gap: wp.array(dtype=wp.vec3),
+    force: wp.array(dtype=wp.vec3), maximum: wp.array(dtype=float),
+    storage: wp.array(dtype=float), fracture: wp.array(dtype=float),
+):
+    # Minimize |g-q|²/(2 compliance) + area*(storage + fracture + contact indicator).
+    # Parameters are (strength [Pa], Gc [J/m²], compliance [m/N]); area is m².
+    # Require area >= 0 and compliance*area*strength < 2*Gc/strength.
+    # Zero measure has no contact constraint. Energy outputs remain J/m².
+    i = wp.tid()
+    strength, gc, compliance = parameters[i][0], parameters[i][1], parameters[i][2]
+    measure = area[i]
+    failure = 2.0 * gc / strength
+    scaled_strength = measure * strength
+    n = wp.normalize(normals[i])
+    q = free_gap[i]
+    compression = wp.min(wp.dot(q, n), 0.0)
+    positive = q - compression * n
+    radius = wp.length(positive)
+    old = previous[i]
+    r = radius
+    gain = float(1.0)
+    unloading = bool(False)
+    if old < failure:
+        if old > 0.0 or measure > 0.0:
+            denominator = old + compliance * scaled_strength * (1.0 - old / failure)
+            gain = old / denominator
+            r = radius * gain
+            unloading = True
+        if r > old or (old == 0.0 and radius > compliance * scaled_strength):
+            unloading = False
+            r = (radius - compliance * scaled_strength) / (1.0 - compliance * scaled_strength / failure)
+            if r >= failure:
+                r = radius
+    g = positive
+    if unloading:
+        g = gain * positive
+    elif radius > 0.0:
+        g = r / radius * positive
+    high = wp.max(old, r)
+    energy = float(0.0)
+    resultant = wp.vec3(0.0)
+    if measure > 0.0:
+        resultant = compression / compliance * n
+    else:
+        g += compression * n
+    if unloading:
+        high = old
+        denominator = old + compliance * scaled_strength * (1.0 - old / failure)
+        energy = 0.5 * strength * (1.0 - old / failure) * old * wp.length_sq(positive) / (denominator * denominator)
+        resultant += scaled_strength * (1.0 - old / failure) / denominator * positive
+    elif high > 0.0 and high < failure:
+        energy = 0.5 * strength * (1.0 - high / failure) / high * r * r
+        resultant += scaled_strength * (1.0 - high / failure) / high * (r / radius * positive)
+    gap[i] = g
+    force[i] = resultant
+    maximum[i] = high
+    storage[i] = energy
+    fracture[i] = 0.5 * strength * wp.min(high, failure)
+
+
+@wp.kernel
 def cohesive_response(
     gap: wp.array(dtype=wp.vec3), deformation: wp.array(dtype=wp.mat33),
     normal: wp.array(dtype=wp.vec3), previous: wp.array(dtype=float),

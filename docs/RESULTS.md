@@ -1469,3 +1469,17 @@ RTX 4090，`e4cf414`、dirty=true。同位置积分点按七种面积比例拆�
 闭合承载、已有损伤和受载断裂三种 **160** 步轨迹，与 `e4cf414` 求解器逐步对照：归一化状态差 ≤**1.95528e-14**、能量差 ≤**4.337e-19 J**、外功差 ≤**2.711e-20 J**。闭合反力按参考面积取最小压力范数；固定法向 ADMM 提供统一初值，直接近端牵引避免小耦合下的相减损失。方法和 VJP 见 METHOD。
 
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/unequal_area_limit.py --output runs/grid_update/weighted_area_limit.json`；`runs/e5_release_audit/weighted_solver_compare.py`；`-m pytest tests -q`。同一 `e5-grid-20261023` 工作树报告/日志为 `runs/grid_update/{weighted_area_limit.json,weighted_compare160.json,weighted_area_full.log}`。提交前全量 **1252 passed、8 skipped、18 subtests passed**（366.51 s）；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：面积加权反力的长轨迹与能量复测
+
+RTX 4090，`e4cf414`、dirty=true（求解源码对应 `95eaf2d`）。160 步、八类输入、四档自然差分，每类至少两档相对误差 ≤**2e-5**，最差第二档 **1.07018e-6**；32 组中 **28** 组通过。闭合承载、G_c=7/70 受载断裂、已有损伤四组各用 dt=2/1/0.5 μs，十二例能量残差随步长减半约减半，最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**；完全断裂耗散为 **0.001008/0.01008 J=G_c A₀**。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/extrinsic_grid_library_scan.py --solver unified --mode existing --steps 160 --output runs/grid_update/weighted_existing160.json`；`runs/e5_release_audit/weighted_energy.py`。报告为同一工作树 `runs/grid_update/weighted_existing160.json`、`weighted_energy.json`。
+
+## 2026-10-23：零面积局部响应与退刀闭合投影
+
+RTX 4090，`95eaf2d`、dirty=true。积分总力局部核新增 **18** 项检查通过，覆盖 64 个正面积状态的牵引形式等价性、零面积运动、张开/卸载/完全断裂的力与能量面积导数，以及五类输入各两档差分。包含原局部核共 **39 passed**（0.58 s）。正自由间隙的三组零面积全局原型与删除该积分点的位移差 ≤**1.165e-21 m**，十二组单侧差分全部 ≤**2e-5**。
+
+完全断裂后退刀的闭合投影失败：6/4 mm 追加的 **957/1572** 个退化积分点被零历史掩码当作完整约束，动能损失 **4.62607e-6/2.46949e-6 J**。局部总力核已令零面积保持自由运动；全局平衡、闭合投影与出生事件继续接入。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_measure.py tests/test_cohesive_proximal.py -q`；`runs/e5_release_audit/zero_measure_opening.py`；`runs/e5_release_audit/zero_area_history_projection.py`。报告/日志位于 `runs/grid_update/{measure_proximal_unit.log,zero_measure_opening.json,zero_area_history_projection.json}`。提交前全量 `-m pytest tests -q` 为 **1270 passed、8 skipped、18 subtests passed**（357.68 s），日志 `measure_proximal_full.log`；8 项跳过为 CRESSim 上游构建。

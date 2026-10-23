@@ -293,6 +293,10 @@ E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-2026
 
 提交前全量 `permanent_history_full.log` 为 **1230 passed、8 skipped、18 subtests passed**（380.51 s）。
 
-闭合分支按参考面积选择最小压力范数反力，位移及其 VJP 保持同一约束；固定法向 ADMM 统一提供初值，初值牵引采用近端核的直接表达。`weighted_area_limit.json` 的 14 组正向、42 组单侧扰动全部完成，最小 1e-12 m 档相对误差 ≤**6.24702e-7**。`weighted_compare160.json` 三种轨迹与 `e4cf414` 求解器的归一化状态差 ≤**1.95528e-14**、能量差 ≤**4.337e-19 J**。新增 22 项解析及面积拆分检查；全量 `weighted_area_full.log` 为 **1252 passed、8 skipped、18 subtests passed**（366.51 s）。同一 `e5-grid` 工作树的 `weighted_existing160.json/.log` 与 `weighted_energy.json/.log` 分别运行八类输入长梯度和十二例能量复测。下一项是零面积物理装配、自然双侧码、接触去重及 RK2 分段。
+闭合分支按参考面积选择最小压力范数反力，位移及其 VJP 保持同一约束；固定法向 ADMM 统一提供初值，初值牵引采用近端核的直接表达。`weighted_area_limit.json` 的 14 组正向、42 组单侧扰动全部完成，最小 1e-12 m 档相对误差 ≤**6.24702e-7**。`weighted_compare160.json` 三种轨迹与 `e4cf414` 求解器的归一化状态差 ≤**1.95528e-14**、能量差 ≤**4.337e-19 J**。新增 22 项解析及面积拆分检查；全量 `weighted_area_full.log` 为 **1252 passed、8 skipped、18 subtests passed**（366.51 s）。同一 `e5-grid` 工作树的 `weighted_existing160.json/.log` 已完成八类输入长梯度，每类至少两档通过，最差第二档误差 **1.07018e-6**。`weighted_energy.json/.log` 的十二例残差随步长减半约减半，最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**。
+
+零面积片仍被 κ=0 的闭合投影当作完整约束：6/4 mm 的完全断裂后退刀例产生额外动能损失 **4.62607e-6/2.46949e-6 J**，报告 `runs/grid_update/zero_area_history_projection.json`。`cohesive_measure_proximal_response` 以积分总力为输出，局部零面积运动、正面积等价性及单侧面积导数共 **18** 项检查通过；连同原局部核为 **39 passed**（0.58 s），日志 `measure_proximal_unit.log`。下一项连接总力形式的全局平衡、闭合投影与自然出生事件，再接自然双侧码、接触去重及 RK2 分段。
+
+提交前全量 `measure_proximal_full.log` 为 **1270 passed、8 skipped、18 subtests passed**（357.68 s）。
 
 插入失败对照位于 `e5-interface-20261023/runs/interface_insertion/patch.json`：平移在 1.096e-23～4.386e-23 m 的间隙舍入处触发半光滑线搜索失败；刚体旋转 dt=2 μs 的假断裂耗散为 6.240e-6 J。该对照对应 `b7048c7`、dirty=true 的 `f507dc0` 源码。入口 `runs/e5_release_audit/extrinsic_insertion_patch.py`。

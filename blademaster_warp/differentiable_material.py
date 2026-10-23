@@ -7,7 +7,7 @@ import warp as wp
 
 from . import material as m
 from . import plasticity
-from .differentiable import ElasticTrajectory, State, elastic_stress
+from .differentiable import ElasticTrajectory, State, elastic_stress, polar_vjp
 
 
 @wp.func
@@ -69,24 +69,18 @@ def constitutive_response_grad(F: wp.mat33, Fp: wp.mat33, mu: float, lam: float,
     elastic = elastic_stress(projected, mu, lam)
     adj_elastic = adj_stress * inverse
     adj_plastic = adj_Fp - inverse_t * wp.transpose(adj_stress) * elastic * inverse_t
-    # Polar rotation derivative is regular at equal positive singular values.
     Q, sigma, R = wp.svd3(projected)
-    local = wp.transpose(Q) * adj_elastic * R
-    skew = wp.mat33(0.0)
-    for i in range(3):
-        for j in range(3):
-            if i != j:
-                skew[i, j] = (local[i, j] - local[j, i]) / (sigma[i] + sigma[j])
     projected_inverse_t = wp.transpose(wp.inverse(projected))
-    J = wp.determinant(projected)
+    difference, jm1 = m.corotated_terms(projected, Q, R)
+    J = 1.0 + jm1
     contraction = wp.ddot(adj_elastic, projected_inverse_t)
     adj_projected = (
-        2.0 * mu * (adj_elastic - Q * skew * wp.transpose(R))
+        2.0 * mu * (adj_elastic - polar_vjp(projected, difference, adj_elastic))
         + lam * (2.0 * J - 1.0) * J * contraction * projected_inverse_t
-        - lam * (J - 1.0) * J * projected_inverse_t * wp.transpose(adj_elastic) * projected_inverse_t
+        - lam * jm1 * J * projected_inverse_t * wp.transpose(adj_elastic) * projected_inverse_t
     )
-    wp.adjoint[mu] += 2.0 * wp.ddot(adj_elastic, projected - Q * wp.transpose(R))
-    wp.adjoint[lam] += (J - 1.0) * J * contraction
+    wp.adjoint[mu] += 2.0 * wp.ddot(adj_elastic, difference)
+    wp.adjoint[lam] += jm1 * J * contraction
     if active:
         wp.adjoint[F] += projected_inverse_t * adj_plastic
         adj_projected -= projected_inverse_t * adj_plastic * wp.transpose(F) * projected_inverse_t

@@ -202,7 +202,8 @@ PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定�
 | 接触运动学速度 | 接触律使用粒子速度 | M5 中点阶段使用位置推进对应的插值网格速度，原 `Solver`、M4 和一阶模式保留存储粒子速度。参考 [Kakouris 等的 MPM 接触虚功与力映射，式 17、29、36](https://arxiv.org/html/2403.13534v1)，本地推导现有多场耦合算子的功配对；原因是两种速度混用产生不随步长消失的摩擦功差 |
 | 接触刚度 | 每步常数 \(s_n\) | 默认按参考步长固定物理刚度，见上节 |
 | 塑性返回映射 | 共旋弹性与 von Mises 型投影，具体返回映射未给出 | 保留共旋储能，使用与其功共轭应力一致的等容增量变分返回；参考 [Miehe、Apel、Lambrecht 的增量最小化框架](https://doi.org/10.1016/S0045-7825(02)00438-3)，本地推导共旋势的驻点、Newton 求解和隐式 VJP。原因是对数应变径向返回在强压缩下会增加共旋储能，数字见 RESULTS |
-| 共旋应力数值计算 | 固定共旋本构 | 直接以弹性形变 f 计算 `2μ(f−R)+λ(J−1)J f⁻ᵀ`，J=det(f)。SVD 的 R=UVᵀ 后执行一次 [Higham 极分解 Newton 更新](https://eprints.maths.manchester.ac.uk/694/1/high86p.pdf) `R←(R+R⁻ᵀ)/2`，去除正交性舍入误差；本地实现用于原求解器及可微材料的相同应力函数。物理公式、解析 VJP 与材料参数相同；小形变状态的独立高精度核对见 RESULTS |
+| 共旋应力数值计算 | 固定共旋本构 | 保持 `2μ(f−R)+λ(J−1)J f⁻ᵀ`。参考 [Shakeri 等稳定有限应变计算](https://arxiv.org/html/2401.13196v2)及其 [Julia 作者代码，Zenodo 11113499](https://doi.org/10.5281/zenodo.11113499)：以 H=f−I 计算 `2E=H+Hᵀ+HᵀH` 和 J−1 的三维行列式展开。本地推导共旋项的等价式 `f−R=R(2E)(S+I)⁻¹`，S=Rᵀf；SVD 旋转保留一次 [Higham 正交细化](https://eprints.maths.manchester.ac.uk/694/1/high86p.pdf)。原求解器、可微材料及材料参数反向使用相同项；作者论文给出 Neo-Hookean/Mooney–Rivlin/Ogden，本仓库保留共旋材料。F 状态的存储精度相同 |
+| 极旋转反向数值计算 | 正向 SVD | 按 [Gawlik–Leok，式 66](https://arxiv.org/pdf/1608.04491)的 Sylvester 方程 `SΩ+ΩS=RᵀA−AᵀR` 计算极旋转 VJP。本地实现将三维反对称矩阵转为轴向量，解 `(tr(S)I−S)ω=vee(RᵀA−AᵀR)`，返回 RΩ；R 从 f 与稳定计算的 f−R 恢复，避免近单位形变时 SVD 基变换产生的弱导数舍入。特征值仍为 σᵢ+σⱼ，重复正伸长处保持正则 |
 | 摩擦历史积分 | 用当前历史计算试力，粘住时累加位移，滑动时回算历史 | 采用弹簧/阻尼器并联后串联滑动元件的接触网络，见 [Computational Analysis for Industrial Brush，图 2](https://journals.utm.my/aej/article/download/15382/6897)。本地推导 θ 时间积分和离散能量恒等式；原求解器 θ=1，M5 中点 θ=1/2。原因是按总相对速度回算阻尼历史在零输入功时可生成弹簧储能，数字见 RESULTS |
 | 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |
 | 可微求解 | 正向 TLMPM 切割与工具双向耦合 | 增加粒子、材料、接触历史、切割事件和刀路的自动微分与伴随；当前可微刀路由外部给定 |

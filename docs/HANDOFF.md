@@ -224,7 +224,7 @@ G_c=7/70/700/1400 与三档步长的 50 ms 扫描已完成，报告在 `e5-trans
 
 移动面联合约束与隐式反向原型为 `extrinsic_monolithic.py`，局部 10 类输入自然差分通过。`11fbbd5` 下的 `extrinsic_primal_validate.json` 记录 160 步直接位移原型：8 类输入各至少两档误差 ≤2e-5，最差第二档 **1.507e-5**，旋转归一化状态差 **5.641e-11**；全部 32 组差分保留。位移更新源码为 `a7df3f4` 的 `MaterialTrajectory.correct_displacement`，13 项状态/导数等价检查通过，全量 **1076 passed、8 skipped、18 subtests passed**（265.79 s）。干净源码复验工作树 `~/Projects/BladeMaster-Warp-e5-correction-20261022`，日志 `runs/e5_release_audit/extrinsic_primal_validate.log`，32 组差分及旋转检查已通过。下一项合并零开口承载、自然参考面、永久历史和接触去重。完整自然切割仍使用原损伤释放律。
 
-`e4-current` 的 6 mm 完整交叉、暂停续切及 4 mm 交叉窗口已通过，各四项自然差分的最大误差为 **0.03716%/0.005113%/0.009204%**；检查点状态重算差和暂停损伤增量均为 **0**。报告为 `runs/e4_ca90da9/{crossing,resume,crossing_h4_640ms}/report.json`。`continue_cases.py` 正在运行平行两刀，随后三刀后推块；状态在 `runs/e4_ca90da9/continue_status.json`。运行中工作树保持固定提交。
+`e4-current` 的 6 mm 完整交叉、暂停续切及 4 mm 交叉窗口已通过，各四项自然差分的最大误差为 **0.03716%/0.005113%/0.009204%**；检查点状态重算差和暂停损伤增量均为 **0**。报告为 `runs/e4_ca90da9/{crossing,resume,crossing_h4_640ms}/report.json`。`continue_cases.py` 已完成平行两刀，正在运行三刀后推块；状态在 `runs/e4_ca90da9/continue_status.json`。运行中工作树保持固定提交。
 
 E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20261022`，固定干净 `ca90da9`。启动命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/e3_queue.py`；状态 `runs/e3_ca90da9/status.json`，逐项日志和报告位于同目录。8 个队列项覆盖 6 mm 活跃释放完整 Tape、4 mm 活跃释放细化、6/4 mm 下刀和完整轨迹、6 mm 下刀与完整轨迹细化。6/4 mm 基准步长及 PIC 参考时间为 15.625/13.157895 μs，接触参考时间 25 μs；每次扰动自然重建事件，梯度保留 2% 标准，失败后队列停止并保留报告。细化报告的相邻梯度和状态趋势另行核对。
 
@@ -257,6 +257,10 @@ E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20
 
 `extrinsic_energy_state.py` 的统一界面 12 例能量细化已通过；闭合承载保持零开口/损伤，G_c=7/70 张开及旋转受压的能量残差随步长减半约减半。报告 `runs/e5_release_audit/extrinsic_unified_energy.json`，日志 `extrinsic_energy_stress_fixed.log`。应力对照的原标准保持 `atol=1e-10, rtol=1e-12`。
 
-160 步轨迹差分仍失败，日志 `extrinsic_trajectory_stress_fixed.log`；统一初速度四档误差 0.404488/0.649819/4.62939e-5/2.21084e-5，0/4 档达到 2e-5，要求至少 2 档。`extrinsic_trace_solvers.py` 保存光滑与统一求解的基准/±1e-6/±1e-7 逐步状态到 `runs/e5_release_audit/solver_trace/`。干净 `541c913` 的 `extrinsic_rank_probe.py` 定位第 47–48 步闭合处的 240 阶伴随矩阵秩为 239，零空间几乎全为反力；`rank_probe/` 保存输入与完整 Jacobian。`extrinsic_canonical_reaction.py` 按参考面积加权选择等价的最小范数反力，两档小扰动误差 3.0792e-5/6.6060e-6，仍为 1/4 档通过；`extrinsic_canonical_flow_trajectory.py` 使用能量算例相同的补偿求和，两档误差为 2.7812e-5/7.9721e-6，仍为 1/4 档通过。下一组 `extrinsic_refinement_trajectory.py` 使用扩展精度残差做迭代细化；结果与日志为同名文件。方法来源、作者源码和本地推导见 METHOD。自然参考面积/位置参考 [Crook–Homel 的 MPM 界面定义与积分](https://www.osti.gov/servlets/purl/3003988)，接入永久历史、接触去重及完整能量扫描随后执行。
+统一界面原型工作树 `e5-unified-20261023` 固定干净 `541c913`。零历史承载/张开 160 步各六类输入、各四档自然差分全部通过；已有损伤的其余七类输入各至少两档通过，报告 `canonical_preload160_scan.json`、`unified_remaining_inputs_scan.json`。零历史张开完整检查为 `canonical_opening160_scan.json`。已有损伤的初速度方向仍失败；`extrinsic_input_scan.py` 收集全部输入和四档原始差分，各输入仍要求至少两档相对误差 ≤2e-5。
 
-E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已自动开始 `three-cuts-push`。E3 的 `release_h4_refine` 已完成，12 组自然差分最大误差 **0.00043623%**、检查点状态差 **0**；三档侧码/释放/接触集合相同。深度梯度相邻变化 **0.24505%/0.27433%**，补充更细步长和事件相位核对；队列已进入 `cut_h6`。
+`extrinsic_extended_reference.py` 独立实现扩展精度 MUSL/界面前向，两档初速度差分与 AD 的误差为 3.9201e-6/3.7684e-6。`--round-state deformation/velocity/interface/all` 分别核对状态舍入，输出 `extended_{deformation,velocity,interface,all}64/`。`stable_corotated_probe.py` 对照作者稳定应变计算思路与 80 位参考；`e5-stable-20261023` 工作树验证对应源码和极旋转 VJP，全量 **1089 passed、8 skipped、18 subtests passed**，日志 `runs/stable_stress_full.log`；源码初速度轨迹仍为 1/4 档通过，报告 `runs/e5_release_audit/stable_source_trajectory.json`。方法来源、作者源码和本地推导见 METHOD。
+
+下一项解决普通双精度轨迹差分，再接自然参考面积/位置、永久历史、接触去重与完整能量扫描；参考 [Crook–Homel 的 MPM 界面定义与积分](https://www.osti.gov/servlets/purl/3003988)。
+
+E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已自动开始 `three-cuts-push`。E3 的 `release_h4_refine` 已完成，12 组自然差分最大误差 **0.00043623%**、检查点状态差 **0**；三档侧码/释放/接触集合相同。深度梯度相邻变化 **0.24505%/0.27433%**，补充更细步长和事件相位核对；6 mm、0.24 s 下刀已完成，四组自然差分最大误差 **0.0224614%**、32 步检查点状态重算差 **0**；队列已进入 `cut_h4`。

@@ -1241,3 +1241,25 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 命令：`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_rank_probe.py`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_canonical_reaction.py`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_canonical_flow_trajectory.py`。报告 `runs/e5_release_audit/rank_probe/report.json`，轨迹日志与入口同名；方法来源见 METHOD。
 
 文档提交前，干净 `541c913` 全量 **1085 passed、8 skipped、18 subtests passed**（336.09 s）。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/research_541c913_full_tests.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：当前公式的 E3 六毫米下刀
+
+干净 `ca90da9`，RTX 4090，6 mm、1452 粒子、0.24 s、15360 步、G_c=700。四组自然差分最大相对误差 **0.0224614%**；32 步 CPU 检查点状态重算差 **0**。深度扰动 ε=1e-6 时两侧分别改变 **26/14** 个几何事件，ε=1e-7 时为 **2/2**；最终释放数 **0**。命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py cut_h6`，报告 `runs/e3_ca90da9/cut_h6/report.json`；4 mm 下刀继续运行。
+
+## 2026-10-23：统一界面轨迹的扩展精度对照
+
+干净 `541c913`，RTX 4090 原型、64 粒子、16 界面积分点、dt=2 μs、160 步。零历史承载采用补偿求和，六类输入各四档自然差分全部通过，最大相对误差 **1.00254e-6**；材料方向的解析梯度与差分均为 **0**。零历史张开同样六类输入 × 四档全部通过，最大误差 **1.25666e-6**；已有损伤的其余七类输入各至少两档通过，最差第二档 **3.84909e-6**，报告 `canonical_opening160_scan.json`、`unified_remaining_inputs_scan.json`。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_input_scan.py --solver canonical --mode preload --steps 160 --output runs/e5_release_audit/canonical_preload160_scan.json`。
+
+已有损伤轨迹仅细化约束根仍失败：初速度四档差分通过 **1/4**。独立 CPU 扩展精度前向采用相同 MUSL、极分解应力和内聚方程，ε=1e-6/1e-7 的差分为 **−1.6345646164/−1.6345520491**，与 AD **−1.6345582088** 的相对误差 **3.9201e-6/3.7684e-6**，两档均低于 **2e-5**；双精度与扩展精度基态的最终位置/速度最大差 **3.1580e-17 m/1.7056e-12 m/s**。这支持继续定位前向舍入误差；原双精度轨迹检查仍需通过原标准。
+
+命令：`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_refinement_trajectory.py`、`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_extended_reference.py`。CPU 使用 NumPy longdouble，尾数位数 **63**；报告 `runs/e5_release_audit/extended_reference/report.json`。
+
+## 2026-10-23：共旋应力与极旋转反向的稳定计算
+
+RTX 4090，`541c913` 原公式与等价应变表达对照，共 **512** 组形变，独立 **80** 位十进制参考。128 个实际轨迹状态的最大应力误差 **6.9860e-12 → 7.1670e-16 Pa**；1e-12/1e-8/1e-4/0.1 四档随机形变的相对应力范数误差分别为 **1.8724e-16/2.1223e-16/2.1846e-16/2.0300e-16**。有限转动小应变与大伸长的误差为 **1.1500e-12/1.7015e-15**。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/stable_corotated_probe.py`，报告为同名 `.json`；方法来源与本地推导见 METHOD。
+
+源码核对使用 `e5-stable` 工作树的 `541c913`、dirty=true。解析简单剪切覆盖 float32/float64、弹性/材料更新两条路径和八档幅值；四项新检查同时核对应力、μ/λ 及形变导数，材料应力与导数共 **12 passed**（6.71 s）；相同四项新检查在干净 `541c913` 上全部失败。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_constitutive_adjoint.py -q`，日志 `runs/stable_stress_adjoint.log`。原型的应力计算改写后，160 步初速度自然差分仍通过 **1/4** 档，两档小扰动误差 **2.89455e-5/1.90705e-5**；状态累加和约束求解的舍入继续分项核对。
+
+分项扩展精度对照中，只将粒子 F 或速度在步末舍入至双精度，两档误差最大分别为 **8.674e-6/6.035e-6**；只舍入界面开口/损伤历史/面形变时，两档误差 **2.2363e-6/2.83044e-5**。界面状态舍入能重现小扰动超标，下一项分开核对这三类状态。命令为 `extrinsic_extended_reference.py --round-state deformation/velocity/interface/all --output runs/e5_release_audit/extended_<类别>64`，对应报告位于各输出目录。
+
+提交前对应源码全量 **1089 passed、8 skipped、18 subtests passed**（397.18 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，工作树 `~/Projects/BladeMaster-Warp-e5-stable-20261023`，日志 `runs/stable_stress_full.log`。源码原型的 160 步初速度四档仍通过 **1/4**，报告 `runs/e5_release_audit/stable_source_trajectory.json`；E5 继续核对界面状态精度和自然切口接入。

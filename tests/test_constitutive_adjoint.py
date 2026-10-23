@@ -69,6 +69,49 @@ def test_small_symmetric_strain_stress_roundoff(path):
     np.testing.assert_allclose(stress.numpy(), expected, rtol=0., atol=tolerance)
 
 
+@pytest.mark.parametrize('path', ['elastic', 'constitutive'])
+@pytest.mark.parametrize('precision', ['float32', 'float64'])
+def test_simple_shear_stress_and_material_derivative(path, precision):
+    model = MaterialTrajectory(Config(size=(.012, .012, .012), grid_spacing=.006), precision=precision)
+    shear = np.logspace(-4 if precision == 'float32' else -8, -1, 8)
+    F = np.tile(np.eye(3), (len(shear), 1, 1))
+    F[:, 0, 1] = shear
+    a = model.array(F, wp.mat33)
+    mu = 2000.
+    b = model.array(np.full(len(shear), mu), float)
+    c = model.array(np.full(len(shear), 3000.), float)
+    stress = model.zeros(len(shear), wp.mat33)
+    with wp.Tape() as tape:
+        if path == 'elastic':
+            model.launch(elastic_response, len(shear), inputs=[a, b, c], outputs=[stress], device=model.device)
+        else:
+            plastic = model.array(np.tile(np.eye(3), (len(shear), 1, 1)), wp.mat33)
+            limit = model.array(np.full(len(shear), 1.), float)
+            updated = model.zeros(len(shear), wp.mat33)
+            success = model.zeros(len(shear), int, False)
+            model.launch(response, len(shear), inputs=[a, plastic, b, c, limit],
+                         outputs=[updated, stress, success], device=model.device)
+    seed = model.array(np.tile(np.eye(3), (len(shear), 1, 1)), wp.mat33, False)
+    tape.backward(grads={stress: seed})
+
+    # The exact polar rotation has cos(theta)=2/sqrt(4+gamma^2), J=1.
+    # Rationalizing 1-cos(theta) keeps the O(gamma^2) normal stress observable.
+    shear = a.numpy()[:, 0, 1].astype(float)
+    length = np.sqrt(4. + shear**2)
+    normal = shear**2 / (length * (length + 2.))
+    expected = np.zeros_like(F)
+    expected[:, 0, 0] = expected[:, 1, 1] = 2 * mu * normal
+    expected[:, 0, 1] = 2 * mu * shear * (length - 1.) / length
+    expected[:, 1, 0] = 2 * mu * shear / length
+    tolerance = 3e-6 if precision == 'float32' else 2e-12
+    stress_error = np.linalg.norm(stress.numpy() - expected, axis=(1, 2))
+    assert np.all(stress_error <= tolerance * np.linalg.norm(expected, axis=(1, 2)))
+    np.testing.assert_allclose(b.grad.numpy(), 4 * normal, rtol=tolerance, atol=0.)
+    np.testing.assert_allclose(c.grad.numpy(), 0., rtol=0., atol=0.)
+    np.testing.assert_allclose(a.grad.numpy()[:, 0, 1], 8 * mu * shear / length**3,
+                               rtol=tolerance, atol=0.)
+
+
 def reference(F, Fp, mu, lam, limit):
     u, stretch, vt = np.linalg.svd(F @ np.linalg.inv(Fp))
     trial_stress = stretch * (stretch - 1)

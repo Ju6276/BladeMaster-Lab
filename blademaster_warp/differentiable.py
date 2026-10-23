@@ -16,28 +16,38 @@ def elastic_stress(F: wp.mat33, mu: float, lam: float):
     return m.corotated_stress(F, U, V, wp.identity(n=3, dtype=float), mu, lam)
 
 
+@wp.func
+def polar_vjp(F: wp.mat33, difference: wp.mat33, adj: wp.mat33):
+    """Solve S Omega + Omega S = R^T adj - adj^T R for the polar VJP R Omega.
+
+    The axial-vector system has eigenvalues sigma_i + sigma_j > 0.
+    """
+    rotation = F - difference
+    stretch = wp.transpose(rotation) * F
+    stretch = 0.5 * (stretch + wp.transpose(stretch))
+    rhs = wp.transpose(rotation) * adj - wp.transpose(adj) * rotation
+    axial = wp.inverse(wp.trace(stretch) * wp.identity(n=3, dtype=float) - stretch) * wp.vec3(
+        rhs[2, 1], rhs[0, 2], rhs[1, 0])
+    skew = wp.mat33(0.0, -axial[2], axial[1],
+                   axial[2], 0.0, -axial[0],
+                   -axial[1], axial[0], 0.0)
+    return rotation * skew
+
+
 @wp.func_grad(elastic_stress)
 def elastic_stress_grad(F: wp.mat33, mu: float, lam: float, adj: wp.mat33):
-    # The polar rotation derivative divides by sigma_i + sigma_j, which stays
-    # regular at repeated positive stretches (including F = I).
     U, sigma, V = wp.svd3(F)
-    rotation = U * wp.transpose(V)
-    local = wp.transpose(U) * adj * V
-    skew = wp.mat33(0.0)
-    for i in range(3):
-        for j in range(3):
-            if i != j:
-                skew[i, j] = (local[i, j] - local[j, i]) / (sigma[i] + sigma[j])
+    difference, jm1 = m.corotated_terms(F, U, V)
     inverse_t = wp.transpose(wp.inverse(F))
-    J = wp.determinant(F)
+    J = 1.0 + jm1
     contraction = wp.ddot(adj, inverse_t)
     wp.adjoint[F] += (
-        2.0 * mu * (adj - U * skew * wp.transpose(V))
+        2.0 * mu * (adj - polar_vjp(F, difference, adj))
         + lam * (2.0 * J - 1.0) * J * contraction * inverse_t
-        - lam * (J - 1.0) * J * inverse_t * wp.transpose(adj) * inverse_t
+        - lam * jm1 * J * inverse_t * wp.transpose(adj) * inverse_t
     )
-    wp.adjoint[mu] += 2.0 * wp.ddot(adj, F - rotation)
-    wp.adjoint[lam] += (J - 1.0) * J * contraction
+    wp.adjoint[mu] += 2.0 * wp.ddot(adj, difference)
+    wp.adjoint[lam] += jm1 * J * contraction
 
 
 @wp.kernel

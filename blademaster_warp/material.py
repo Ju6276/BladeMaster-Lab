@@ -78,19 +78,34 @@ def node_lists(
 
 
 @wp.func
+def corotated_terms(f: wp.mat33, U: wp.mat33, V: wp.mat33):
+    """Evaluate f-R and det(f)-1 through H=f-I to retain small strains.
+
+    For f=R S, f-R = R (H+H^T+H^T H) (S+I)^-1.
+    """
+    identity = wp.identity(n=3, dtype=float)
+    h = f - identity
+    twice_strain = h + wp.transpose(h) + wp.transpose(h) * h
+    rotation = U * wp.transpose(V)
+    rotation = 0.5 * (rotation + wp.transpose(wp.inverse(rotation)))
+    stretch = wp.transpose(rotation) * f
+    difference = rotation * twice_strain * wp.inverse(stretch + identity)
+    jm1 = (wp.trace(h) + wp.determinant(h)
+           + h[0, 0] * h[1, 1] + h[0, 0] * h[2, 2] + h[1, 1] * h[2, 2]
+           - h[0, 1] * h[1, 0] - h[0, 2] * h[2, 0] - h[1, 2] * h[2, 1])
+    return difference, jm1
+
+
+@wp.func
 def corotated_stress(
     f: wp.mat33, U: wp.mat33, V: wp.mat33, plastic_inverse: wp.mat33, mu: float, lam: float
 ):
-    """First Piola stress of fixed corotated elasticity, from the SVD f = U diag(sigma) V^T
-    of the elastic deformation f = F Fp^-1:
+    """First Piola stress for f=F Fp^-1, R=U V^T, J=det(f):
 
-        P = (2 mu (f - R) + lam (J - 1) J f^-T) Fp^-T,  R = U V^T, J = det f.
+        P = (2 mu (f-R) + lam (J-1) J f^-T) Fp^-T.
     """
-    rotation = U * wp.transpose(V)
-    # One polar Newton step removes SVD orthogonality error before subtracting f - R.
-    rotation = 0.5 * (rotation + wp.transpose(wp.inverse(rotation)))
-    J = wp.determinant(f)
-    elastic = 2.0 * mu * (f - rotation) + lam * (J - 1.0) * J * wp.transpose(wp.inverse(f))
+    difference, jm1 = corotated_terms(f, U, V)
+    elastic = 2.0 * mu * difference + lam * jm1 * (1.0 + jm1) * wp.transpose(wp.inverse(f))
     return elastic * wp.transpose(plastic_inverse)
 
 

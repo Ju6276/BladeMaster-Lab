@@ -1756,3 +1756,11 @@ RTX 4090，`1ecc419`、dirty=true。共享界面判断改用推进后的总间�
 联合伴随原型对历史 **1e-5/1e-15/1e-22 m** 的两粒子解析梯度均通过，最大相对误差 **1.234e-16**；最小历史例的原方程伴随残差 **1.939e-11**。实际塑性轨迹捕获的 **99×99** 系统在反力收缩及伴随状态都保留余量后，残差 **1.987e-10**，右端尺度 **5.506e6**，通过原 `1e-10 × RHS` 检查。命令前缀同上，入口 `runs/e5_release_audit/adjoint_scale_analytic.py`、`replay_compensated_momentum.py runs/grid_update/implicit_failure_1213893.npz`；报告 `runs/grid_update/adjoint_scale_analytic.json`、`implicit_failure_1213893_compensated_momentum.json`。完整塑性参数差分及冗余约束复验继续运行。
 
 提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1615 passed、8 skipped、18 subtests passed**（984.20 s）。日志 `runs/grid_update/full_shared_geometry.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-24：补偿伴随正式接口
+
+RTX 4090，`482504f`、dirty=true。界面动量的转置收缩和隐式伴随保留两分量；稀小开口、独立／重复约束、面积、材料、时长和惯性参数共 **204 passed**（121.26 s）。其中新增 11 个线性代数例、3 个动量例和 6 个解析伴随例；保留小至 **2⁻⁸⁰** 的矩阵主元，覆盖 **2⁻¹⁰⁰⁰…2⁹⁰⁰** 右端缩放、秩亏最小范数、32 组输入差分及大幅相反种子的余量。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests/test_compensated_linalg.py tests/test_cohesive_momentum.py tests/test_cohesive_adjoint_refinement.py tests/test_differentiable_cohesive.py tests/test_reference_inertia.py tests/test_cohesive_force.py -q -x`；日志 `runs/grid_update/formal_compensated_adjoint_unit.log`。
+
+正式接口在捕获的 99 维塑性伴随上通过原残差检查，与两分量原型的十二类输入梯度最大绝对差 **1.103e-39**。命令前缀同上，入口 `runs/e5_release_audit/replay_formal_adjoint.py runs/grid_update/implicit_failure_1213893.npz`；报告 `runs/grid_update/implicit_failure_1213893_formal.json`。保留跨步余量的塑性原型已通过 8 步基准的前向、塑性体积约束和完整反向；六组参数差分及逐步能量核对继续运行，入口 `runs/e5_release_audit/persistent_plastic_stages.py`。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1635 passed、8 skipped、18 subtests passed**（1573.45 s）。日志 `runs/grid_update/formal_compensated_adjoint_full.log`；8 项跳过为 CRESSim 上游构建。

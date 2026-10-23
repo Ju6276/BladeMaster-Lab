@@ -18,6 +18,8 @@ from .cohesive import (
 )
 from .precision import launch_double
 from ._compensated import Expansion
+from ._compensated_linalg import divide, equilibrated_solve
+from ._cohesive_momentum import momentum_residual
 from .compensated_state import CompensatedArray
 from ._cohesive_solve import geometry, shared_intact_rows, solve_primal, refine_geometry
 
@@ -31,64 +33,11 @@ def gap_at(q: wp.array(dtype=wp.vec3), b: wp.array2d(dtype=float), u: wp.array(d
 
 
 @wp.func
-def residual_force(
-    b: wp.array2d(dtype=float),
-    area: wp.array(dtype=float),
-    traction: wp.array(dtype=wp.vec3),
-    p: int,
-    integrated_force: int,
-):
-    f = wp.vec3(0.0)
-    for i in range(traction.shape[0]):
-        weight = float(1.0)
-        if integrated_force == 0:
-            weight = area[i]
-        f += b[i, p] * weight * traction[i]
-    return f
-
-
-@wp.func
 def frame_rate(gradient: wp.array2d(dtype=wp.vec3), velocity: wp.array(dtype=wp.vec3), i: int):
     rate = wp.mat33(0.0)
     for p in range(velocity.shape[0]):
         rate += wp.outer(velocity[p], gradient[i, p])
     return rate
-
-
-@wp.func
-def frame_force(
-    gradient: wp.array2d(dtype=wp.vec3),
-    stress: wp.array(dtype=wp.mat33),
-    area: wp.array(dtype=float),
-    p: int,
-    integrated_force: int,
-):
-    force = wp.vec3(0.0)
-    for i in range(stress.shape[0]):
-        weight = float(1.0)
-        if integrated_force == 0:
-            weight = area[i]
-        force += weight * stress[i] * gradient[i, p]
-    return force
-
-
-@wp.kernel
-def monolithic_momentum(
-    b: wp.array2d(dtype=float),
-    gradient: wp.array2d(dtype=wp.vec3),
-    area: wp.array(dtype=float),
-    traction: wp.array(dtype=wp.vec3),
-    stress: wp.array(dtype=wp.mat33),
-    mass: wp.array(dtype=float),
-    dt: wp.array(dtype=float),
-    u: wp.array(dtype=wp.vec3),
-    integrated_force: int,
-    residual: wp.array(dtype=wp.vec3),
-):
-    p = wp.tid()
-    force = residual_force(b, area, traction, p, integrated_force)
-    force += frame_force(gradient, stress, area, p, integrated_force)
-    residual[p] = u[p] + dt[0] * dt[0] / mass[0] * force
 
 
 @wp.kernel
@@ -339,24 +288,10 @@ def _evaluate(
         device=device,
     )
     launch_double(normal_gap, count, inputs=[prox[0], raw[3]], outputs=[constraint], device=device)
-    (Ru, Rg) = (zeros(len(u), True), zeros(count, True))
-    launch_double(
-        monolithic_momentum,
-        len(u),
-        inputs=[
-            inputs[5],
-            inputs[6],
-            inputs[7],
-            raw[5],
-            stress,
-            inputs[8],
-            inputs[9],
-            u,
-            int(integrated_force),
-        ],
-        outputs=[Ru],
-        device=device,
+    Ru = momentum_residual(
+        inputs[5], inputs[6], inputs[7], raw[5], stress, inputs[8], inputs[9], u, integrated_force
     )
+    Rg = zeros(count, True)
     if inertia is not None:
         Ru = inertia.add_momentum(Ru, u)
     shared_rows = shared_intact_rows(raw[0].numpy(), inputs[3].numpy(), inputs[5].numpy())
@@ -510,7 +445,6 @@ def _implicit_pullback(
         modes = np.linalg.qr(inertia.solve(modes), mode="reduced")[0]
     basis = np.kron(modes, np.eye(3))
     size = basis.shape[1]
-    rhs = np.r_[basis.T @ rhs_u, rhs_t]
     clones = [
         wp.array(v, dtype=a.dtype, device=a.device, requires_grad=True) for (v, a) in zip(values, inputs)
     ]
@@ -540,56 +474,46 @@ def _implicit_pullback(
         local.backward(grads={Rg: array(unit, True)})
         rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), fixed_t.grad.numpy().ravel() / compliance])
     J = np.array(rows)
-    if inertia is None:
-        dual = np.linalg.lstsq(J.T, rhs, rcond=None)[0]
-        # The orthogonal momentum block is identity; retain its map derivatives.
-        orthogonal = rhs_u - basis @ (basis.T @ rhs_u)
-        scale = max(np.max(np.abs(rhs_u)), np.max(np.abs(rhs_t)), 1.0)
-        for _ in range(12):
-            au = basis @ dual[:size] + orthogonal
-            ag = dual[size:].reshape(shape)
-            local.zero()
-            local.backward(grads={Ru: array(au.reshape(-1, 3), True), Rg: array(ag, True)})
-            error_u = rhs_u - fixed_u.grad.numpy().ravel()
-            error_t = rhs_t - fixed_t.grad.numpy().ravel() / compliance
-            full_error = np.max(np.abs(np.r_[error_u, error_t]))
-            if not np.isfinite(full_error) or full_error <= 1e-10 * scale:
-                break
-            # Reevaluate the residual through the Warp VJP, including the momentum
-            # complement, so matrix assembly roundoff is part of the correction.
-            reduced_error = np.r_[basis.T @ error_u, error_t]
-            dual += np.linalg.lstsq(J.T, reduced_error, rcond=None)[0]
-            orthogonal += error_u - basis @ (basis.T @ error_u)
-    else:
-        shape = Rg.numpy().shape
-        au, ag = np.zeros_like(rhs_u), np.zeros(shape)
-        scale = max(np.max(np.abs(rhs_u)), np.max(np.abs(rhs_t)), 1.0)
-        for _ in range(12):
-            local.zero()
-            local.backward(grads={Ru: array(au.reshape(-1, 3), True), Rg: array(ag, True)})
-            error_u = rhs_u - fixed_u.grad.numpy().ravel()
-            error_t = rhs_t - fixed_t.grad.numpy().ravel() / compliance
-            full_error = np.max(np.abs(np.r_[error_u, error_t]))
-            if not np.isfinite(full_error) or full_error <= 1e-10 * scale:
-                break
-            particular = inertia.solve(error_u.reshape(-1, 3)).ravel()
-            local.zero()
-            local.backward(grads={Ru: array(particular.reshape(-1, 3), True)})
-            reduced = np.r_[
-                basis.T @ (error_u - fixed_u.grad.numpy().ravel()),
-                error_t - fixed_t.grad.numpy().ravel() / compliance,
-            ]
-            correction = np.linalg.lstsq(J.T, reduced, rcond=None)[0]
-            au += particular + basis @ correction[:size]
-            ag += correction[size:].reshape(shape)
-    if not np.isfinite(full_error) or full_error > 1e-10 * scale:
-        raise RuntimeError(f"Full implicit adjoint residual: {full_error}")
-    local.zero()
-    local.backward(grads={Ru: array(-au.reshape(-1, 3), True), Rg: array(-ag, True)})
-    gradients = [a.grad.numpy().copy() for a in clones]
+    full_sources = [fixed_u, fixed_t, *clones]
     if local_inertia is not None:
-        gradients.extend(a.grad.numpy().copy() for a in local_inertia.parameters)
-    return gradients
+        full_sources.extend(local_inertia.parameters)
+
+    def action(au, ag):
+        totals = [Expansion(np.zeros(a.numpy().shape)) for a in full_sources]
+        for output, seed in [(Ru, au.reshape(-1, 3)), (Rg, ag)]:
+            for part in [seed.high, seed.low]:
+                if not np.any(part):
+                    continue
+                local.zero()
+                local.backward(grads={output: array(part, True)})
+                totals = [value + source.grad.numpy() for value, source in zip(totals, full_sources)]
+        return totals
+
+    basis = Expansion(basis)
+    au, ag = Expansion(np.zeros_like(rhs_u)), Expansion(np.zeros(shape))
+    scale = max(np.max(abs(rhs_u)), np.max(abs(rhs_t)), 1.0)
+    for iteration in range(13):
+        evaluated = action(au, ag)
+        error_u = Expansion(rhs_u) - evaluated[0].reshape(-1)
+        error_t = Expansion(rhs_t) - divide(evaluated[1].reshape(-1), compliance)
+        full_error = max(np.max(abs(error_u.high)), np.max(abs(error_t.high)))
+        if not np.isfinite(full_error) or full_error <= 1e-10 * scale:
+            break
+        if iteration == 12:
+            break
+        particular = (
+            error_u if inertia is None else inertia.solve_compensated(error_u.reshape(-1, 3)).reshape(-1)
+        )
+        moved = action(particular, Expansion(np.zeros(shape)))
+        left = basis.T @ (error_u - moved[0].reshape(-1))
+        right = error_t - divide(moved[1].reshape(-1), compliance)
+        reduced = Expansion(np.r_[left.high, right.high], np.r_[left.low, right.low])
+        correction = equilibrated_solve(J.T, reduced)
+        au = au + particular + basis @ correction[:size]
+        ag = ag + correction[size:].reshape(shape)
+    if not np.isfinite(full_error) or full_error > 1e-10 * scale:
+        raise RuntimeError(f"Compensated full implicit adjoint residual: {full_error}")
+    return [value.numpy() for value in action(-au, -ag)[2:]]
 
 
 def _canonical_output(inputs, u, force, compliance, info, *, integrated_force=False):

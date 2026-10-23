@@ -1575,3 +1575,12 @@ RTX 4090，`b28744c`、dirty=true。**16** 项链式界面的解析梯度检查�
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_adjoint_refinement.py -q`；`runs/e5_release_audit/adjoint_refinement_old.py`；`runs/e5_release_audit/natural_material_coupling.py`；`runs/e5_release_audit/natural_material_difference.py`；`runs/e5_release_audit/natural_difference_adaptive.py`。日志及报告在 `e5-grid-20261023/runs/grid_update/`，对应 `adjoint_refinement_unit2`、`adjoint_refinement_old_test`、`natural_material_source_refined`、`natural_material_difference`、`natural_difference_adaptive`。
 
 提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1441 passed、8 skipped、18 subtests passed**（511.56 s），日志 `runs/grid_update/adjoint_refinement_full.log`；8 项跳过为 CRESSim 上游构建。
+
+
+## 2026-10-23：通用内聚非线性入口与零初值复验
+
+RTX 4090，`1664492`、dirty=true。自适应固定法向初值、移动法向平衡及反力块消元已进入正式求解器；新增 **42** 项解析检查通过，相关检查 **194 passed**（97.09 s）。自然事件生成的 **576** 点、47 网格槽界面从零初值完成材料一步推进，正向/反向 **109.7196/7.3879 s**；初速度两档差分最大相对误差 **3.674e-14**。固定参考几何的自由开口和强度各两档差分全部通过，最大相对误差 **4.8591e-8**；平衡扩展残差 **1.00993e-28**。每次扰动独立从零初值求解。
+
+闭合承载、G_c=7/70 受载断裂、已有损伤四组 200 μs 材料轨迹共 **12** 例能量检查通过；dt=2/1/0.5 μs 的残差随步长减半约减半，最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**。闭合例开口及损伤为 **0**，完全断裂耗散 **0.001008/0.01008 J=G_c A₀**。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_initial.py tests/test_cohesive_linear.py tests/test_differentiable_cohesive.py tests/test_cohesive_force.py tests/test_cohesive_grid_update.py -q`；`runs/e5_release_audit/natural_generic_validate.py`；`runs/e5_release_audit/natural_generic_material.py`；`runs/e5_release_audit/adaptive_energy.py`。报告/日志在 `e5-grid-20261023/runs/grid_update/`，对应 `adaptive_general_unit3`、`natural_generic_validate`、`natural_generic_material`、`adaptive_general_energy`。提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1483 passed、8 skipped、18 subtests passed**（519.75 s），日志 `adaptive_general_full.log`。下一项连接自然分段、接触去重和永久历史，再完成整体能量扫描及受影响的 E1–E4 复验。

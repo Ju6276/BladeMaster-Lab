@@ -3,6 +3,9 @@
 import numpy as np
 from scipy.optimize import least_squares, minimize
 
+from ._cohesive_initial import fixed_normal_initial
+from ._cohesive_linear import solve_blocks
+
 
 def skew(x):
     (a, b, c) = x
@@ -295,40 +298,37 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False, *, integ
                     compressed=int(np.count_nonzero(component < 0)),
                 ),
             )
-    normals = (
-        reference[:, :1] * np.cross(frame[:, :, 1], frame[:, :, 2])
-        + reference[:, 1:2] * np.cross(frame[:, :, 2], frame[:, :, 0])
-        + reference[:, 2:3] * np.cross(frame[:, :, 0], frame[:, :, 1])
+    initial_u, traction, selected_compliance, initial_info = fixed_normal_initial(
+        values, compliance, integrated_force=integrated_force
     )
-    normals /= np.linalg.norm(normals, axis=1)[:, None]
-    root_area = (np.ones_like(area) if integrated_force else np.sqrt(area))[:, None]
-    mobility = root_area * (b @ b.T) * root_area.T / coefficient
-    local_compliance = compliance * area if integrated_force else compliance
-    inverse = np.linalg.inv(np.eye(count) + mobility / compliance)
-    (gap, multiplier) = (np.zeros_like(q), np.zeros_like(q))
-    for _ in range(256):
-        raw = root_area * gap - multiplier + inverse @ (root_area * (q - gap) + multiplier)
-        trial = (raw + multiplier) / root_area
-        response = proximal(trial, normals, history, material, local_compliance)
-        gap = response[0]
-        multiplier += raw - root_area * gap
-    traction = response[5] / compliance
-    measure = np.ones_like(area) if integrated_force else area
-    initial_u = -b.T @ (measure[:, None] * traction) / coefficient
-    initializer = "fixed_normal_admm"
+    selected_factor = compliance_factor * selected_compliance / compliance
+    at, basis, compliance, length = setup(values, selected_factor, integrated_force=integrated_force)
+    initializer = "adaptive_fixed_normal_admm"
     y[:size] = basis.T @ initial_u.ravel() / length
     y[size:] = compliance * traction.ravel() / length
-    initial = least_squares(
-        lambda y: at(y)[0], y, jac=lambda y: at(y)[1], ftol=1e-13, xtol=1e-13, gtol=1e-13, max_nfev=400
-    )
-    y = initial.x.copy()
+    residual_scale = np.max(np.abs(at(y)[0]))
+    state_scale = max(np.max(np.abs(y)), np.max(np.abs(q)) / length, np.finfo(float).tiny)
+    initial_evaluations = 0
+    if residual_scale > 64 * np.finfo(float).eps * state_scale:
+        initial = least_squares(
+            lambda y: at(y)[0] / residual_scale,
+            y,
+            jac=lambda y: at(y)[1] / residual_scale,
+            x_scale="jac",
+            ftol=1e-13,
+            xtol=1e-13,
+            gtol=1e-13,
+            max_nfev=400,
+        )
+        y = initial.x.copy()
+        initial_evaluations = initial.nfev
     for iteration in range(80):
         (residual, jacobian, auxiliary) = at(y)
         error = float(np.max(np.abs(residual)))
         scale = max(np.max(np.abs(y)), np.max(np.abs(q)) / length, np.finfo(float).tiny)
         if error <= 64 * np.finfo(float).eps * scale:
             break
-        step = np.linalg.lstsq(jacobian, -residual, rcond=None)[0]
+        step = solve_blocks(jacobian, -residual, size)
         norm = np.linalg.norm(residual)
         for backtrack in range(30):
             candidate = y + 2.0 ** (-backtrack) * step
@@ -348,8 +348,9 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False, *, integ
         result,
         compliance,
         dict(
+            **initial_info,
             iterations=iteration,
-            initial_evaluations=initial.nfev,
+            initial_evaluations=initial_evaluations,
             initializer=initializer,
             residual=error,
             closed=int(np.count_nonzero(np.linalg.norm(auxiliary["proximal_gap"], axis=1) == 0)),
@@ -625,8 +626,9 @@ def refine_geometry(
             gap[support] = 0.0
             return u.astype(float), traction.astype(float), seed_compliance, info, gap, frame
     info["closed_linear_solution"] = False
+    base_compliance = setup(values, integrated_force=integrated_force)[2]
     at, basis, compliance, length = setup(
-        precise, compliance_factor, extended=True, integrated_force=integrated_force
+        precise, seed_compliance / base_compliance, extended=True, integrated_force=integrated_force
     )
     basis = basis.astype(np.longdouble)
     size = basis.shape[1]
@@ -636,7 +638,7 @@ def refine_geometry(
     ]
     for _ in range(8):
         residual, jacobian, _ = at(y)
-        correction = np.linalg.lstsq(jacobian.astype(float), -residual.astype(float), rcond=None)[0]
+        correction = solve_blocks(jacobian.astype(float), -residual.astype(float), size)
         y += correction
     residual, _, response = at(y)
     error = float(np.max(np.abs(residual)))

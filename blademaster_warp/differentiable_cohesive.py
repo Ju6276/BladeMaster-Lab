@@ -470,16 +470,24 @@ def _implicit_pullback(
     J = np.array(rows)
     dual = np.linalg.lstsq(J.T, rhs, rcond=None)[0]
     # The orthogonal momentum block is identity; retain its map derivatives.
-    au = basis @ dual[:size] + rhs_u - basis @ (basis.T @ rhs_u)
-    ag = dual[size:].reshape(shape)
-    local.zero()
-    local.backward(grads={Ru: array(au.reshape(-1, 3), True), Rg: array(ag, True)})
-    full_error = max(
-        np.max(np.abs(fixed_u.grad.numpy().ravel() - rhs_u)),
-        np.max(np.abs(fixed_t.grad.numpy().ravel() / compliance - rhs_t)),
-    )
+    orthogonal = rhs_u - basis @ (basis.T @ rhs_u)
     scale = max(np.max(np.abs(rhs_u)), np.max(np.abs(rhs_t)), 1.0)
-    if full_error > 1e-10 * scale:
+    for _ in range(12):
+        au = basis @ dual[:size] + orthogonal
+        ag = dual[size:].reshape(shape)
+        local.zero()
+        local.backward(grads={Ru: array(au.reshape(-1, 3), True), Rg: array(ag, True)})
+        error_u = rhs_u - fixed_u.grad.numpy().ravel()
+        error_t = rhs_t - fixed_t.grad.numpy().ravel() / compliance
+        full_error = np.max(np.abs(np.r_[error_u, error_t]))
+        if not np.isfinite(full_error) or full_error <= 1e-10 * scale:
+            break
+        # Reevaluate the residual through the Warp VJP, including the momentum
+        # complement, so matrix assembly roundoff is part of the correction.
+        reduced_error = np.r_[basis.T @ error_u, error_t]
+        dual += np.linalg.lstsq(J.T, reduced_error, rcond=None)[0]
+        orthogonal += error_u - basis @ (basis.T @ error_u)
+    if not np.isfinite(full_error) or full_error > 1e-10 * scale:
         raise RuntimeError(f"Full implicit adjoint residual: {full_error}")
     local.zero()
     local.backward(grads={Ru: array(-au.reshape(-1, 3), True), Rg: array(-ag, True)})

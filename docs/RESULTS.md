@@ -1565,3 +1565,13 @@ RTX 4090，`9ddcd27`、dirty=true。新增 **20** 项解析检查在旧提交全
 576 点固定输入的自适应 ADMM、归一化最小二乘和约束分块原型完成平衡求解，扩展精度残差 **6.77012e-29**，最大开口 **4.73853e-18 m**；材料强度和原求解容差保持原值。界面位移目标的完整伴随检查通过原 **1e-10** 缩放标准。实际材料一步推进的原型通过一次伴随残差细化，将残差从 **0.0130086** 降至 **4.01624e-5**，相对右端尺度为 **3.33e-13**；正向/反向耗时 **10.8963/7.3093 s**，状态及速度梯度有限。自适应非线性求解和材料伴随细化仍在原型中，继续整理通用入口及参数差分。
 
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_small_opening.py tests/test_cohesive_closed_residual.py tests/test_cohesive_proximal.py tests/test_cohesive_measure.py -q`；`runs/e5_release_audit/natural_adaptive_admm.py --resume --tolerance 1e-10 --iterations 200000 --name natural_adaptive_precise`；`runs/e5_release_audit/natural_adaptive_newton.py --seed natural_adaptive_precise --scaled --nullspace`；`runs/e5_release_audit/natural_interface_adjoint.py`；`runs/e5_release_audit/natural_material_coupling.py --refine-adjoint`。报告在 `e5-grid-20261023/runs/grid_update/`。提交前全量 `-m pytest tests -q` 为 **1425 passed、8 skipped、18 subtests passed**（505.85 s），日志 `small_opening_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：内聚材料伴随残差细化
+
+RTX 4090，`b28744c`、dirty=true。**16** 项链式界面的解析梯度检查通过（0.57 s），覆盖 1/4 个界面、1e-12/1e-18 m 开口、1e-10/1e-13 m/N 分裂尺度及压力/总力接口；相同检查在旧提交为 **12 failed、4 passed**。解析值由消去反力后的弹性切线计算，包含位移和反力目标。
+
+576 点自然界面的材料一步推进已使用正式伴随入口通过，正向/反向 **11.0320/7.3650 s**，状态和初速度梯度有限，最大初速度伴随 **2.54044**。初速度方向的 ε=1e-3/1e-4 两档差分相对误差 **3.673e-14/3.496e-14**。固定参考几何的界面自由开口/强度各两档差分全部通过，最大相对误差 **4.852e-8**；每次扰动重新求解平衡及活跃集合，单组差分耗时 **73.49–731.84 s**。正向仍使用非线性原型和收敛解热启动；正式非线性入口和完整自然事件接入继续完成。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_adjoint_refinement.py -q`；`runs/e5_release_audit/adjoint_refinement_old.py`；`runs/e5_release_audit/natural_material_coupling.py`；`runs/e5_release_audit/natural_material_difference.py`；`runs/e5_release_audit/natural_difference_adaptive.py`。日志及报告在 `e5-grid-20261023/runs/grid_update/`，对应 `adjoint_refinement_unit2`、`adjoint_refinement_old_test`、`natural_material_source_refined`、`natural_material_difference`、`natural_difference_adaptive`。
+
+提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1441 passed、8 skipped、18 subtests passed**（511.56 s），日志 `runs/grid_update/adjoint_refinement_full.log`；8 项跳过为 CRESSim 上游构建。

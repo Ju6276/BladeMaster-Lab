@@ -1,7 +1,7 @@
 """Moving cohesive-interface equilibrium and its implicit Warp adjoint.
 
-Interface energies and tractions are measured per reference area. The input
-maps carry the TLMPM transfer; the solve returns a particle displacement.
+The pressure interface uses Pa and N/m; the integrated interface uses N and
+N m. Both return energy densities per reference area and particle displacements.
 """
 
 from dataclasses import dataclass
@@ -9,9 +9,15 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from .cohesive import cohesive_proximal_response, cohesive_contact_response, surface_normal
+from .cohesive import (
+    cohesive_proximal_response,
+    cohesive_measure_proximal_response,
+    cohesive_contact_response,
+    surface_normal,
+    surface_normal_pullback,
+)
 from .precision import launch_double
-from ._cohesive_solve import geometry, shared_intact_rows, solve_primal
+from ._cohesive_solve import geometry, shared_intact_rows, solve_primal, refine_geometry
 
 
 @wp.func
@@ -24,11 +30,18 @@ def gap_at(q: wp.array(dtype=wp.vec3), b: wp.array2d(dtype=float), u: wp.array(d
 
 @wp.func
 def residual_force(
-    b: wp.array2d(dtype=float), area: wp.array(dtype=float), traction: wp.array(dtype=wp.vec3), p: int
+    b: wp.array2d(dtype=float),
+    area: wp.array(dtype=float),
+    traction: wp.array(dtype=wp.vec3),
+    p: int,
+    integrated_force: int,
 ):
     f = wp.vec3(0.0)
     for i in range(traction.shape[0]):
-        f += b[i, p] * area[i] * traction[i]
+        weight = float(1.0)
+        if integrated_force == 0:
+            weight = area[i]
+        f += b[i, p] * weight * traction[i]
     return f
 
 
@@ -42,11 +55,18 @@ def frame_rate(gradient: wp.array2d(dtype=wp.vec3), velocity: wp.array(dtype=wp.
 
 @wp.func
 def frame_force(
-    gradient: wp.array2d(dtype=wp.vec3), stress: wp.array(dtype=wp.mat33), area: wp.array(dtype=float), p: int
+    gradient: wp.array2d(dtype=wp.vec3),
+    stress: wp.array(dtype=wp.mat33),
+    area: wp.array(dtype=float),
+    p: int,
+    integrated_force: int,
 ):
     force = wp.vec3(0.0)
     for i in range(stress.shape[0]):
-        force += area[i] * stress[i] * gradient[i, p]
+        weight = float(1.0)
+        if integrated_force == 0:
+            weight = area[i]
+        force += weight * stress[i] * gradient[i, p]
     return force
 
 
@@ -60,10 +80,12 @@ def monolithic_momentum(
     mass: wp.array(dtype=float),
     dt: wp.array(dtype=float),
     u: wp.array(dtype=wp.vec3),
+    integrated_force: int,
     residual: wp.array(dtype=wp.vec3),
 ):
     p = wp.tid()
-    force = residual_force(b, area, traction, p) + frame_force(gradient, stress, area, p)
+    force = residual_force(b, area, traction, p, integrated_force)
+    force += frame_force(gradient, stress, area, p, integrated_force)
     residual[p] = u[p] + dt[0] * dt[0] / mass[0] * force
 
 
@@ -82,6 +104,7 @@ def kinematics(
     u: wp.array(dtype=wp.vec3),
     solved_traction: wp.array(dtype=wp.vec3),
     compliance: float,
+    integrated_force: int,
     gap: wp.array(dtype=wp.vec3),
     trial: wp.array(dtype=wp.vec3),
     frame: wp.array(dtype=wp.mat33),
@@ -102,6 +125,8 @@ def kinematics(
     parameters[i] = wp.vec3(material[i][0], material[i][1], compliance)
     traction[i] = solved_traction[i]
     pressure[i] = wp.min(wp.dot(z, n), 0.0) / compliance
+    if integrated_force != 0 and area[i] == 0.0:
+        pressure[i] = 0.0
 
 
 @wp.kernel
@@ -124,7 +149,115 @@ def normal_gap(gap: wp.array(dtype=wp.vec3), normal: wp.array(dtype=wp.vec3), re
     result[i] = wp.dot(gap[i], normal[i])
 
 
-def _evaluate(inputs, u, traction, compliance):
+@wp.kernel
+def reaction_coordinates(
+    q: wp.array(dtype=wp.vec3),
+    free_frame: wp.array(dtype=wp.mat33),
+    reference: wp.array(dtype=wp.vec3),
+    b: wp.array2d(dtype=float),
+    gradient: wp.array2d(dtype=wp.vec3),
+    area: wp.array(dtype=float),
+    u: wp.array(dtype=wp.vec3),
+    force: wp.array(dtype=wp.vec3),
+    points: wp.array(dtype=int),
+    components: wp.array(dtype=int),
+    integrated_force: int,
+    matrix: wp.array2d(dtype=float),
+    original: wp.array(dtype=float),
+):
+    column = wp.tid()
+    i = points[column]
+    component = components[column]
+    g = gap_at(q, b, u, i)
+    F = free_frame[i] + frame_rate(gradient, u, i)
+    n = surface_normal(F, reference[i])
+    moment = surface_normal_pullback(F, reference[i], g)
+    root = wp.sqrt(area[i])
+    value = force[i]
+    if integrated_force == 0:
+        value *= area[i]
+    if component >= 0:
+        original[column] = value[component] / root
+    else:
+        original[column] = wp.dot(value, n) / root
+    for p in range(u.shape[0]):
+        derivative = b[i, p] * n + moment * gradient[i, p]
+        for axis in range(3):
+            coefficient = float(0.0)
+            if component == axis:
+                coefficient = b[i, p]
+            elif component < 0:
+                coefficient = derivative[axis]
+            matrix[3 * p + axis, column] = root * coefficient
+
+
+@wp.kernel
+def reconstruct_reaction(
+    q: wp.array(dtype=wp.vec3),
+    free_frame: wp.array(dtype=wp.mat33),
+    reference: wp.array(dtype=wp.vec3),
+    b: wp.array2d(dtype=float),
+    gradient: wp.array2d(dtype=wp.vec3),
+    area: wp.array(dtype=float),
+    u: wp.array(dtype=wp.vec3),
+    force: wp.array(dtype=wp.vec3),
+    offsets: wp.array(dtype=int),
+    closed: wp.array(dtype=int),
+    reaction: wp.array(dtype=float),
+    integrated_force: int,
+    output: wp.array(dtype=wp.vec3),
+):
+    i = wp.tid()
+    value = force[i]
+    offset = offsets[i]
+    if offset >= 0:
+        root = wp.sqrt(area[i])
+        if integrated_force == 0:
+            value *= area[i]
+        if closed[i] != 0:
+            value = root * wp.vec3(reaction[offset], reaction[offset + 1], reaction[offset + 2])
+        else:
+            F = free_frame[i] + frame_rate(gradient, u, i)
+            n = surface_normal(F, reference[i])
+            value += (root * reaction[offset] - wp.dot(value, n)) * n
+        if integrated_force == 0:
+            value /= area[i]
+    output[i] = value
+
+
+@wp.kernel
+def reaction_bounds(
+    free_frame: wp.array(dtype=wp.mat33),
+    reference: wp.array(dtype=wp.vec3),
+    gradient: wp.array2d(dtype=wp.vec3),
+    area: wp.array(dtype=float),
+    material: wp.array(dtype=wp.vec3),
+    u: wp.array(dtype=wp.vec3),
+    points: wp.array(dtype=int),
+    offsets: wp.array(dtype=int),
+    closed: wp.array(dtype=int),
+    reaction: wp.array(dtype=float),
+    bound: wp.array(dtype=float),
+    derivative: wp.array2d(dtype=float),
+):
+    row = wp.tid()
+    i = points[row]
+    offset = offsets[i]
+    if closed[i] != 0:
+        F = free_frame[i] + frame_rate(gradient, u, i)
+        n = surface_normal(F, reference[i])
+        value = wp.vec3(reaction[offset], reaction[offset + 1], reaction[offset + 2])
+        positive = value - wp.min(wp.dot(value, n), float(0.0)) * n
+        length = wp.length(positive)
+        bound[row] = wp.sqrt(area[i]) * material[i][0] - length
+        for axis in range(3):
+            derivative[row, offset + axis] = -positive[axis] / length
+    else:
+        bound[row] = -reaction[offset]
+        derivative[row, offset] = -float(1.0)
+
+
+def _evaluate(inputs, u, traction, compliance, *, integrated_force=False):
     count = len(inputs[0])
     device = inputs[0].device
 
@@ -133,12 +266,22 @@ def _evaluate(inputs, u, traction, compliance):
 
     kinds = [wp.vec3d, wp.vec3d, wp.mat33d, wp.vec3d, wp.vec3d, wp.vec3d, wp.float64]
     raw = [wp.zeros(count, dtype=kind, device=device, requires_grad=True) for kind in kinds]
-    launch_double(kinematics, count, inputs=[*inputs, u, traction, compliance], outputs=raw, device=device)
-    prox = [zeros(count, i < 2) for i in range(5)]
     launch_double(
-        cohesive_proximal_response,
+        kinematics,
         count,
-        inputs=[raw[1], raw[3], inputs[3], raw[4]],
+        inputs=[*inputs, u, traction, compliance, int(integrated_force)],
+        outputs=raw,
+        device=device,
+    )
+    prox = [zeros(count, i < 2) for i in range(5)]
+    proximal_kernel = cohesive_measure_proximal_response if integrated_force else cohesive_proximal_response
+    proximal_inputs = [raw[1], raw[3], inputs[3], raw[4]]
+    if integrated_force:
+        proximal_inputs.append(inputs[7])
+    launch_double(
+        proximal_kernel,
+        count,
+        inputs=proximal_inputs,
         outputs=prox,
         device=device,
     )
@@ -157,12 +300,25 @@ def _evaluate(inputs, u, traction, compliance):
     launch_double(
         monolithic_momentum,
         len(u),
-        inputs=[inputs[5], inputs[6], inputs[7], raw[5], stress, inputs[8], inputs[9], u],
+        inputs=[
+            inputs[5],
+            inputs[6],
+            inputs[7],
+            raw[5],
+            stress,
+            inputs[8],
+            inputs[9],
+            u,
+            int(integrated_force),
+        ],
         outputs=[Ru],
         device=device,
     )
+    shared_rows = shared_intact_rows(inputs[0].numpy(), inputs[3].numpy(), inputs[5].numpy())
+    if integrated_force:
+        shared_rows &= inputs[7].numpy() > 0.0
     shared = wp.array(
-        shared_intact_rows(inputs[0].numpy(), inputs[3].numpy(), inputs[5].numpy()).astype(np.int32),
+        shared_rows.astype(np.int32),
         dtype=int,
         device=device,
     )
@@ -241,8 +397,22 @@ def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u,
     return gradients
 
 
-def _implicit_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t, *, closed=False):
-    if closed:
+def _implicit_pullback(
+    inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t, *, closed=False, integrated_force=False
+):
+    if closed and integrated_force and np.all(values[7] > 0.0):
+        from ._cohesive_solve import setup
+
+        area = values[7]
+        pressure = traction_numpy / area[:, None]
+        seed_force = (compliance * rhs_t).reshape(pressure.shape)
+        density_compliance = setup(values)[2]
+        gradients = _closed_pullback(
+            inputs, values, u_numpy, pressure, density_compliance, rhs_u, (area[:, None] * seed_force).ravel()
+        )
+        gradients[7] += np.sum(seed_force * pressure, axis=1)
+        return gradients
+    if closed and not integrated_force:
         return _closed_pullback(
             inputs, values, u_numpy, traction_numpy, compliance, rhs_u, compliance * rhs_t
         )
@@ -266,7 +436,7 @@ def _implicit_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_
     fixed_u = array(u_numpy, True, True)
     fixed_t = array(traction_numpy, True, True)
     with wp.Tape() as local:
-        (_, Ru, Rg) = _evaluate(clones, fixed_u, fixed_t, compliance)
+        (_, Ru, Rg) = _evaluate(clones, fixed_u, fixed_t, compliance, integrated_force=integrated_force)
     rows = []
     for column in basis.T:
         local.zero()
@@ -298,10 +468,177 @@ def _implicit_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_
     return [a.grad.numpy().copy() for a in clones]
 
 
-def _solve_arrays(inputs, compliance_scale=1.0):
+def _canonical_output(inputs, u, force, compliance, info, *, integrated_force=False):
+    """Differentiate the selected minimum-pressure reaction before root pullback."""
+    from ._cohesive_solve import canonical_reaction
+
+    values = [a.numpy().copy() for a in inputs]
+    if info.get("closed_linear_solution", False) and (not integrated_force or np.all(values[7] > 0.0)):
+        return force
+    selection_info = dict(info, closed_linear_solution=False)
+    u_value, force_value = u.numpy().copy(), force.numpy().copy()
+    _, _, context = canonical_reaction(
+        values,
+        u_value,
+        force_value,
+        compliance,
+        selection_info,
+        integrated_force=integrated_force,
+        return_context=True,
+    )
+    if context is None:
+        return force
+    device = u.device
+    output = wp.array(force_value, dtype=force.dtype, device=device, requires_grad=True)
+    outer = wp._src.context.runtime.tape
+    if outer is None:
+        return output
+    matrix, original, reaction = (context[key] for key in ["matrix", "original", "reaction"])
+    count = len(reaction)
+    points, components = [], []
+    offsets = np.full(len(values[0]), -1, dtype=np.int32)
+    for i, span in context["slices"]:
+        offsets[i] = span.start
+        points.extend([i] * (span.stop - span.start))
+        components.extend(range(3) if context["closed"][i] else [-1])
+    active, bound_hessians = [], []
+    if context["constrained"]:
+        for i, span in context["slices"]:
+            value = reaction[span]
+            hessian = np.zeros((count, count))
+            if context["closed"][i]:
+                n = context["normals"][i]
+                compressed = value @ n < 0.0
+                positive = value - min(value @ n, 0.0) * n
+                radius = np.linalg.norm(positive)
+                bound = context["root_area"][i] * values[4][i, 0] - radius
+                if radius:
+                    hessian[span, span] = (
+                        -(np.eye(3) - compressed * np.outer(n, n) - np.outer(positive, positive) / radius**2)
+                        / radius
+                    )
+            else:
+                bound = -value[0]
+            # SLSQP's objective tolerance identifies binding constraints;
+            # the KKT residual below checks the resulting active set.
+            if abs(bound) <= np.sqrt(2e-14) * max(np.linalg.norm(reaction), np.finfo(float).tiny):
+                active.append(i)
+                bound_hessians.append(hessian)
+
+    def backward():
+        clones = [
+            wp.array(v, dtype=a.dtype, device=device, requires_grad=True) for v, a in zip(values, inputs)
+        ]
+        fixed_u = wp.array(u_value, dtype=u.dtype, device=device, requires_grad=True)
+        fixed_force = wp.array(force_value, dtype=force.dtype, device=device, requires_grad=True)
+        selected = wp.array(reaction, dtype=wp.float64, device=device, requires_grad=True)
+        D = wp.zeros(matrix.shape, dtype=wp.float64, device=device, requires_grad=True)
+        x = wp.zeros(count, dtype=wp.float64, device=device, requires_grad=True)
+        result = wp.zeros(len(force), dtype=force.dtype, device=device, requires_grad=True)
+        integer = lambda a: wp.array(np.asarray(a, dtype=np.int32), dtype=int, device=device)
+        offset_array, closed_array = integer(offsets), integer(context["closed"])
+        common = [clones[0], clones[1], clones[2], clones[5], clones[6], clones[7], fixed_u, fixed_force]
+        bounds = wp.zeros(len(active), dtype=wp.float64, device=device, requires_grad=True)
+        bound_gradient = wp.zeros((len(active), count), dtype=wp.float64, device=device, requires_grad=True)
+        with wp.Tape() as local:
+            launch_double(
+                reaction_coordinates,
+                count,
+                inputs=[*common, integer(points), integer(components), int(integrated_force)],
+                outputs=[D, x],
+                device=device,
+            )
+            launch_double(
+                reconstruct_reaction,
+                len(force),
+                inputs=[*common, offset_array, closed_array, selected, int(integrated_force)],
+                outputs=[result],
+                device=device,
+            )
+            if active:
+                launch_double(
+                    reaction_bounds,
+                    len(active),
+                    inputs=[
+                        clones[1],
+                        clones[2],
+                        clones[6],
+                        clones[7],
+                        clones[4],
+                        fixed_u,
+                        integer(active),
+                        offset_array,
+                        closed_array,
+                        selected,
+                    ],
+                    outputs=[bounds, bound_gradient],
+                    device=device,
+                )
+        local.backward(grads={result: wp.array(output.grad.numpy(), dtype=force.dtype, device=device)})
+        differentiands = [*clones, fixed_u, fixed_force]
+        explicit = [a.grad.numpy().copy() for a in differentiands]
+        seed = selected.grad.numpy().copy()
+        if not active:
+            inverse = np.linalg.pinv(matrix, rcond=max(matrix.shape) * np.finfo(float).eps)
+            dual = inverse.T @ seed
+            null_seed = seed - inverse @ (matrix @ seed)
+            residual = matrix @ original - matrix @ reaction
+            adj_matrix = np.outer(dual, original - reaction)
+            adj_matrix += np.outer(residual, inverse @ (inverse.T @ seed))
+            adj_matrix += np.outer(inverse.T @ reaction, null_seed)
+            adj_original = matrix.T @ dual
+            seeds = {}
+        else:
+            Jb = bound_gradient.numpy()
+            multipliers = np.linalg.lstsq(np.c_[matrix.T, Jb.T], reaction, rcond=None)[0]
+            multiplier, mu = multipliers[: matrix.shape[0]], multipliers[matrix.shape[0] :]
+            stationarity = reaction - matrix.T @ multiplier - Jb.T @ mu
+            scale = max(np.linalg.norm(reaction), 1.0)
+            if np.max(abs(stationarity)) > 1e-10 * scale or np.min(mu) < -1e-10 * scale:
+                raise RuntimeError("Canonical reaction KKT multipliers are inconsistent")
+            H = np.eye(count) - np.einsum("i,ijk->jk", mu, np.array(bound_hessians))
+            equations = matrix.shape[0] + len(active)
+            constraint = np.r_[matrix, Jb]
+            K = np.block([[H, -constraint.T], [constraint, np.zeros((equations, equations))]])
+            adj = np.linalg.lstsq(K.T, np.r_[seed, np.zeros(equations)], rcond=None)[0]
+            if np.max(abs(K.T @ adj - np.r_[seed, np.zeros(equations)])) > 1e-10 * max(
+                np.max(abs(seed)), 1.0
+            ):
+                raise RuntimeError("Canonical reaction KKT adjoint residual")
+            az, ae, ab = adj[:count], adj[count : count + matrix.shape[0]], adj[count + matrix.shape[0] :]
+            adj_matrix = np.outer(multiplier, az) - np.outer(ae, reaction - original)
+            adj_original = matrix.T @ ae
+            seeds = {
+                bounds: wp.array(-ab, dtype=wp.float64, device=device),
+                bound_gradient: wp.array(np.outer(mu, az), dtype=wp.float64, device=device),
+            }
+        local.zero()
+        seeds[D] = wp.array(adj_matrix, dtype=wp.float64, device=device)
+        seeds[x] = wp.array(adj_original, dtype=wp.float64, device=device)
+        local.backward(grads=seeds)
+        for source, direct, indirect in zip([*inputs, u, force], explicit, differentiands):
+            if source.requires_grad:
+                source.grad.assign(source.grad.numpy() + direct + indirect.grad.numpy())
+
+    outer.record_func(backward, [output, *[a for a in [*inputs, u, force] if a.requires_grad]])
+    return output
+
+
+def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False):
     device = inputs[0].device
     values = [a.numpy().copy() for a in inputs]
-    u_numpy, traction_numpy, compliance, info = solve_primal(values, compliance_scale, return_traction=True)
+    if integrated_force:
+        u_numpy, traction_numpy, compliance, info, _, _ = refine_geometry(
+            values,
+            np.zeros_like(values[0]),
+            np.zeros_like(values[1]),
+            compliance_scale,
+            integrated_force=True,
+        )
+    else:
+        u_numpy, traction_numpy, compliance, info = solve_primal(
+            values, compliance_scale, return_traction=True
+        )
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     traction = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     tape = wp._src.context.runtime.tape
@@ -317,14 +654,19 @@ def _solve_arrays(inputs, compliance_scale=1.0):
                 u.grad.numpy().ravel(),
                 traction.grad.numpy().ravel() / compliance,
                 closed=info.get("closed_linear_solution", False),
+                integrated_force=integrated_force,
             )
             for source, gradient in zip(inputs, gradients):
                 if source.requires_grad:
                     source.grad.assign(source.grad.numpy() + gradient)
 
         tape.record_func(backward, [u, traction, *[a for a in inputs if a.requires_grad]])
-    result, _, _ = _evaluate(inputs, u, traction, compliance)
-    return CohesiveStep(*result, u, info)
+    selected_traction = _canonical_output(
+        inputs, u, traction, compliance, info, integrated_force=integrated_force
+    )
+    result, _, _ = _evaluate(inputs, u, selected_traction, compliance, integrated_force=integrated_force)
+    result_type = CohesiveForceStep if integrated_force else CohesiveStep
+    return result_type(*result, u, info)
 
 
 @dataclass
@@ -336,6 +678,22 @@ class CohesiveStep:
     fracture: wp.array
     frame: wp.array
     surface_stress: wp.array
+    normal_gap: wp.array
+    displacement: wp.array
+    info: dict
+
+
+@dataclass
+class CohesiveForceStep:
+    """Integrated force [N] and surface moment [N m]; energy densities [J/m²]."""
+
+    gap: wp.array
+    force: wp.array
+    history: wp.array
+    storage: wp.array
+    fracture: wp.array
+    frame: wp.array
+    surface_moment: wp.array
     normal_gap: wp.array
     displacement: wp.array
     info: dict
@@ -354,6 +712,7 @@ def _validated_inputs(
     duration,
     *,
     compliance_scale=1.0,
+    integrated_force=False,
 ):
     """Solve one inertial interface update in float64.
 
@@ -416,11 +775,13 @@ def _validated_inputs(
     if (
         np.any(values[3] < 0)
         or np.any(values[4][:, :2] <= 0)
-        or np.any(values[7] <= 0)
+        or np.any(values[7] < 0 if integrated_force else values[7] <= 0)
         or values[8][0] <= 0
         or values[9][0] <= 0
     ):
-        raise ValueError("History must be nonnegative; material, area, mass and duration must be positive")
+        raise ValueError(
+            "History and integrated areas must be nonnegative; other physical scales must be positive"
+        )
     if np.any(np.linalg.norm(values[2], axis=1) == 0):
         raise ValueError("Reference normals must be nonzero")
     return inputs, values
@@ -455,3 +816,35 @@ def solve(
         compliance_scale=compliance_scale,
     )
     return _solve_arrays(inputs, compliance_scale)
+
+
+def solve_force(
+    free_gap,
+    free_frame,
+    reference_normal,
+    history,
+    material,
+    separation_map,
+    frame_map,
+    area,
+    particle_mass,
+    duration,
+    *,
+    compliance_scale=1.0,
+):
+    """Return equilibrium using integrated forces, including zero-area supports."""
+    inputs, _ = _validated_inputs(
+        free_gap,
+        free_frame,
+        reference_normal,
+        history,
+        material,
+        separation_map,
+        frame_map,
+        area,
+        particle_mass,
+        duration,
+        compliance_scale=compliance_scale,
+        integrated_force=True,
+    )
+    return _solve_arrays(inputs, compliance_scale, integrated_force=True)

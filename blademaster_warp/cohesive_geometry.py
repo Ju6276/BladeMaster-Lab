@@ -10,7 +10,14 @@ import numpy as np
 import warp as wp
 
 from ._cohesive_solve import refine_geometry
-from .differentiable_cohesive import CohesiveStep, _evaluate, _implicit_pullback, _validated_inputs
+from .differentiable_cohesive import (
+    CohesiveStep,
+    CohesiveForceStep,
+    _evaluate,
+    _implicit_pullback,
+    _validated_inputs,
+    _canonical_output,
+)
 
 
 EXTENDED = np.longdouble
@@ -105,7 +112,8 @@ def solve_geometry(
     particle_mass,
     duration,
     *,
-    compliance_scale=1.0
+    compliance_scale=1.0,
+    integrated_force=False
 ):
     inputs, values = _validated_inputs(
         geometry.gap,
@@ -119,9 +127,14 @@ def solve_geometry(
         particle_mass,
         duration,
         compliance_scale=compliance_scale,
+        integrated_force=integrated_force,
     )
     u_numpy, t_numpy, compliance, info, gap, frame = refine_geometry(
-        values, geometry.gap_remainder, geometry.frame_remainder, compliance_scale
+        values,
+        geometry.gap_remainder,
+        geometry.frame_remainder,
+        compliance_scale,
+        integrated_force=integrated_force,
     )
     device = geometry.gap.device
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
@@ -129,7 +142,7 @@ def solve_geometry(
     outer = wp._src.context.runtime.tape
     wp._src.context.runtime.tape = None
     try:
-        raw, _, _ = _evaluate(inputs, u, traction, compliance)
+        raw, _, _ = _evaluate(inputs, u, traction, compliance, integrated_force=integrated_force)
         result = [wp.array(a.numpy(), dtype=a.dtype, device=device, requires_grad=True) for a in raw]
     finally:
         wp._src.context.runtime.tape = outer
@@ -151,7 +164,12 @@ def solve_geometry(
             fixed_u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
             fixed_t = wp.array(t_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
             with wp.Tape() as local:
-                output, _, _ = _evaluate(clones, fixed_u, fixed_t, compliance)
+                selected_t = _canonical_output(
+                    clones, fixed_u, fixed_t, compliance, info, integrated_force=integrated_force
+                )
+                output, _, _ = _evaluate(
+                    clones, fixed_u, selected_t, compliance, integrated_force=integrated_force
+                )
             local.backward(
                 grads={
                     a: wp.array(b.grad.numpy(), dtype=a.dtype, device=device) for a, b in zip(output, result)
@@ -167,9 +185,11 @@ def solve_geometry(
                 (fixed_u.grad.numpy() + u.grad.numpy()).ravel(),
                 fixed_t.grad.numpy().ravel() / compliance,
                 closed=info.get("closed_linear_solution", False),
+                integrated_force=integrated_force,
             )
             for source, direct, indirect in zip(inputs, explicit, gradients):
                 _add_gradient(source, direct + indirect)
 
         outer.record_func(backward, [*result, u, *[a for a in inputs if a.requires_grad]])
-    return CohesiveStep(*result, u, info), updated
+    result_type = CohesiveForceStep if integrated_force else CohesiveStep
+    return result_type(*result, u, info), updated

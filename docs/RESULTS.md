@@ -1483,3 +1483,19 @@ RTX 4090，`95eaf2d`、dirty=true。积分总力局部核新增 **18** 项检查
 完全断裂后退刀的闭合投影失败：6/4 mm 追加的 **957/1572** 个退化积分点被零历史掩码当作完整约束，动能损失 **4.62607e-6/2.46949e-6 J**。局部总力核已令零面积保持自由运动；全局平衡、闭合投影与出生事件继续接入。
 
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_measure.py tests/test_cohesive_proximal.py -q`；`runs/e5_release_audit/zero_measure_opening.py`；`runs/e5_release_audit/zero_area_history_projection.py`。报告/日志位于 `runs/grid_update/{measure_proximal_unit.log,zero_measure_opening.json,zero_area_history_projection.json}`。提交前全量 `-m pytest tests -q` 为 **1270 passed、8 skipped、18 subtests passed**（357.68 s），日志 `measure_proximal_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：积分总力全局平衡与反力选择的伴随
+
+RTX 4090，`77d5721`、dirty=true。普通和补偿几何的总力接口接受零面积，输出积分力及积分面力矩；相关 **132 passed**（74.98 s）。覆盖正面积与牵引接口一致性、零面积自由运动、十类输入反向、面积单侧差分、冗余闭合/张开/混合状态的独立反力目标、压缩乘子非正及强度球边界。三种重复积分点的面积方向，AD 为 **8.4736433281/0.0066720124212/8.4113422350**，两档差分相对误差均 ≤**7.1e-10**。接触力尺度 **1e-9/1/1e3** 的普通/补偿接口共 **6** 例通过（1.80 s），含非零自由间隙方向导数。
+
+共用近端和反力代码修改前后的首阶 MUSL 对照为闭合承载、已有损伤、受载断裂三种 **160** 步轨迹。与 `77d5721` 的归一化状态差 ≤**6.006e-13**、能量差 ≤**8.882e-16 J**、外功差 ≤**5.422e-20 J**。两条轨迹均使用当前材料入口的牵引接口；总力形式的材料装配继续接入。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_force.py tests/test_differentiable_cohesive.py -q`；`-m pytest tests/test_cohesive_force.py -k nonpositive -q`；`runs/e5_release_audit/force_partition_adjoint.py`；`runs/e5_release_audit/force_solver_compare.py`。同一 `e5-grid-20261023` 工作树报告/日志为 `runs/grid_update/{force_global_unit7.log,force_scaled_constraint2.log,force_partition_adjoint3.log,force_compare160.json}`。
+
+提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1330 passed、8 skipped、18 subtests passed**（413.20 s），日志 `runs/grid_update/force_global_final_full.log`；新增 **60** 项总力及反力选择检查，8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：当前公式的 E3 四毫米完整轨迹
+
+干净 `ca90da9`，RTX 4090，4 mm、4892 粒子、1.05 s / 79800 步、G_c=70；dt/PIC 参考时间 13.157895 μs。三类刀路与 G_c 倍数各两档自然差分，共 **8** 组全部通过，最大相对误差 **0.0927014%**。32 步 CPU 检查点连续状态重算差 **0**；释放 **5** 粒子，峰值刀力 **11.4993 N**，CUDA 数组峰值 **5.6271 GiB**。
+
+独立正向 **701.26 s**，检查点正向/重算/反向 **732.55/770.44/300.66 s**；完整差分任务耗时 **14700.59 s**。命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py full_h4`，工作树 `~/Projects/BladeMaster-Warp-e3-current-20261022`，报告 `runs/e3_ca90da9/full_h4/report.json`。队列继续 6 mm 下刀与完整轨迹的步长细化。

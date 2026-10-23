@@ -228,7 +228,7 @@ G_c=7/70/700/1400 与三档步长的 50 ms 扫描已完成，报告在 `e5-trans
 
 E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20261022`，固定干净 `ca90da9`。启动命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/e3_queue.py`；状态 `runs/e3_ca90da9/status.json`，逐项日志和报告位于同目录。8 个队列项覆盖 6 mm 活跃释放完整 Tape、4 mm 活跃释放细化、6/4 mm 下刀和完整轨迹、6 mm 下刀与完整轨迹细化。6/4 mm 基准步长及 PIC 参考时间为 15.625/13.157895 μs，接触参考时间 25 μs；每次扰动自然重建事件，梯度保留 2% 标准，失败后队列停止并保留报告。细化报告的相邻梯度和状态趋势另行核对。
 
-`e3-current/runs/e3_ca90da9/release_h6/report.json` 已通过：12 组自然差分最大误差 0.61668%，4 个粒子释放，完整 Tape 与 16/32/128 步检查点状态重算差为 0。当前队列项为 `full_h4`。
+`e3-current/runs/e3_ca90da9/release_h6/report.json` 已通过：12 组自然差分最大误差 0.61668%，4 个粒子释放，完整 Tape 与 16/32/128 步检查点状态重算差为 0。当前队列项为 `cut_h6_refine`。
 
 `ca283ec` 修复内聚近端核在零开口、零历史边界的导数；7 项新增解析与单侧差分通过，全量 **1083 passed、8 skipped、18 subtests passed**（286.64 s）。当前统一界面原型工作树为 `~/Projects/BladeMaster-Warp-e5-unified-20261023`，原型 `runs/e5_release_audit/extrinsic_semismooth{,_adjoint,_probe,_validate}.py`；它用近端固定点方程连接零开口承载和张开后的移动面，16 组正向/分裂尺度和 40 类局部输入方向已通过，160 行差分保存在 `extrinsic_semismooth_validate.json`（a7df3f4、dirty=true，对应 ca283ec 源码）。该工作树已核对源码并固定干净 ca283ec；`extrinsic_unified_{surface,trajectory}.py` 接入连续粒子轨迹，包含原有 160 步正历史算例及零历史承载/起裂。自然界面生成、历史接入和完整能量扫描仍待完成。
 
@@ -267,7 +267,7 @@ E3 与 E4 并行复验的工作树为 `~/Projects/BladeMaster-Warp-e3-current-20
 
 下一项采用 Gauss 积分接自然参考面积/位置，加入永久界面历史、接触去重、RK2 事件分段和检查点，再复测完整能量扫描及受影响的 E1–E4。几何舍入余量接口为 `cohesive_geometry.InterfaceGeometry` 与 `solve_geometry`；主线自然切割当前使用原释放公式。Crook–Homel 作者 GEOS `feature/crook5/czUpdate` 分支 `e068c207` 的参考状态、节点面积、位移/力映射已核对，文件位于本机 `runs/reference_sources/GEOS/czUpdate/`，固定源码链接及本地推导见 METHOD。
 
-E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已完成 `three-cuts-push`，四项差分最大误差 **0.09468%**、32/127 步检查点状态差 **0**；最终 **380/346/302/424** 四块。当前 `ca90da9` 五种 E4 组合共 **20** 项差分全部通过。E3 的 `release_h4_refine` 已完成，12 组自然差分最大误差 **0.00043623%**、检查点状态差 **0**；三档侧码/释放/接触集合相同。深度梯度相邻变化 **0.24505%/0.27433%**，补充更细步长和事件相位核对；6 mm、0.24 s 下刀已完成，四组自然差分最大误差 **0.0224614%**、32 步检查点状态重算差 **0**；4 mm 下刀已完成十组自然差分，最大误差 **0.37406%**、32/128 步检查点状态差 **0**；6 mm、1.05 s 完整轨迹八组差分已通过，最大误差 **0.0668341%**，16/32/128 步检查点状态差 **0**；队列已进入 `full_h4`。
+E4 当前 `ca90da9` 平行两刀已通过，报告 `runs/e4_ca90da9/two-cuts/report.json`；四项自然差分最大 **0.07879%**、32/127 步检查点状态差 **0**，最终 **380/648/424** 三块，暂停损伤增量 **0**。`continue_cases.py` 已完成 `three-cuts-push`，四项差分最大误差 **0.09468%**、32/127 步检查点状态差 **0**；最终 **380/346/302/424** 四块。当前 `ca90da9` 五种 E4 组合共 **20** 项差分全部通过。E3 的 `release_h4_refine` 已完成，12 组自然差分最大误差 **0.00043623%**、检查点状态差 **0**；三档侧码/释放/接触集合相同。深度梯度相邻变化 **0.24505%/0.27433%**，补充更细步长和事件相位核对；6 mm、0.24 s 下刀已完成，四组自然差分最大误差 **0.0224614%**、32 步检查点状态重算差 **0**；4 mm 下刀已完成十组自然差分，最大误差 **0.37406%**、32/128 步检查点状态差 **0**；6 mm、1.05 s 完整轨迹八组差分已通过，最大误差 **0.0668341%**，16/32/128 步检查点状态差 **0**；4 mm、1.05 s 完整轨迹八组差分通过，最大误差 **0.0927014%**，32 步检查点状态差 **0**，释放 **5** 粒子；队列已进入 `cut_h6_refine`，随后运行 `full_h6_refine`。
 
 补偿几何接口在 `e5-interface-20261023` 的 `b7048c7`、dirty=true 源码上完成 **23** 项局部测试（14.83 s），包括 11 步界面轨迹的 3/4 步检查点状态与梯度对照；全量 **1112 passed、8 skipped、18 subtests passed**（287.52 s）。日志为 `runs/interface_precision/{unit,full}.log`。三种 160 步实际 TLMPM 轨迹与扩展精度原型的归一化状态差 ≤**7.661e-15**，报告 `compare160.json`。初速度两档小扰动误差 **6.42872e-6/9.62676e-8**，报告 `velocity160.json`；其余七类输入也已全部通过原标准，最差第二档 **1.39787e-6**，报告 `remaining160.json`；该工作树已同步至干净 `f507dc0`。主线的自然参考面、永久历史、接触去重及 RK2 接入仍待完成。
 
@@ -299,4 +299,8 @@ E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-2026
 
 提交前全量 `measure_proximal_full.log` 为 **1270 passed、8 skipped、18 subtests passed**（357.68 s）。
 
+积分总力全局入口 `solve_force` 与 `solve_geometry(..., integrated_force=True)` 共用当前半光滑方程，含零面积、扩展精度残差细化和反力选择的 VJP。`force_global_unit7.log` 为 **132 passed**（74.98 s）；补充 **6** 例载荷尺度检查通过（1.80 s），日志 `force_scaled_constraint2.log`。`force_compare160.json` 比较共用代码更新前后的首阶轨迹，三种 160 步状态归一化差 ≤**6.006e-13**、能量差 ≤**8.882e-16 J**。下一项在 `cohesive_grid_update.advance_material` 连接总力接口与正面积闭合掩码，同时处理 `ReferenceSurface.quadrature` 的退化片舍入，保留其面积导数；随后接自然双侧码、接触去重及 RK2 分段。
+
 插入失败对照位于 `e5-interface-20261023/runs/interface_insertion/patch.json`：平移在 1.096e-23～4.386e-23 m 的间隙舍入处触发半光滑线搜索失败；刚体旋转 dt=2 μs 的假断裂耗散为 6.240e-6 J。该对照对应 `b7048c7`、dirty=true 的 `f507dc0` 源码。入口 `runs/e5_release_audit/extrinsic_insertion_patch.py`。
+
+积分总力全局接口提交前全量 `force_global_final_full.log` 为 **1330 passed、8 skipped、18 subtests passed**（413.20 s）；新增 60 项检查。

@@ -68,7 +68,7 @@ def fixture(scenario, seed=99731):
 
 
 def outputs(result):
-    return [getattr(result, field.name) for field in fields(result) if field.name != "info"]
+    return [value for field in fields(result) if isinstance(value := getattr(result, field.name), wp.array)]
 
 
 @pytest.mark.parametrize("interface_solver", [solve, solve_compensated])

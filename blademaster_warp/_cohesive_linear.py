@@ -1,12 +1,48 @@
 """Eliminate local reaction blocks and retain their exact constraint nullspaces."""
 
 import numpy as np
+from scipy.linalg import qr
 
 
 def _rank(singular, shape):
     if not len(singular):
         return 0
     return np.count_nonzero(singular > singular[0] * max(shape) * np.finfo(float).eps)
+
+
+def _orthogonal_columns(vectors):
+    vectors = np.asarray(vectors, dtype=np.longdouble)
+    basis = np.zeros_like(vectors)
+    triangular = np.zeros((vectors.shape[1], vectors.shape[1]), dtype=np.longdouble)
+    for j in range(vectors.shape[1]):
+        vector = vectors[:, j].copy()
+        for _ in range(2):
+            coefficient = basis[:, :j].T @ vector
+            vector -= basis[:, :j] @ coefficient
+            triangular[:j, j] += coefficient
+        length = np.sqrt(np.sum(vector * vector))
+        if length == 0.0:
+            raise RuntimeError("Selected constraint directions lost rank")
+        triangular[j, j] = length
+        basis[:, j] = vector / length
+    return basis, triangular
+
+
+def minimum_norm(matrix, rhs):
+    """Retain row-space orthogonality as well as the least-squares residual."""
+    matrix = np.asarray(matrix, dtype=np.longdouble)
+    rhs = np.asarray(rhs, dtype=np.longdouble)
+    singular = np.linalg.svd(matrix.astype(float), compute_uv=False)
+    rank = _rank(singular, matrix.shape)
+    if rank == 0:
+        return np.zeros((matrix.shape[1], *rhs.shape[1:]), dtype=np.longdouble)
+    selected = qr(matrix.astype(float).T, mode="economic", pivoting=True)[2][:rank]
+    basis, _ = _orthogonal_columns(matrix[selected].T)
+    left, triangular = _orthogonal_columns(matrix @ basis)
+    solution = left.T @ rhs
+    for j in range(rank - 1, -1, -1):
+        solution[j] = (solution[j] - triangular[j, j + 1 :] @ solution[j + 1 :]) / triangular[j, j]
+    return basis @ solution
 
 
 def _block_step(matrix, rhs, size):

@@ -4,7 +4,7 @@ import numpy as np
 from scipy.optimize import least_squares, minimize
 
 from ._cohesive_initial import fixed_normal_initial
-from ._cohesive_linear import solve_blocks
+from ._cohesive_linear import minimum_norm, solve_blocks
 from .reference_inertia import apply_inertia, solve_inertia, solve_reduced
 
 
@@ -271,6 +271,7 @@ def _solve_primal(
         closed = _closed_increment(values, None, inertia=inertia)
         if closed is not None:
             candidate_u, candidate_t, info, _, _ = closed
+            candidate_u = candidate_u.astype(float)
             if not integrated_force:
                 candidate_t = candidate_t / area[:, None]
             return candidate_u, candidate_t if return_traction else compliance * candidate_t, compliance, info
@@ -601,7 +602,7 @@ def _closed_increment(values, motion, *, inertia=None):
         closed=int(np.count_nonzero(support)),
         compressed=int(np.count_nonzero(component < 0)),
     )
-    return u.astype(float), force.astype(float), info, gap, frame
+    return u, force.astype(float), info, gap, frame
 
 
 def refine_geometry(
@@ -643,26 +644,12 @@ def refine_geometry(
         coefficient = mass[0] / dt[0] ** 2
         support = area > 0.0 if integrated_force else np.ones(len(q), dtype=bool)
         active_b = b[support]
-        motion, _, reaction_rank, _ = np.linalg.lstsq(
-            active_b.astype(float), q[support].astype(float), rcond=None
-        )
-        u = -motion.astype(np.longdouble)
-        for _ in range(8):
-            residual = -q[support] - active_b @ u
-            u += np.linalg.lstsq(active_b.astype(float), residual.astype(float), rcond=None)[0]
-        reaction = np.linalg.lstsq(active_b.T.astype(float), -u.astype(float), rcond=None)[0]
+        _, _, reaction_rank, _ = np.linalg.lstsq(active_b.astype(float), q[support].astype(float), rcond=None)
+        u = -minimum_norm(active_b, q[support])
+        reaction = minimum_norm(active_b.T, -u)
         root_area = np.sqrt(area)
         weighted = b.T * root_area[None, :]
-        if integrated_force:
-            pressure = np.zeros_like(seed_t, dtype=np.longdouble)
-            pressure[support] = seed_t[support].astype(np.longdouble) / (
-                coefficient * root_area[support, None]
-            )
-        else:
-            pressure = seed_t.astype(np.longdouble) * root_area[:, None] / coefficient
-        for _ in range(8):
-            residual = -u - weighted @ pressure
-            pressure += np.linalg.lstsq(weighted.astype(float), residual.astype(float), rcond=None)[0]
+        pressure = minimum_norm(weighted, -u)
         if integrated_force:
             traction = coefficient * pressure * root_area[:, None]
             if reaction_rank == len(active_b):
@@ -686,7 +673,7 @@ def refine_geometry(
         ):
             info["extended_residual"] = error / float(np.min(2 * material[:, 1] / material[:, 0]))
             gap[support] = 0.0
-            return u.astype(float), traction.astype(float), seed_compliance, info, gap, frame
+            return u, traction.astype(float), seed_compliance, info, gap, frame
     info["closed_linear_solution"] = False
     base_compliance = setup(values, integrated_force=integrated_force, inertia=inertia)[2]
     at, basis, compliance, length = setup(
@@ -719,4 +706,4 @@ def refine_geometry(
     )
     info["extended_residual"] = error
     frame = precise[1] + np.einsum("pa,qpb->qab", precise_u, precise[6])
-    return u, traction, compliance, info, response["proximal_gap"], frame
+    return precise_u, traction, compliance, info, response["proximal_gap"], frame

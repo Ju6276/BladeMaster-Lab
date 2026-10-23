@@ -22,7 +22,7 @@ def force_solver(request):
 
 
 def outputs(result):
-    return [getattr(result, f.name) for f in fields(result) if f.name != "info"]
+    return [value for field in fields(result) if isinstance(value := getattr(result, field.name), wp.array)]
 
 
 @pytest.mark.parametrize("scenario", ["closed", "opening", "mixed", "opened"])

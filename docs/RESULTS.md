@@ -1726,3 +1726,13 @@ RTX 4090，`f555c3f`、dirty=true。`CompensatedArray` 保存高位/余量、线
 正式代码的解析检查覆盖 **2⁸⁰** 相消余量、**2⁻¹⁰²⁰/2¹⁰²⁰** 输入的乘积、90 位 Decimal 独立惯性解、零率导数和状态重启。全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1599 passed、8 skipped、18 subtests passed**（712.26 s），日志 `runs/grid_update/compensated_state_full.log`；8 项跳过为 CRESSim 上游构建。
 
 局部基底构造、残差和 Jacobian 全部使用两分量算术的原型，通过 **10** 组分支、**16** 组参数方向及两阶段 **6/6** 组差分。时长三档误差 **1.989e-6/1.994e-6/1.994e-6**，历史 **1.039e-6/2.998e-9/9.750e-10**；反力与独立参考差 **1.085e-19 N**。命令 `runs/e5_release_audit/paired_equilibrium_branches.py`、`paired_equilibrium_fd.py`，报告为 `runs/grid_update/` 下同名 JSON。阶段速度副本仍由 55 位对照传递；下一项将局部求解及位移余量纳入正式阶段状态，并核对重复/零面积约束与塑性。
+
+## 2026-10-23：局部位移余量和最小范数条件
+
+RTX 4090，`95efe9d`、dirty=true。界面响应新增 `displacement_state`，保留局部细化位移的低位并进入 `CompensatedArray` 增量、快照及反向链。D=I 时的闭合位移采用扩展精度行空间再正交化；解析两粒子例原高位误差 **1.059e-22 m**，修复后 **2⁻⁸¹ m** 余量及两档总间隙差分通过。新增 **8 passed**（0.61 s），相关约束／惯性／梯度 **55 passed**（26.10 s）。命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_displacement_precision.py -q`；相关组合加 `tests/test_cohesive_linear.py tests/test_cohesive_closed_motion.py tests/test_reference_inertia.py`。日志 `runs/grid_update/displacement_precision_{final_unit,qr_unit}.log`。
+
+`95efe9d`、dirty=false 的两分量非线性原型重复约束检查为 **42 passed、1 failed**（71.31 s，遇首个失败停止）。失败位于三条相关接触约束：三档载荷的浮点自由间隙兼容残差为 **−4.930e-32/5.294e-23/5.421e-20 m**；70 位互补解在后两档选择另一接触集合。保留自由间隙余量的三档反力及六组面积差分通过原标准。命令 `runs/e5_release_audit/constrained_pair_tests.py`、`constrained_contact_case.py`、`constrained_contact_compensated.py`；日志 `runs/grid_update/constrained_pair_newton_tests.log`、`constrained_contact_compensated.log`。下一项保持切面运动的几何关系，处理非线性求解中的接触集合切换，再连接完整阶段状态。
+
+70 位独立接触对照，在相关约束的自由间隙增加 **±2⁻⁸⁰ m**，活跃集合分别为 `{0,1}` 和 `{1,2}`。单点反力差 **0.002 N**，粒子合力差 **1.379e-19 N**，位移差 **5.515e-25 m**；两侧动量残差为 0。命令 `runs/e5_release_audit/contact_boundary_reference.py`，报告 `runs/grid_update/contact_boundary_reference.json`（`95efe9d`、dirty=true）。下一项在保留几何关系的状态参数化下核对冗余反力梯度，并对独立间隙引起的接触切换核对单侧响应及集合重建。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1607 passed、8 skipped、18 subtests passed**（707.95 s），日志 `runs/grid_update/displacement_precision_full.log`。8 项跳过为 CRESSim 上游构建。

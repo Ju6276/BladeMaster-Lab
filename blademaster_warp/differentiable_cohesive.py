@@ -17,6 +17,7 @@ from .cohesive import (
     surface_normal_pullback,
 )
 from .precision import launch_double
+from .compensated_state import CompensatedArray
 from ._cohesive_solve import geometry, shared_intact_rows, solve_primal, refine_geometry
 
 
@@ -706,7 +707,7 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inert
     device = inputs[0].device
     values = [a.numpy().copy() for a in inputs]
     if integrated_force:
-        u_numpy, traction_numpy, compliance, info, _, _ = refine_geometry(
+        precise_u, traction_numpy, compliance, info, _, _ = refine_geometry(
             values,
             np.zeros_like(values[0]),
             np.zeros_like(values[1]),
@@ -714,10 +715,13 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inert
             integrated_force=True,
             inertia=inertia,
         )
+        u_numpy = precise_u.astype(float)
+        displacement_remainder = (precise_u - u_numpy).astype(float)
     else:
         u_numpy, traction_numpy, compliance, info = solve_primal(
             values, compliance_scale, return_traction=True, inertia=inertia
         )
+        displacement_remainder = None
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     traction = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     sources = inputs + ([] if inertia is None else inertia.parameters)
@@ -752,11 +756,17 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inert
     )
     result, _, _ = _evaluate(inputs, u, selected_traction, compliance, integrated_force=integrated_force)
     result_type = CohesiveForceStep if integrated_force else CohesiveStep
-    return result_type(*result, u, info)
+    return result_type(*result, u, info, displacement_remainder)
+
+
+class _CompensatedDisplacement:
+    @property
+    def displacement_state(self):
+        return CompensatedArray(self.displacement, self.displacement_remainder)
 
 
 @dataclass
-class CohesiveStep:
+class CohesiveStep(_CompensatedDisplacement):
     gap: wp.array
     traction: wp.array
     history: wp.array
@@ -767,10 +777,11 @@ class CohesiveStep:
     normal_gap: wp.array
     displacement: wp.array
     info: dict
+    displacement_remainder: np.ndarray | None = None
 
 
 @dataclass
-class CohesiveForceStep:
+class CohesiveForceStep(_CompensatedDisplacement):
     """Integrated force [N] and surface moment [N m]; energy densities [J/m²]."""
 
     gap: wp.array
@@ -783,6 +794,7 @@ class CohesiveForceStep:
     normal_gap: wp.array
     displacement: wp.array
     info: dict
+    displacement_remainder: np.ndarray | None = None
 
 
 def _validated_inputs(

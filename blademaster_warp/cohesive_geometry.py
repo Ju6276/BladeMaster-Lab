@@ -175,7 +175,7 @@ def solve_geometry(
         inertia=inertia,
         integrated_force=integrated_force,
     )
-    u_numpy, t_numpy, compliance, info, gap, frame = refine_geometry(
+    precise_u, t_numpy, compliance, info, gap, frame = refine_geometry(
         values,
         geometry.gap_remainder,
         geometry.frame_remainder,
@@ -184,6 +184,8 @@ def solve_geometry(
         closed_motion=closed_motion,
         inertia=inertia,
     )
+    u_numpy = precise_u.astype(float)
+    displacement_remainder = (precise_u - u_numpy).astype(float)
     device = geometry.gap.device
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     traction = wp.array(t_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
@@ -248,4 +250,4 @@ def solve_geometry(
 
         outer.record_func(backward, [*result, u, *[a for a in sources if a.requires_grad]])
     result_type = CohesiveForceStep if integrated_force else CohesiveStep
-    return result_type(*result, u, info), updated
+    return result_type(*result, u, info, displacement_remainder), updated

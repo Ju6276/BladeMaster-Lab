@@ -1411,3 +1411,11 @@ RTX 4090，`0447687`、dirty=true。`reference_surface.swept_edge`、`ReferenceS
 命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_reference_surface.py tests/test_reference_cut.py tests/test_reference_clip.py tests/test_blade_quadrature.py -q`；`OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/reference_surface_measure.py`。工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，日志与报告 `runs/grid_update/reference_surface_{unit.log,measure.json}`。
 
 提交前全量 **1176 passed、8 skipped、18 subtests passed**（334.29 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/reference_surface_full.log`。
+
+## 2026-10-23：闭合界面的小面积伴随
+
+RTX 4090，`4646fa0`、dirty=true。闭合约束直接使用固定秩伪逆 VJP，面积从 **4e-6** 缩小到 **4e-14 m²** 时，闭合位移的面积导数误差为 **0**；相同最小面积下，基线通用伴随的绝对误差为 **7.45058e-8 m/m²**。解析受压小例的总反力始终为 **−2.5 N**、单侧位移 **−10 μm**，压力随面积倒数变化；张开与卸载总力随面积减小趋零。四种状态、五档面积共 **20** 例，最大开口/总力误差 **3.389e-21 m / 4.962e-16 N**。零面积处的约束集合继续与自然插入核对。
+
+界面测试 **38 passed**（16.76 s），覆盖十类输入差分、重复积分点、检查点、12 例小面积解析导数及三例损伤历史单侧导数。命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_differentiable_cohesive.py -q`；`runs/e5_release_audit/cohesive_area_analytic.py`。日志/报告在 `e5-grid-20261023/runs/grid_update/{closed_adjoint_final_unit.log,cohesive_area_analytic.json}`。
+
+提交前全量 **1191 passed、8 skipped、18 subtests passed**（352.79 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/closed_adjoint_full.log`。

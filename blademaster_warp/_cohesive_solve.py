@@ -378,6 +378,7 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False):
                     iterations=0,
                     initial_evaluations=0,
                     initializer="closed_linear",
+                    closed_linear_solution=True,
                     residual=error,
                     closed=count,
                     compressed=int(np.count_nonzero(component < 0)),
@@ -547,6 +548,7 @@ def refine_geometry(values, gap_remainder, frame_remainder, compliance_factor=1.
         ):
             info["extended_residual"] = error / float(np.min(2 * material[:, 1] / material[:, 0]))
             return u.astype(float), traction.astype(float), seed_compliance, info, np.zeros_like(q), frame
+    info["closed_linear_solution"] = False
     at, basis, compliance, length = setup(precise, compliance_factor, extended=True)
     basis = basis.astype(np.longdouble)
     size = basis.shape[1]

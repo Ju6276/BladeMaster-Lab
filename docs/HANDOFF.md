@@ -283,4 +283,6 @@ E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-2026
 
 累计参考切面入口为 `reference_surface.swept_edge`，面积扣除为 `ReferenceSurface.subtract`，同一工作树的 `reference_surface_unit.log` 为 **41 passed**（9.08 s）；提交前全量 **1176 passed、8 skipped、18 subtests passed**（334.29 s），日志 `reference_surface_full.log`。`reference_surface_measure.json` 中旋转刀刃空间/时间共同细化误差为 **7.57245e-4/1.90330e-4/4.76464e-5**；退刀重入的累计面积为 **2.22e-5/6.66e-5/6.66e-5/8.14e-5 m²**。旧前沿落在粒子域边界处的面积导数已核对。零测度边界片保留有向面积导数，最小浮点权重 **−5.482e-22 m²**；下一项核对其物理装配零面积极限，再接永久损伤状态、接触去重和 RK2 事件推进。
 
+`differentiable_cohesive._closed_pullback` 对闭合线性约束及所选反力直接求固定秩导数，保留 κ=0 的历史单侧导数。`closed_adjoint_final_unit.log` 为 **38 passed**（16.76 s），全量 `closed_adjoint_full.log` 为 **1191 passed、8 skipped、18 subtests passed**（352.79 s）。`cohesive_area_analytic.json` 的四种状态、五档面积共 **20** 例符合解析解。受压总反力在 A→0 时保持有限，张开和卸载总力趋零；下一步在实际自然分侧状态下核对约束建立、零面积积分项和永久历史。
+
 插入失败对照位于 `e5-interface-20261023/runs/interface_insertion/patch.json`：平移在 1.096e-23～4.386e-23 m 的间隙舍入处触发半光滑线搜索失败；刚体旋转 dt=2 μs 的假断裂耗散为 6.240e-6 J。该对照对应 `b7048c7`、dirty=true 的 `f507dc0` 源码。入口 `runs/e5_release_audit/extrinsic_insertion_patch.py`。

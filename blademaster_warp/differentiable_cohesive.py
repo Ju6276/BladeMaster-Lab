@@ -158,7 +158,57 @@ def _evaluate(inputs, u, traction, compliance):
     return (result, Ru, Rg)
 
 
-def _implicit_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t):
+def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t):
+    """Differentiate the fixed-rank closed constraint and its selected reaction."""
+    q, _, _, _, _, b, _, area, mass, dt = values
+    coefficient = mass[0] / dt[0] ** 2
+    mobility = b @ b.T
+    inverse = np.linalg.pinv(mobility, rcond=max(mobility.shape) * np.finfo(float).eps, hermitian=True)
+    reaction = area[:, None] * traction_numpy / coefficient
+    seed_u = rhs_u.reshape(u_numpy.shape)
+    seed_t = rhs_t.reshape(traction_numpy.shape)
+    seed_reaction = -b @ seed_u + coefficient * seed_t / area[:, None]
+    adj_q = inverse @ seed_reaction
+    null = np.eye(len(q)) - mobility @ inverse
+    adj_mobility = -adj_q @ reaction.T
+    adj_mobility += (inverse @ inverse @ seed_reaction) @ (null @ q).T
+    adj_mobility += (null @ seed_reaction) @ (inverse @ reaction).T
+    gradients = [np.zeros_like(value) for value in values]
+    gradients[0] = adj_q
+    gradients[5] = -reaction @ seed_u.T + (adj_mobility + adj_mobility.T) @ b
+    gradients[7] = -np.sum(seed_t * traction_numpy, axis=1) / area
+    adj_coefficient = np.sum(seed_t * reaction / area[:, None])
+    gradients[8][0] = adj_coefficient / dt[0] ** 2
+    gradients[9][0] = -2 * adj_coefficient * coefficient / dt[0]
+
+    # Positive prior damage can open a currently closed interface. Retain that
+    # one-sided history derivative from the same proximal residual as the solve.
+    if inputs[3].requires_grad:
+        device = inputs[0].device
+        clones = [
+            wp.array(value, dtype=source.dtype, device=device, requires_grad=True)
+            for value, source in zip(values, inputs)
+        ]
+        fixed_u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
+        fixed_t = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
+        momentum_dual = seed_u + b.T @ adj_q
+        with wp.Tape() as local:
+            _, Ru, Rg = _evaluate(clones, fixed_u, fixed_t, compliance)
+        local.backward(
+            grads={
+                Ru: wp.array(-momentum_dual, dtype=wp.vec3d, device=device),
+                Rg: wp.array(adj_q, dtype=wp.vec3d, device=device),
+            }
+        )
+        gradients[3] = clones[3].grad.numpy().copy()
+    return gradients
+
+
+def _implicit_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t, *, closed=False):
+    if closed:
+        return _closed_pullback(
+            inputs, values, u_numpy, traction_numpy, compliance, rhs_u, compliance * rhs_t
+        )
     device = inputs[0].device
 
     def array(value, vector=False, grad=False):
@@ -229,6 +279,7 @@ def _solve_arrays(inputs, compliance_scale=1.0):
                 compliance,
                 u.grad.numpy().ravel(),
                 traction.grad.numpy().ravel() / compliance,
+                closed=info.get("closed_linear_solution", False),
             )
             for source, gradient in zip(inputs, gradients):
                 if source.requires_grad:

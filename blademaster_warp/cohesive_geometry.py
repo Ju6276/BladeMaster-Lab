@@ -166,6 +166,7 @@ def solve_geometry(
                 compliance,
                 (fixed_u.grad.numpy() + u.grad.numpy()).ravel(),
                 fixed_t.grad.numpy().ravel() / compliance,
+                closed=info.get("closed_linear_solution", False),
             )
             for source, direct, indirect in zip(inputs, explicit, gradients):
                 _add_gradient(source, direct + indirect)

@@ -206,6 +206,88 @@ def test_redundant_quadrature_preserves_physical_adjoint(scenario, interface_sol
         np.testing.assert_allclose(base, duplicate, rtol=1e-8, atol=1e-10 * scale, err_msg=str(index))
 
 
+def closed_pair(area, free_gap):
+    return [
+        np.array([free_gap]),
+        np.eye(3)[None],
+        np.array([[1.0, 0.0, 0.0]]),
+        np.zeros(1),
+        np.array([[5e4, 70.0, 0.0]]),
+        np.array([[-1.0, 1.0]]),
+        np.zeros((1, 2, 3)),
+        np.array([area]),
+        np.array([1e-4]),
+        np.array([2e-5]),
+    ]
+
+
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
+@pytest.mark.parametrize("ratio", [1.0, 1e-4, 1e-8])
+@pytest.mark.parametrize("mode", ["compression", "tension"])
+def test_closed_area_limit_retains_displacement_and_pressure_derivatives(interface_solver, ratio, mode):
+    area = 4e-6 * ratio
+    free = -2e-5 if mode == "compression" else 0.4 * (2 * 2e-5**2 / 1e-4) * area * 5e4
+    values = closed_pair(area, [free, 0.0, 0.0])
+    sources = arrays(values)
+    with wp.Tape() as tape:
+        result = interface_solver(*sources)
+    coefficient = values[8][0] / values[9][0] ** 2
+    pressure = coefficient * free / (2 * area)
+    np.testing.assert_array_equal(result.gap.numpy(), 0.0)
+    np.testing.assert_allclose(result.displacement.numpy()[:, 0], [free / 2, -free / 2], rtol=1e-14)
+    np.testing.assert_allclose(result.traction.numpy()[0, 0], pressure, rtol=1e-14)
+    tape.backward(grads={result.displacement: wp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=wp.vec3d)})
+    np.testing.assert_array_equal(sources[7].grad.numpy(), 0.0)
+    np.testing.assert_array_equal(sources[8].grad.numpy(), 0.0)
+    np.testing.assert_array_equal(sources[9].grad.numpy(), 0.0)
+    np.testing.assert_allclose(sources[0].grad.numpy()[0, 0], 0.5, rtol=1e-14)
+    tape.zero()
+    tape.backward(grads={result.traction: wp.array([[area, 0.0, 0.0]], dtype=wp.vec3d)})
+    np.testing.assert_allclose(sources[7].grad.numpy()[0], -pressure, rtol=1e-14)
+    np.testing.assert_allclose(sources[8].grad.numpy()[0], free / (2 * values[9][0] ** 2), rtol=1e-14)
+    np.testing.assert_allclose(sources[9].grad.numpy()[0], -coefficient * free / values[9][0], rtol=1e-14)
+
+
+@pytest.mark.parametrize("interface_solver", [solve, solve_compensated])
+def test_closed_branch_keeps_one_sided_damage_memory_derivative(interface_solver):
+    values = closed_pair(4e-6, [-2e-5, 6.4e-7, 0.0])
+    sources = arrays(values)
+    with wp.Tape() as tape:
+        result = interface_solver(*sources)
+    tape.backward(grads={result.displacement: wp.array([[0.0, 1.0, 0.0], [0.0, 0.0, 0.0]], dtype=wp.vec3d)})
+    derivative = sources[3].grad.numpy()[0]
+    np.testing.assert_allclose(derivative, -0.2, rtol=1e-12)
+    for epsilon in [1e-11, 1e-12]:
+        sources[3].assign(np.array([epsilon]))
+        trial = interface_solver(*sources)
+        difference = (trial.displacement.numpy()[0, 1] - result.displacement.numpy()[0, 1]) / epsilon
+        np.testing.assert_allclose(derivative, difference, rtol=2e-5, atol=1e-9)
+
+
+def test_closed_moving_interface_history_derivative():
+    rng = np.random.default_rng(411)
+    values = fixture("closed")
+    sources = arrays(values)
+    with wp.Tape() as tape:
+        result = solve_compensated(*sources)
+    target = outputs(result)
+    scales = [0.0028, 5e4, 0.0028, 70.0, 70.0, 1.0, 70.0, 0.0028, 0.0028]
+    seeds = [rng.normal(size=a.numpy().shape) / scale for a, scale in zip(target, scales)]
+    tape.backward(grads={a: wp.array(seed, dtype=a.dtype) for a, seed in zip(target, seeds)})
+    direction = rng.uniform(0.5, 1.0, 3) * 1e-6
+    derivative = np.dot(sources[3].grad.numpy(), direction)
+    errors = []
+    for epsilon in [1e-5, 1e-6, 1e-7]:
+        sources[3].assign(epsilon * direction)
+        trial = solve_compensated(*sources)
+        difference = (
+            sum(np.sum(seed * (b.numpy() - a.numpy())) for a, b, seed in zip(target, outputs(trial), seeds))
+            / epsilon
+        )
+        errors.append(abs(derivative - difference) / max(abs(derivative), abs(difference), 1e-12))
+    assert sum(error <= 2e-5 for error in errors) >= 2, (derivative, errors)
+
+
 def test_compensated_geometry_advection_and_snapshot():
     rng = np.random.default_rng(872)
     values = fixture("opened")

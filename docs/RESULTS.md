@@ -1584,3 +1584,20 @@ RTX 4090，`1664492`、dirty=true。自适应固定法向初值、移动法向�
 闭合承载、G_c=7/70 受载断裂、已有损伤四组 200 μs 材料轨迹共 **12** 例能量检查通过；dt=2/1/0.5 μs 的残差随步长减半约减半，最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**。闭合例开口及损伤为 **0**，完全断裂耗散 **0.001008/0.01008 J=G_c A₀**。
 
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_initial.py tests/test_cohesive_linear.py tests/test_differentiable_cohesive.py tests/test_cohesive_force.py tests/test_cohesive_grid_update.py -q`；`runs/e5_release_audit/natural_generic_validate.py`；`runs/e5_release_audit/natural_generic_material.py`；`runs/e5_release_audit/adaptive_energy.py`。报告/日志在 `e5-grid-20261023/runs/grid_update/`，对应 `adaptive_general_unit3`、`natural_generic_validate`、`natural_generic_material`、`adaptive_general_energy`。提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1483 passed、8 skipped、18 subtests passed**（519.75 s），日志 `adaptive_general_full.log`。下一项连接自然分段、接触去重和永久历史，再完成整体能量扫描及受影响的 E1–E4 复验。
+
+
+## 2026-10-23：当前公式的 E3 完整轨迹步长细化
+
+RTX 4090，干净 `ca90da9`，命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py full_h6_refine`。6 mm、1.05 s、15.625/7.8125/3.90625 μs 三档的 128 步检查点状态重算差均为 **0**；最细相邻位置最大差 **17.426 nm**，三项刀路梯度差 **0.010024%/0.080899%/0.133284%**。侧码、接触对与事件集合一致，事件时刻差 **23.994 ns**，三档均未达到损伤释放。报告 `e3-current-20261022/runs/e3_ca90da9/full_h6_refine/report.json`；4 mm 活跃释放继续 dt/8、dt/16 细化。
+
+## 2026-10-23：移动界面速度冲量与分阶段原型
+
+RTX 4090，`7c9c470`、dirty=true。新增 **20** 项碰撞检查通过（0.93 s），覆盖不等质量、同时接触、重复/零/分离约束、1e-8～1e8 行缩放、动量/动能损失、移动法向及两档输入差分。正式速度投影接入平面碰撞原型后，7/16/32/64 步均得到 **115 μs** 事件时刻，动量差 **0**，动能损失 **1.333333e-5 J** 与解析值一致；位置、速度、质量、法向及总时长共十组差分最大相对误差 **2.539e-7**。
+
+`7c9c470`、dirty=false 的 ARS 材料原型：闭合/已有损伤/受载开裂三类各 8 步，29 个输入方向共 **58** 组差分完成；非零导数最大相对误差 **2.392e-6**，零导数最大绝对差 **1.241e-10**。32 μs、dt=2/1/0.5 μs 的九例能量残差均随步长减小，闭合开口及历史为 **0**。已有损伤的速度相邻差 **6.796e-8→1.699e-8 m/s**；受载开裂相邻差 **0.002365→0.001076 m/s**，继续核对起裂事件。解析受载双点例在 8/16/32/64/128 步下速度误差 **1.0298e-4→4.0307e-7 m/s**，每次细化约缩小四倍。粒子算例去掉初始旋转时也呈二阶收敛；原旋转场经当前分侧网格映射后产生 **0.225/0.09 m/s** 切向速度差。继续核对仿射运动重现和出生时刻的速度相容性，分阶段推进及自然碰撞连接仍在原型中。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_impact.py -q`；`runs/e5_release_audit/cohesive_impact_probe.py`；`runs/e5_release_audit/cohesive_ars_material.py`；`runs/e5_release_audit/cohesive_ars_material_grad.py`。报告/日志在 `e5-grid-20261023/runs/grid_update/`，对应 `impact_tests`、`cohesive_impact_probe`、`cohesive_ars_material`、`cohesive_ars_material_grad`。
+
+刚体旋转检查失败：dt=2 μs、32 μs 轨迹产生 **1.5471 μm** 损伤历史；dt=1 μs 在第 28 步反力选择报约束不相容。纯旋转经原型的分侧速度映射产生非零切向跳量，下一项核对仿射重现和界面速度/功的共同映射。命令为 `runs/e5_release_audit/cohesive_ars_rigid.py`，报告及复现输入为 `cohesive_ars_rigid.json`、`ars_rigid_failure.npz`。
+
+提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1503 passed、8 skipped、18 subtests passed**（454.94 s），日志 `runs/grid_update/impact_full.log`；8 项跳过为 CRESSim 上游构建。

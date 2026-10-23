@@ -65,6 +65,8 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 
 `CohesiveHistory.append(..., tool_rotation=...)` 保存切面出生朝向；`reference_trace` 用它和有限切面可见性选择多刀界面的双侧网格场，`advance(...)` 用于材料推进。对应检查为 `tests/test_reference_visibility.py` 和 `tests/test_cohesive_orientation.py`。
 
+`cohesive_impact.project_velocity` 处理闭合界面的无摩擦非弹性速度冲量；`normal_velocity_map` 包含面法向转动。解析碰撞、动量/耗散和输入导数检查为 `tests/test_cohesive_impact.py`。
+
 ## 文档
 
 - [运行指南](docs/RUNNING.md)：遥操作、论文场景、录制与分析命令。

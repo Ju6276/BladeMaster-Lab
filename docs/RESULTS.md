@@ -1764,3 +1764,11 @@ RTX 4090，`482504f`、dirty=true。界面动量的转置收缩和隐式伴随�
 正式接口在捕获的 99 维塑性伴随上通过原残差检查，与两分量原型的十二类输入梯度最大绝对差 **1.103e-39**。命令前缀同上，入口 `runs/e5_release_audit/replay_formal_adjoint.py runs/grid_update/implicit_failure_1213893.npz`；报告 `runs/grid_update/implicit_failure_1213893_formal.json`。保留跨步余量的塑性原型已通过 8 步基准的前向、塑性体积约束和完整反向；六组参数差分及逐步能量核对继续运行，入口 `runs/e5_release_audit/persistent_plastic_stages.py`。
 
 提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1635 passed、8 skipped、18 subtests passed**（1573.45 s）。日志 `runs/grid_update/formal_compensated_adjoint_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-24：约束反力与矩阵运算原型
+
+RTX 4090 工作站，`482504f`、dirty=true。保持原运算顺序的 Numba 矩阵循环在 **30** 组形状／尺度上与 Python 实现逐位一致，100 位十进制参考最大绝对差 **8.528e-32**。同一个 **99** 维平衡算例的求解时间 **28.771→8.848 s（3.252×）**，主值、余量及 Newton 迭代记录完全一致。入口 `compiled_expansion_probe.py`、`compiled_equilibrium_probe.py runs/grid_update/scaled_stage_input_1213893.npz`，报告在 `runs/grid_update/` 下同名 JSON；脚本位于 `runs/e5_release_audit/`。命令前缀为 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=.:runs/e5_release_audit:../BladeMaster-Warp-e5-grid-20261023/runs/e5_release_audit .venv/bin/python`。
+
+同版本的反力选择原型在 **2⁻⁸⁰ m** 开口余量上保留输出导数 **1**，普通几何重分类得到 **0**；压力／积分力两种接口均通过解析核对。强度边界的两种总力接口及 **8** 组面积／强度差分通过（6.85 s）；三种旋转下拉伸、剪切、压缩剪切共 **9** 例与 90 位解析反力最大差 **3.689e-32 N**。入口 `canonical_remainder_probe.py`、`canonical_scaled_strength.py`、`constrained_projection_oracle.py`；日志 `canonical_scaled_strength_consistent.log`，其余报告为同名 JSON。
+
+`65361b8`、dirty=false。普通浮点构造的三档相关间隙与理想相容条件偏差 **−4.930e-32/5.294e-23/5.421e-20 m**；直接套用理想反力的测试在中档失败，单点反力差 **0.002 N**。对实际输入重算 70 位接触解，三档反力最大差 **1.141e-30 N**。保留构造余量后，三档解析反力及 **12** 组面积／载荷差分全部通过，载荷导数最大相对误差 **2.440e-12**、面积导数最大绝对差 **1.756e-32**。入口 `canonical_contact_reference.py`、`canonical_compensated_contact.py`；报告位于 `runs/grid_update/` 下同名 JSON。下一项核对其余重复界面导数和完整塑性轨迹，再整理联合推进接口。

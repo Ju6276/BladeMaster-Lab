@@ -1778,3 +1778,11 @@ RTX 4090 工作站，`482504f`、dirty=true。保持原运算顺序的 Numba 矩
 RTX 4090 工作站，`6402282`、dirty=true。Numba 编译有序两分量矩阵循环，**30** 组形状／尺度与该提交的 Python 实现逐位一致；同一个 **99** 维平衡算例的求解时间 **28.62454→8.81470 s（3.247×）**，主值、余量、开口及 Newton 迭代记录完全一致。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=.:runs/e5_release_audit:../BladeMaster-Warp-e5-grid-20261023/runs/e5_release_audit .venv/bin/python runs/e5_release_audit/formal_compiled_products.py runs/grid_update/scaled_stage_input_1213893.npz`；报告 `runs/grid_update/formal_compiled_products.json`。
 
 新增 **23** 例覆盖 100 位十进制参考、广播、空维度、大幅相反项及 **2⁻¹⁰⁰⁰…2⁹⁰⁰** 尺度。相关 **78 passed**（2.46 s）；提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1658 passed、8 skipped、18 subtests passed**（857.14 s），日志 `runs/grid_update/compiled_products_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-24：联合推进的重复约束与塑性差分
+
+RTX 4090 工作站，`6402282`、dirty=true。约束反力选择和补偿几何原型的零面积、重复惯性、强度边界及混合界面共 **12 passed**（402.96 s）；两步完整／检查点反向的速度、仿射状态、时长和耗散率梯度最大差均为 **0**。命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=.:runs/e5_release_audit:../BladeMaster-Warp-e5-grid-20261023/runs/e5_release_audit .venv/bin/python`，入口 `canonical_partition_constraints.py`、`canonical_stage_backward.py`；日志／报告 `runs/grid_update/canonical_partition_constraints.log`、`canonical_stage_backward.json`。
+
+八步塑性轨迹的 Young 模量／屈服参数四组差分通过，ε=**1e-4/1e-5**，相对误差分别为 **3.483e-7/4.472e-6**、**2.989e-7/5.032e-6**，沿用 rtol=**2e-5**、atol=**1e-8**。仿射初态的第一组扰动在前向 Newton 求解失败：μ=**1e-14**，80 次后残差 **8.3314e-22**；两组仿射差分及后续能量检查待完成。入口 `compiled_plastic_stages.py`；报告 `runs/grid_update/compiled_plastic_stages.json`，失败输入 `plastic_affine_root_failure.npz`。
+
+停滞输入与独立 90 位参考的残差／Jacobian 最大绝对差为 **1.242e-41/1.858e-32**；Newton／随机方向的两档高精度差分最大相对差为 **6.810e-20/3.225e-32**。入口 `stagnation_jacobian.py`；报告 `runs/grid_update/stagnation_jacobian.json`。下一项核对正则化延续与步长选择，修复后重跑该输入及完整塑性轨迹。

@@ -339,3 +339,5 @@ E5 界面冲量入口 `cohesive_impact` 的 **20** 项检查通过，涵盖同�
 本批全量为 **1540 passed、8 skipped、18 subtests passed**（603.60 s），日志 `runs/grid_update/damping_full.log`。闭合子空间耗散原型 `damping_constrained_probe.py` 将开口速度残差降至 ≤**4.99e-16 m/s**，三档能量残差为 **7.6074e-11/1.9002e-11/4.7483e-12**。`constrained_damping_adjoint.py` 的 **32** 组差分最大误差 **7.106e-8**，与 SciPy Fréchet 方向导数差 ≤**7.801e-15**。该固定闭合投影在 κ→0⁺ 的连续性检查失败；原型和报告均在 runs 下，后续采用耗散与内聚反力联合隐式推进。
 
 近闭合反力 Jacobian 的弱导数修复为 `05b5dcc`，八例解析核对最大误差 **2.171e-16**。线搜索修复新增四例求解尺度一致性检查通过，完整源码为 `05b5dcc`、dirty=true，全量 **1552 passed、8 skipped、18 subtests passed**（623.98 s），日志 `runs/grid_update/globalization_full.log`。第 6 项联合原型的极小历史反力梯度仍失败，下一项核对变形增量和反力的舍入误差传播；第 7 项自然切割接入和第 8 项整体复验待完成。
+
+线搜索修复已提交为 `eab0d7d`。原坐标联合惯性 `D=I+τηL` 的两阶段高精度参考通过时长/历史六组差分，最大相对误差 **1.046e-6**；35/55 位反力差 **8.712e-28 N**。入口 `runs/e5_release_audit/birth_precision_rollout.py`，精度对照为 `birth_precision_check.py`；报告在 `runs/grid_update/`。固定局部输入的历史梯度误差为 **7.892e-8**，直接保留 H 尚未解决联合反力误差。下一项将 D、补偿几何及隐式反向接入通用求解器，覆盖零损伤、加载、卸载和塑性；当前参考覆盖弹性卸载并核对全部扰动的接触不等式。

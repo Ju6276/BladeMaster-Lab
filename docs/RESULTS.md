@@ -1674,3 +1674,11 @@ RTX 4090，`05b5dcc`、dirty=true。线搜索加入舍入尺度后，64 粒子�
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_globalization.py -q` 为 **4 passed**（14.52 s）；全量 `-m pytest tests -q` 为 **1552 passed、8 skipped、18 subtests passed**（623.98 s）。日志 `runs/grid_update/globalization_{unit,full}.log`；新旧线搜索对照为 `runs/e5_release_audit/globalization_generated_cases.py`，报告 `runs/grid_update/globalization_generated_cases.json`。
 
 耗散与内聚反力联合推进的极小历史梯度检查仍失败：κ=**1e-15 m** 时，时长到速度的三档差分相对误差 **2.36e-10/2.17e-9/2.03e-8**，时长到反力为 **0.258/0.707/1.177**。报告 `runs/grid_update/birth_channel_gradient.json`。下一项核对变形增量与反力的舍入误差传播，完成第 6 项联合求解后再接在线切面出生。
+
+## 2026-10-23：联合推进的高精度参考与隐式方向导数
+
+RTX 4090 主机，`eab0d7d`、dirty=false；Warp 对照在 GPU，35/55 位参考求解在 CPU。64 粒子、16 个界面积分点，dt=**2 μs**、η=**2000 s⁻¹**、κ=**1e-15 m**。固定相同局部接触输入后，历史梯度与 55 位差分的相对误差为 **7.892e-8**；保留 H 位移梯度的两阶段原型仍有反力差分失败，耗散坐标变换与几何输入的精度继续影响联合结果。
+
+原坐标联合方程的 55 位参考计算完成两阶段推进，时长与历史的六组中心差分最大相对误差 **1.046e-6**；扰动 1e-2/1e-3/1e-4 时，时长误差 **4.567e-9/4.567e-11/4.567e-13**，历史误差 **1.046e-6/1.046e-8/1.046e-10**。全部扰动通过活跃集合不等式核对。35/55 位的最大反力差 **8.712e-28 N**，两类方向导数的相对差 **3.883e-24/5.781e-21**。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/birth_precision_local.py`、`birth_precision_rollout.py`、`birth_precision_check.py`；报告 `runs/grid_update/birth_precision_{local,rollout,check}.json`。下一项为通用求解接口接入 D、补偿几何及一致的隐式反向，以该参考解核对零损伤、加载、卸载、塑性和接触组合；第 6 项仍进行中。正式源码沿用已通过 **1552 passed、8 skipped、18 subtests passed** 的 `eab0d7d`。

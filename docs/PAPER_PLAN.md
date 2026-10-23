@@ -23,6 +23,8 @@
 | [CRESSim-MPM](https://github.com/yafei-ou/CRESSim-MPM)（IROS 2025） | 开源，本仓库已固定 `09aa5009` 编译使用 | BSD-3 | — |
 | MLS-MPM / CPIC（Hu 等，SIGGRAPH 2018）[taichi_mpm](https://github.com/yuanming-hu/taichi_mpm) | 开源，含 88 行 MLS-MPM 和 CPIC 求解器 | MIT | — |
 | [DiSECt](https://github.com/NVlabs/DiSECt)（RSS 2021 / AuRo 2023） | 开源，FEM 可微切割 | NVIDIA Source Code License，仅限非商业研究 | 仓库内 `dataset/`：LS-DYNA **仿真**的网格、刀力、节点运动，CC BY-NC 4.0；论文里用的真机数据来自 Jamdagni & Jia，未公开 |
+| [DiffMJX / CFD](https://arxiv.org/html/2506.14186v2)（ICLR 2026） | [作者实验与配置](https://github.com/martius-lab/diffmjx)，组成库依赖见其 README | 主仓库 Apache-2.0 | 接触梯度、参数辨识与控制实验 |
+| [STC-MPM](https://arxiv.org/html/2610.06198v1)（2026-10-05） | 原文未给出代码链接 | — | 文中软组织切割数值实验 |
 | [RoboNinja](https://github.com/real-stanford/roboninja)（RSS 2023） | 开源，Taichi 可微 MLS-MPM、轨迹优化 | 未核对 | 生成的硬核几何 |
 | [AutomatedDeboning](https://github.com/GT-STAR-Lab/AutomatedDeboning)（2025） | 开源，Taichi MPM-CPIC 加 Gym/SB3 | 未核对 | — |
 | [EMPM](https://github.com/rai-opensource/empm)（RA-L 2026，同 BladeMaster 组） | 开源，可微 MPM 从 RGB-D 标定 | RAI Institute Research License；高斯渲染部分仅限非商业 | 未核对 |
@@ -128,9 +130,9 @@
 
 ### 4.6 优化
 
-仿真不可微，用无梯度优化：
+标定阶段比较梯度与无梯度方法，按可微分主线验收后的模型实施：
 
-- 方法：CMA-ES 或贝叶斯优化，参数取对数尺度。
+- 方法：梯度优化与 CMA-ES 共用初值、目标和墙钟预算；正材料参数取对数尺度。
 - 成本：一次评估几秒到几十秒（4090），可以并行跑多组。
 - 目标：力—位移曲线的归一化 RMSE，加上峰值力误差和平台平均力误差，按段加权。
 

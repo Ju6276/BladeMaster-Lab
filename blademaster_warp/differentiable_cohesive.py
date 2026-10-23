@@ -136,6 +136,7 @@ def opening_residual(
     proximal_traction: wp.array(dtype=wp.vec3),
     traction: wp.array(dtype=wp.vec3),
     history: wp.array(dtype=float),
+    material: wp.array(dtype=wp.vec3),
     area: wp.array(dtype=float),
     shared: wp.array(dtype=int),
     compliance: float,
@@ -144,6 +145,11 @@ def opening_residual(
 ):
     i = wp.tid()
     result[i] = compliance * (proximal_traction[i] - traction[i])
+    gap_size = wp.max(wp.abs(gap[i][0]), wp.max(wp.abs(gap[i][1]), wp.abs(gap[i][2])))
+    force_size = wp.max(wp.abs(traction[i][0]), wp.max(wp.abs(traction[i][1]), wp.abs(traction[i][2])))
+    if history[i] < 2.0 * material[i][1] / material[i][0]:
+        if wp.length(proximal_gap[i]) <= history[i] and gap_size <= compliance * force_size:
+            result[i] = gap[i] - proximal_gap[i]
     closed = proximal_gap[i][0] == 0.0 and proximal_gap[i][1] == 0.0 and proximal_gap[i][2] == 0.0
     if history[i] == 0.0 and closed:
         if integrated_force == 0 or area[i] > 0.0:
@@ -342,6 +348,7 @@ def _evaluate(inputs, u, traction, compliance, *, integrated_force=False):
             prox[1],
             traction,
             inputs[3],
+            inputs[4],
             inputs[7],
             shared,
             compliance,

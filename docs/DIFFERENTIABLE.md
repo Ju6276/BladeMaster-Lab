@@ -351,6 +351,8 @@ E1 使用几何事件时刻求根及前后分段的实际 TLMPM 积分；E2 已�
 - [Warp 可微文档](https://nvidia.github.io/warp/stable/user_guide/differentiability.html)：数组访问检查、自定义伴随和有限差分检查。
 - [接触梯度与碰撞时刻修正](https://arxiv.org/abs/2305.00092)、[Saltation Matrices](https://arxiv.org/abs/2306.06862)：事件发生时刻与事件前后状态变化的导数。
 - [DiSECt](https://diff-cutting-sim.github.io/)：沿切面的连接逐渐软化，作为连续损伤方案的对照。
+- [DiffMJX / CFD](https://arxiv.org/html/2506.14186v2)、[作者代码](https://github.com/martius-lab/diffmjx)：自适应积分与碰撞检测平滑用于核对接触梯度；CFD 在反向使用软接触代理导数，作为 E7 可选优化对照，分别报告原模型导数与代理梯度。
+- [STC-MPM](https://arxiv.org/html/2610.06198v1)：参考连续体损伤、失效后粒子处理与持久传递隔离的分工；E5 分别核对承载退化、质量与能量收支、退刀后的独立运动。
 - [APIC](https://doi.org/10.1145/2766996)：粒子—网格传递的数值耗散及局部仿射速度表示，用于分析当前 PIC/FLIP 的步长敏感性。
 - [NairnMPM PIC damping](https://osupdocs.forestry.oregonstate.edu/index.php?title=Damping_Options#PIC_Damping)：PIC/FLIP 混合与传递残差阻尼的关系；据此实现固定耗散率的步长对照。
 - [LAMMPS tangential history](https://docs.lammps.org/pair_granular.html)：先增量、后库仑投影的摩擦历史积分；M5 用于核对粘滑边界的历史连续性。

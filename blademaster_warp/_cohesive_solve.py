@@ -206,9 +206,12 @@ def setup(values, compliance_factor=1.0, *, extended=False, integrated_force=Fal
         weights = (np.ones_like(area) if integrated_force else area) / (coefficient * compliance)
         Ru = u + np.einsum("qai,qa,q->i", L[:, :3], dual, weights)
         Ru += np.einsum("qi,q,q->i", face, compression, weights)
-        # g - prox(g + lambda*T) = lambda*(T_prox - T). Evaluate the
-        # traction form to retain small corrections to a finite opening.
+        # Unloading can use small gap operands. Loading retains the traction
+        # form because its small radial derivative is lost in I - Dprox.
         Rg = dual_traction - dual
+        use_gap = np.max(np.abs(gap), axis=1) <= np.max(np.abs(dual), axis=1)
+        use_gap &= (history < 2 * material[:, 1] / material[:, 0]) & (np.linalg.norm(prox, axis=1) <= history)
+        Rg[use_gap] = gap[use_gap] - prox[use_gap]
         Juu = np.eye(size)
         Jus = np.zeros((size, len(q), 3))
         Jgu = np.empty((len(q), 3, size))
@@ -223,7 +226,7 @@ def setup(values, compliance_factor=1.0, *, extended=False, integrated_force=Fal
                 B.T + compression[i] * N.T @ D_z[i] + closed[i] * np.outer(face[i], normals[i])
             )
             Jgu[i] = T_z[i] @ B + T_n[i] @ N
-            Jgs[i, :, i, :] = T_z[i] - np.eye(3)
+            Jgs[i, :, i, :] = -D_z[i]
         # These opening constraints are identically zero. Their minimum-norm
         # reaction is zero; use that equation to fix the undetermined multiplier.
         Rg[shared] = dual[shared]

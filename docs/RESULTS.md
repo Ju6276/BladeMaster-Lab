@@ -1659,4 +1659,10 @@ RTX 4090，`f2506bf`、dirty=true。`reference_damping.decay` 已连接 `cohesiv
 
 RTX 4090，`f2506bf`、dirty=true。闭合非均匀速度使用 ΠLΠ 的生成算子，在 dt=2/1/0.5 μs 下保持零开口、零损伤，末端开口速度残差 ≤**4.99e-16 m/s**；能量相对残差幅值 **7.6074e-11/1.9002e-11/4.7483e-12**。相邻速度差 **5.0937e-10→1.2736e-10 m/s**，比值约 4。固定秩约束映射、速度、时长、速率共 **32** 组差分最大相对误差 **7.106e-8**；约束方向导数与 SciPy `expm_frechet` 对照的相对差 ≤**7.801e-15**，4/8 点积分的伴随矩阵最大差 **1.364e-12**。
 
-命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/damping_constrained_probe.py`；`runs/e5_release_audit/constrained_damping_adjoint.py`。报告 `runs/grid_update/{damping_constrained_probe,constrained_damping_adjoint}.json`。下一项整理任意三维约束映射、零/大时间率积的反向和闭合行选择，再接入正式材料推进及自然接触。
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/damping_constrained_probe.py`；`runs/e5_release_audit/constrained_damping_adjoint.py`。报告 `runs/grid_update/{damping_constrained_probe,constrained_damping_adjoint}.json`。该固定闭合投影在 κ→0⁺ 的连续性检查失败；下一项核对耗散与内聚反力的联合隐式推进。
+
+## 2026-10-23：近闭合界面的弱导数与残差表达
+
+RTX 4090，`bf0c2c9`、dirty=true。反力 Jacobian 直接使用 −Dprox；卸载时按操作数大小选择等价残差，加载保留牵引差。κ/(λσ) 从 **1e-18** 到 **1e3** 的八例解析核对通过；最小比值处旧表达的反力块相对误差 **1**，修复后所有比值及压力/积分总力表达的最大误差 **2.171e-16**。材料势、强度和最终求解容差保持原值。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_closed_residual.py tests/test_cohesive_adjoint_refinement.py tests/test_cohesive_small_opening.py tests/test_cohesive_linear.py -q` 为 **55 passed**（2.53 s）；`runs/e5_release_audit/residual_jacobian_compare.py` 保存新旧表达对照。全量 `-m pytest tests -q` 为 **1548 passed、8 skipped、18 subtests passed**（608.00 s），8 项跳过为 CRESSim 上游构建。报告/日志在 `runs/grid_update/{residual_jacobian_compare.json,cohesive_residual_tests.log,cohesive_residual_full_final.log}`。

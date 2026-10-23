@@ -1682,3 +1682,15 @@ RTX 4090 主机，`eab0d7d`、dirty=false；Warp 对照在 GPU，35/55 位参考
 原坐标联合方程的 55 位参考计算完成两阶段推进，时长与历史的六组中心差分最大相对误差 **1.046e-6**；扰动 1e-2/1e-3/1e-4 时，时长误差 **4.567e-9/4.567e-11/4.567e-13**，历史误差 **1.046e-6/1.046e-8/1.046e-10**。全部扰动通过活跃集合不等式核对。35/55 位的最大反力差 **8.712e-28 N**，两类方向导数的相对差 **3.883e-24/5.781e-21**。
 
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/birth_precision_local.py`、`birth_precision_rollout.py`、`birth_precision_check.py`；报告 `runs/grid_update/birth_precision_{local,rollout,check}.json`。下一项为通用求解接口接入 D、补偿几何及一致的隐式反向，以该参考解核对零损伤、加载、卸载、塑性和接触组合；第 6 项仍进行中。正式源码沿用已通过 **1552 passed、8 skipped、18 subtests passed** 的 `eab0d7d`。
+
+## 2026-10-23：联合惯性算子与界面隐式反向
+
+RTX 4090，`f7990be`、dirty=true。`ReferenceInertia` 接入压力/积分总力和补偿几何接口，**29** 项检查通过：独立稠密解对照、零时长/零速率导数、闭合/张开/混合/已断裂四类输入差分、重复及零面积约束、零历史处三档惯性参数的解析导数。动量绝对残差检查 **2e-17**；一般输入差分 rtol=**2e-5**、atol=**2e-7**，零历史解析导数 rtol=**2e-10**。
+
+命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests/test_reference_inertia.py -q -x`：**29 passed**（13.08 s），日志 `runs/grid_update/inertia_unit_final.log`。联合推进的极小历史反力精度继续核对；E5 第 6 项进行中，第 7–8 项待完成。
+
+两阶段联合入口 `runs/e5_release_audit/native_inertia_stages.py` 通过已有 **14** 项阶段检查（210.48 s），包括活跃塑性、重启、分段反向及耗散参数梯度。κ=**1e-15 m** 时，反力与 55 位参考的最大差 **1.378e-10 N**，时长/历史方向导数的相对差 **2.1492%/0.072923%**；六组双精度差分仍失败。补偿惯性后的自由几何并保留 H 的弹性对照，时长梯度误差为 **1.6583%**，分块伴随对照为 **1.6577%**。下一项核对各阶段固定局部输入的高精度反力与伴随，定位状态误差和局部求解误差的放大。
+
+命令前缀同上：`runs/e5_release_audit/native_inertia_stage_tests.py`、`native_inertia_precision.py`、`native_increment_precision.py`、`native_block_adjoint_precision.py`；日志及 JSON 位于 `runs/grid_update/native_*`。高精度参考使用相同的 P/Pᵀ 分解构造 D；弹性增量对照遇到活跃塑性即报错，正式塑性入口保持完整返回映射。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1581 passed、8 skipped、18 subtests passed**（653.50 s），日志 `runs/grid_update/inertia_full.log`；8 项跳过为 CRESSim 上游构建。

@@ -141,6 +141,7 @@ def solve_geometry(
     compliance_scale=1.0,
     integrated_force=False,
     closed_motion=None,
+    inertia=None,
 ):
     """Solve the interface response, retaining compensated geometry.
 
@@ -148,6 +149,7 @@ def solve_geometry(
     it is a factored evaluation of the same free gap, in mass-normalized metres.
     The VJP follows g and B, whose chain rule includes that nodal motion.
     """
+    inertia = None if inertia is None else inertia.frozen()
     inputs, values = _validated_inputs(
         geometry.gap,
         geometry.frame,
@@ -160,6 +162,7 @@ def solve_geometry(
         particle_mass,
         duration,
         compliance_scale=compliance_scale,
+        inertia=inertia,
         integrated_force=integrated_force,
     )
     u_numpy, t_numpy, compliance, info, gap, frame = refine_geometry(
@@ -169,6 +172,7 @@ def solve_geometry(
         compliance_scale,
         integrated_force=integrated_force,
         closed_motion=closed_motion,
+        inertia=inertia,
     )
     device = geometry.gap.device
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
@@ -188,6 +192,7 @@ def solve_geometry(
         gap - result[0].numpy().astype(EXTENDED),
         frame - result[5].numpy().astype(EXTENDED),
     )
+    sources = inputs + ([] if inertia is None else inertia.parameters)
     if outer is not None:
 
         def backward():
@@ -199,7 +204,12 @@ def solve_geometry(
             fixed_t = wp.array(t_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
             with wp.Tape() as local:
                 selected_t = _canonical_output(
-                    clones, fixed_u, fixed_t, compliance, info, integrated_force=integrated_force
+                    clones,
+                    fixed_u,
+                    fixed_t,
+                    compliance,
+                    info if inertia is None else dict(info, closed_linear_solution=False),
+                    integrated_force=integrated_force,
                 )
                 output, _, _ = _evaluate(
                     clones, fixed_u, selected_t, compliance, integrated_force=integrated_force
@@ -219,11 +229,13 @@ def solve_geometry(
                 (fixed_u.grad.numpy() + u.grad.numpy()).ravel(),
                 fixed_t.grad.numpy().ravel() / compliance,
                 closed=info.get("closed_linear_solution", False),
+                inertia=inertia,
                 integrated_force=integrated_force,
             )
-            for source, direct, indirect in zip(inputs, explicit, gradients):
+            explicit.extend(np.zeros_like(a.numpy()) for a in sources[len(inputs) :])
+            for source, direct, indirect in zip(sources, explicit, gradients):
                 _add_gradient(source, direct + indirect)
 
-        outer.record_func(backward, [*result, u, *[a for a in inputs if a.requires_grad]])
+        outer.record_func(backward, [*result, u, *[a for a in sources if a.requires_grad]])
     result_type = CohesiveForceStep if integrated_force else CohesiveStep
     return result_type(*result, u, info), updated

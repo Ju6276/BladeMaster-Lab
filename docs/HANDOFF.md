@@ -341,3 +341,5 @@ E5 界面冲量入口 `cohesive_impact` 的 **20** 项检查通过，涵盖同�
 近闭合反力 Jacobian 的弱导数修复为 `05b5dcc`，八例解析核对最大误差 **2.171e-16**。线搜索修复新增四例求解尺度一致性检查通过，完整源码为 `05b5dcc`、dirty=true，全量 **1552 passed、8 skipped、18 subtests passed**（623.98 s），日志 `runs/grid_update/globalization_full.log`。第 6 项联合原型的极小历史反力梯度仍失败，下一项核对变形增量和反力的舍入误差传播；第 7 项自然切割接入和第 8 项整体复验待完成。
 
 线搜索修复已提交为 `eab0d7d`。原坐标联合惯性 `D=I+τηL` 的两阶段高精度参考通过时长/历史六组差分，最大相对误差 **1.046e-6**；35/55 位反力差 **8.712e-28 N**。入口 `runs/e5_release_audit/birth_precision_rollout.py`，精度对照为 `birth_precision_check.py`；报告在 `runs/grid_update/`。固定局部输入的历史梯度误差为 **7.892e-8**，直接保留 H 尚未解决联合反力误差。下一项将 D、补偿几何及隐式反向接入通用求解器，覆盖零损伤、加载、卸载和塑性；当前参考覆盖弹性卸载并核对全部扰动的接触不等式。
+
+`ReferenceInertia` 已将 D 接入压力/积分总力及补偿几何求解，**29** 项算子、梯度和约束检查通过（13.08 s）；全量 **1581 passed、8 skipped、18 subtests passed**（653.50 s），日志 `runs/grid_update/inertia_full.log`。两阶段联合原型通过 **14** 项阶段检查；κ=1e-15 m 的时长/历史反力梯度与高精度参考相差 **2.1492%/0.072923%**，反力差分仍失败。补偿自由几何和 H、分块伴随均未消除该误差。下一项按阶段比较固定局部输入的高精度反力/伴随与状态传递误差；报告 `runs/grid_update/native_*`，具体命令见 RESULTS。E5 第 6 项进行中，第 7–8 项待完成。

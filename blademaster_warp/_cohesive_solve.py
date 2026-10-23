@@ -5,6 +5,7 @@ from scipy.optimize import least_squares, minimize
 
 from ._cohesive_initial import fixed_normal_initial
 from ._cohesive_linear import solve_blocks
+from .reference_inertia import apply_inertia, solve_inertia, solve_reduced
 
 
 def skew(x):
@@ -145,7 +146,7 @@ def shared_intact_rows(q, history, mapping):
     return (history == 0.0) & np.all(q == 0.0, axis=1) & np.all(mapping == 0.0, axis=1)
 
 
-def setup(values, compliance_factor=1.0, *, extended=False, integrated_force=False):
+def setup(values, compliance_factor=1.0, *, extended=False, integrated_force=False, inertia=None):
     (q, frame, normal, history, material, b, gradient, area, mass, dt) = values
     coefficient = (
         np.longdouble(mass[0]) / np.longdouble(dt[0]) ** 2 if extended else float(mass[0] / dt[0] ** 2)
@@ -154,10 +155,17 @@ def setup(values, compliance_factor=1.0, *, extended=False, integrated_force=Fal
     matrix = weights.transpose(1, 0, 2).reshape(-1, b.shape[1])
     (_, singular, vt) = np.linalg.svd(matrix.astype(float), full_matrices=False)
     rank = np.count_nonzero(singular > singular.max() * max(matrix.shape) * np.finfo(float).eps)
-    basis = np.kron(vt[:rank].T, np.eye(3))
+    modes = vt[:rank].T
+    if inertia is not None:
+        modes = np.linalg.qr(solve_inertia(inertia, modes), mode="reduced")[0]
+    basis = np.kron(modes, np.eye(3))
+    reduced_inertia = np.eye(basis.shape[1])
+    if inertia is not None:
+        precise_modes = modes.astype(np.longdouble if extended else float)
+        reduced_inertia = np.kron(precise_modes.T @ apply_inertia(inertia, precise_modes), np.eye(3))
     L = full_L @ basis
     softening = np.max(material[:, 0] ** 2 / (2 * material[:, 1]))
-    mobility = b @ b.T / coefficient
+    mobility = b @ solve_inertia(inertia, b.T) / coefficient
     if integrated_force:
         softening = np.max(area * material[:, 0] ** 2 / (2 * material[:, 1]))
     else:
@@ -204,7 +212,7 @@ def setup(values, compliance_factor=1.0, *, extended=False, integrated_force=Fal
         (c, C, Hc) = constraints(proximal_base, L, u)
         face = np.einsum("qai,qa->qi", normal_gradient, prox)
         weights = (np.ones_like(area) if integrated_force else area) / (coefficient * compliance)
-        Ru = u + np.einsum("qai,qa,q->i", L[:, :3], dual, weights)
+        Ru = reduced_inertia @ u + np.einsum("qai,qa,q->i", L[:, :3], dual, weights)
         Ru += np.einsum("qi,q,q->i", face, compression, weights)
         # Unloading can use small gap operands. Loading retains the traction
         # form because its small radial derivative is lost in I - Dprox.
@@ -212,7 +220,7 @@ def setup(values, compliance_factor=1.0, *, extended=False, integrated_force=Fal
         use_gap = np.max(np.abs(gap), axis=1) <= np.max(np.abs(dual), axis=1)
         use_gap &= (history < 2 * material[:, 1] / material[:, 0]) & (np.linalg.norm(prox, axis=1) <= history)
         Rg[use_gap] = gap[use_gap] - prox[use_gap]
-        Juu = np.eye(size)
+        Juu = reduced_inertia.astype(float).copy()
         Jus = np.zeros((size, len(q), 3))
         Jgu = np.empty((len(q), 3, size))
         Jgs = np.zeros((len(q), 3, len(q), 3))
@@ -247,15 +255,26 @@ def setup(values, compliance_factor=1.0, *, extended=False, integrated_force=Fal
     return (at, basis, float(compliance), length)
 
 
-def _solve_primal(values, compliance_factor=1.0, return_traction=False, *, integrated_force=False):
-    (at, basis, compliance, length) = setup(values, compliance_factor, integrated_force=integrated_force)
+def _solve_primal(
+    values, compliance_factor=1.0, return_traction=False, *, integrated_force=False, inertia=None
+):
+    (at, basis, compliance, length) = setup(
+        values, compliance_factor, integrated_force=integrated_force, inertia=inertia
+    )
     count = len(values[0])
     size = basis.shape[1]
     y = np.zeros(size + 3 * count)
     (q, frame, reference, history, material, b, gradient, area, mass, dt) = values
     coefficient = float(mass[0] / dt[0] ** 2)
     support = area > 0.0 if integrated_force else np.ones(count, dtype=bool)
-    if np.all(history[support] == 0.0):
+    if inertia is not None and np.all(history[support] == 0.0):
+        closed = _closed_increment(values, None, inertia=inertia)
+        if closed is not None:
+            candidate_u, candidate_t, info, _, _ = closed
+            if not integrated_force:
+                candidate_t = candidate_t / area[:, None]
+            return candidate_u, candidate_t if return_traction else compliance * candidate_t, compliance, info
+    if inertia is None and np.all(history[support] == 0.0):
         active_b = b[support]
         motion, _, reaction_rank, _ = np.linalg.lstsq(active_b, q[support], rcond=None)
         candidate_u = -motion
@@ -302,10 +321,12 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False, *, integ
                 ),
             )
     initial_u, traction, selected_compliance, initial_info = fixed_normal_initial(
-        values, compliance, integrated_force=integrated_force
+        values, compliance, integrated_force=integrated_force, inertia=inertia
     )
     selected_factor = compliance_factor * selected_compliance / compliance
-    at, basis, compliance, length = setup(values, selected_factor, integrated_force=integrated_force)
+    at, basis, compliance, length = setup(
+        values, selected_factor, integrated_force=integrated_force, inertia=inertia
+    )
     initializer = "adaptive_fixed_normal_admm"
     y[:size] = basis.T @ initial_u.ravel() / length
     y[size:] = compliance * traction.ravel() / length
@@ -483,9 +504,11 @@ def canonical_reaction(
     return output, info, context
 
 
-def solve_primal(values, compliance_factor=1.0, return_traction=False, *, integrated_force=False):
+def solve_primal(
+    values, compliance_factor=1.0, return_traction=False, *, integrated_force=False, inertia=None
+):
     u, traction, compliance, info = _solve_primal(
-        values, compliance_factor, return_traction=True, integrated_force=integrated_force
+        values, compliance_factor, return_traction=True, integrated_force=integrated_force, inertia=inertia
     )
     traction, info = canonical_reaction(
         values, u, traction, compliance, info, integrated_force=integrated_force
@@ -494,7 +517,7 @@ def solve_primal(values, compliance_factor=1.0, return_traction=False, *, integr
     return u, result, compliance, info
 
 
-def _closed_increment(values, motion):
+def _closed_increment(values, motion, *, inertia=None):
     """Solve g=B(d+u)=0 from d without subtracting nearly equal point gaps.
 
     d is the mass-normalized free nodal displacement. The supplied gap and
@@ -504,29 +527,46 @@ def _closed_increment(values, motion):
     support = area > 0.0
     if not np.any(support) or np.any(history[support] != 0.0):
         return None
-    motion = np.asarray(motion, dtype=np.longdouble)
-    if motion.shape != (b.shape[1], 3) or not np.isfinite(motion).all():
-        raise ValueError("Closed motion must match the mass-normalized grid displacement")
-    product = b @ motion
-    bound = 64 * np.finfo(float).eps * (np.abs(b) @ np.abs(motion))
-    if np.any(np.abs(q[support] - product[support]) > bound[support]):
-        raise ValueError("Closed motion must generate the supported free gap")
+    if motion is not None:
+        motion = np.asarray(motion, dtype=np.longdouble)
+        if motion.shape != (b.shape[1], 3) or not np.isfinite(motion).all():
+            raise ValueError("Closed motion must match the mass-normalized grid displacement")
+        product = b @ motion
+        bound = 64 * np.finfo(float).eps * (np.abs(b) @ np.abs(motion))
+        if np.any(np.abs(q[support] - product[support]) > bound[support]):
+            raise ValueError("Closed motion must generate the supported free gap")
     active = b[support].astype(float)
-    _, singular, right = np.linalg.svd(active, full_matrices=False)
+    left, singular, right = np.linalg.svd(active, full_matrices=False)
     rank = np.count_nonzero(singular > singular[0] * max(active.shape) * np.finfo(float).eps)
     right = right[:rank].astype(np.longdouble)
-    u = -right.T @ (right @ motion)
+    if motion is None:
+        coordinates = -(left[:, :rank].astype(np.longdouble).T @ q[support]) / singular[:rank, None]
+    else:
+        coordinates = -right @ motion
+    if inertia is None:
+        u = right.T @ coordinates
+    else:
+        modes = solve_inertia(inertia, right.T)
+        u = modes @ solve_reduced(right @ modes, coordinates)
+    gap = q + b @ u
+    if motion is None and np.max(np.abs(gap[support]), initial=0.0) > 64 * np.finfo(float).eps * max(
+        np.max(np.abs(q)), np.finfo(float).tiny
+    ):
+        return None
+    momentum = apply_inertia(inertia, u)
     root_area = np.sqrt(area)
     weighted = b.T * root_area[None, :]
-    pressure = np.linalg.lstsq(weighted.astype(float), -u.astype(float), rcond=None)[0]
+    pressure = np.linalg.lstsq(weighted.astype(float), -momentum.astype(float), rcond=None)[0]
     pressure = pressure.astype(np.longdouble)
     for _ in range(8):
         pressure += np.linalg.lstsq(
-            weighted.astype(float), (-u - weighted @ pressure).astype(float), rcond=None
+            weighted.astype(float), (-momentum - weighted @ pressure).astype(float), rcond=None
         )[0]
-    balance = u + weighted @ pressure
+    balance = momentum + weighted @ pressure
     balance_bound = (
-        64 * np.finfo(float).eps * (np.linalg.norm(u) + np.linalg.norm(weighted) * np.linalg.norm(pressure))
+        64
+        * np.finfo(float).eps
+        * (np.linalg.norm(momentum) + np.linalg.norm(weighted) * np.linalg.norm(pressure))
     )
     if np.linalg.norm(balance) > balance_bound:
         raise RuntimeError("Factored closed reactions failed nodal momentum balance")
@@ -544,8 +584,12 @@ def _closed_increment(values, motion):
     if np.any(np.linalg.norm(positive, axis=1) > area * material[:, 0]):
         return None
     gap = q + b @ u
+    error = (
+        float(np.max(np.abs(gap[support]), initial=0.0))
+        if motion is None
+        else float(np.max(np.abs(right @ (motion + u)), initial=0.0))
+    )
     gap[support] = 0.0
-    error = float(np.max(np.abs(right @ (motion + u)), initial=0.0))
     info = dict(
         iterations=0,
         initial_evaluations=0,
@@ -568,6 +612,7 @@ def refine_geometry(
     *,
     integrated_force=False,
     closed_motion=None,
+    inertia=None,
 ):
     if np.finfo(np.longdouble).nmant <= np.finfo(np.float64).nmant:
         raise RuntimeError("Interface refinement requires extended-precision CPU arithmetic")
@@ -577,15 +622,22 @@ def refine_geometry(
     if closed_motion is not None:
         if not integrated_force:
             raise ValueError("Factored closed motion requires integrated interface forces")
-        closed = _closed_increment(precise, closed_motion)
+        closed = _closed_increment(precise, closed_motion, inertia=inertia)
         if closed is not None:
             u, force, info, gap, frame = closed
-            compliance = setup(values, compliance_factor, integrated_force=True)[2]
+            compliance = setup(values, compliance_factor, integrated_force=True, inertia=inertia)[2]
             return u, force, compliance, info, gap, frame
     seed_u, seed_t, seed_compliance, info = _solve_primal(
-        values, compliance_factor, return_traction=True, integrated_force=integrated_force
+        values, compliance_factor, return_traction=True, integrated_force=integrated_force, inertia=inertia
     )
-    if info["initializer"] == "closed_linear":
+    if info["initializer"] == "closed_linear" and inertia is not None:
+        closed = _closed_increment(precise, None, inertia=inertia)
+        if closed is not None:
+            u, force, info, gap, frame = closed
+            if not integrated_force:
+                force = force / values[7][:, None]
+            return u, force, seed_compliance, info, gap, frame
+    if info["initializer"] == "closed_linear" and inertia is None:
         # With zero opening and history, equilibrium is independent of cohesive parameters.
         q, frame, reference, _, material, b, gradient, area, mass, dt = precise
         coefficient = mass[0] / dt[0] ** 2
@@ -636,9 +688,13 @@ def refine_geometry(
             gap[support] = 0.0
             return u.astype(float), traction.astype(float), seed_compliance, info, gap, frame
     info["closed_linear_solution"] = False
-    base_compliance = setup(values, integrated_force=integrated_force)[2]
+    base_compliance = setup(values, integrated_force=integrated_force, inertia=inertia)[2]
     at, basis, compliance, length = setup(
-        precise, seed_compliance / base_compliance, extended=True, integrated_force=integrated_force
+        precise,
+        seed_compliance / base_compliance,
+        extended=True,
+        integrated_force=integrated_force,
+        inertia=inertia,
     )
     basis = basis.astype(np.longdouble)
     size = basis.shape[1]

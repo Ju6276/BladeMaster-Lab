@@ -274,7 +274,7 @@ def reaction_bounds(
         derivative[row, offset] = -float(1.0)
 
 
-def _evaluate(inputs, u, traction, compliance, *, integrated_force=False):
+def _evaluate(inputs, u, traction, compliance, *, integrated_force=False, inertia=None):
     count = len(inputs[0])
     device = inputs[0].device
 
@@ -331,6 +331,8 @@ def _evaluate(inputs, u, traction, compliance, *, integrated_force=False):
         outputs=[Ru],
         device=device,
     )
+    if inertia is not None:
+        Ru = inertia.add_momentum(Ru, u)
     shared_rows = shared_intact_rows(inputs[0].numpy(), inputs[3].numpy(), inputs[5].numpy())
     if integrated_force:
         shared_rows &= inputs[7].numpy() > 0.0
@@ -423,9 +425,19 @@ def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u,
 
 
 def _implicit_pullback(
-    inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t, *, closed=False, integrated_force=False
+    inputs,
+    values,
+    u_numpy,
+    traction_numpy,
+    compliance,
+    rhs_u,
+    rhs_t,
+    *,
+    closed=False,
+    integrated_force=False,
+    inertia=None,
 ):
-    if closed and integrated_force and np.all(values[7] > 0.0):
+    if closed and inertia is None and integrated_force and np.all(values[7] > 0.0):
         from ._cohesive_solve import setup
 
         area = values[7]
@@ -437,7 +449,7 @@ def _implicit_pullback(
         )
         gradients[7] += np.sum(seed_force * pressure, axis=1)
         return gradients
-    if closed and not integrated_force:
+    if closed and inertia is None and not integrated_force:
         return _closed_pullback(
             inputs, values, u_numpy, traction_numpy, compliance, rhs_u, compliance * rhs_t
         )
@@ -452,7 +464,10 @@ def _implicit_pullback(
     matrix = weights.transpose(1, 0, 2).reshape(-1, values[5].shape[1])
     (_, singular, Vt) = np.linalg.svd(matrix, full_matrices=False)
     rank = np.count_nonzero(singular > singular[0] * max(matrix.shape) * np.finfo(float).eps)
-    basis = np.kron(Vt[:rank].T, np.eye(3))
+    modes = Vt[:rank].T
+    if inertia is not None:
+        modes = np.linalg.qr(inertia.solve(modes), mode="reduced")[0]
+    basis = np.kron(modes, np.eye(3))
     size = basis.shape[1]
     rhs = np.r_[basis.T @ rhs_u, rhs_t]
     clones = [
@@ -460,8 +475,11 @@ def _implicit_pullback(
     ]
     fixed_u = array(u_numpy, True, True)
     fixed_t = array(traction_numpy, True, True)
+    local_inertia = None if inertia is None else inertia.clone()
     with wp.Tape() as local:
-        (_, Ru, Rg) = _evaluate(clones, fixed_u, fixed_t, compliance, integrated_force=integrated_force)
+        (_, Ru, Rg) = _evaluate(
+            clones, fixed_u, fixed_t, compliance, integrated_force=integrated_force, inertia=local_inertia
+        )
     rows = []
     for column in basis.T:
         local.zero()
@@ -475,30 +493,56 @@ def _implicit_pullback(
         local.backward(grads={Rg: array(unit, True)})
         rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), fixed_t.grad.numpy().ravel() / compliance])
     J = np.array(rows)
-    dual = np.linalg.lstsq(J.T, rhs, rcond=None)[0]
-    # The orthogonal momentum block is identity; retain its map derivatives.
-    orthogonal = rhs_u - basis @ (basis.T @ rhs_u)
-    scale = max(np.max(np.abs(rhs_u)), np.max(np.abs(rhs_t)), 1.0)
-    for _ in range(12):
-        au = basis @ dual[:size] + orthogonal
-        ag = dual[size:].reshape(shape)
-        local.zero()
-        local.backward(grads={Ru: array(au.reshape(-1, 3), True), Rg: array(ag, True)})
-        error_u = rhs_u - fixed_u.grad.numpy().ravel()
-        error_t = rhs_t - fixed_t.grad.numpy().ravel() / compliance
-        full_error = np.max(np.abs(np.r_[error_u, error_t]))
-        if not np.isfinite(full_error) or full_error <= 1e-10 * scale:
-            break
-        # Reevaluate the residual through the Warp VJP, including the momentum
-        # complement, so matrix assembly roundoff is part of the correction.
-        reduced_error = np.r_[basis.T @ error_u, error_t]
-        dual += np.linalg.lstsq(J.T, reduced_error, rcond=None)[0]
-        orthogonal += error_u - basis @ (basis.T @ error_u)
+    if inertia is None:
+        dual = np.linalg.lstsq(J.T, rhs, rcond=None)[0]
+        # The orthogonal momentum block is identity; retain its map derivatives.
+        orthogonal = rhs_u - basis @ (basis.T @ rhs_u)
+        scale = max(np.max(np.abs(rhs_u)), np.max(np.abs(rhs_t)), 1.0)
+        for _ in range(12):
+            au = basis @ dual[:size] + orthogonal
+            ag = dual[size:].reshape(shape)
+            local.zero()
+            local.backward(grads={Ru: array(au.reshape(-1, 3), True), Rg: array(ag, True)})
+            error_u = rhs_u - fixed_u.grad.numpy().ravel()
+            error_t = rhs_t - fixed_t.grad.numpy().ravel() / compliance
+            full_error = np.max(np.abs(np.r_[error_u, error_t]))
+            if not np.isfinite(full_error) or full_error <= 1e-10 * scale:
+                break
+            # Reevaluate the residual through the Warp VJP, including the momentum
+            # complement, so matrix assembly roundoff is part of the correction.
+            reduced_error = np.r_[basis.T @ error_u, error_t]
+            dual += np.linalg.lstsq(J.T, reduced_error, rcond=None)[0]
+            orthogonal += error_u - basis @ (basis.T @ error_u)
+    else:
+        shape = Rg.numpy().shape
+        au, ag = np.zeros_like(rhs_u), np.zeros(shape)
+        scale = max(np.max(np.abs(rhs_u)), np.max(np.abs(rhs_t)), 1.0)
+        for _ in range(12):
+            local.zero()
+            local.backward(grads={Ru: array(au.reshape(-1, 3), True), Rg: array(ag, True)})
+            error_u = rhs_u - fixed_u.grad.numpy().ravel()
+            error_t = rhs_t - fixed_t.grad.numpy().ravel() / compliance
+            full_error = np.max(np.abs(np.r_[error_u, error_t]))
+            if not np.isfinite(full_error) or full_error <= 1e-10 * scale:
+                break
+            particular = inertia.solve(error_u.reshape(-1, 3)).ravel()
+            local.zero()
+            local.backward(grads={Ru: array(particular.reshape(-1, 3), True)})
+            reduced = np.r_[
+                basis.T @ (error_u - fixed_u.grad.numpy().ravel()),
+                error_t - fixed_t.grad.numpy().ravel() / compliance,
+            ]
+            correction = np.linalg.lstsq(J.T, reduced, rcond=None)[0]
+            au += particular + basis @ correction[:size]
+            ag += correction[size:].reshape(shape)
     if not np.isfinite(full_error) or full_error > 1e-10 * scale:
         raise RuntimeError(f"Full implicit adjoint residual: {full_error}")
     local.zero()
     local.backward(grads={Ru: array(-au.reshape(-1, 3), True), Rg: array(-ag, True)})
-    return [a.grad.numpy().copy() for a in clones]
+    gradients = [a.grad.numpy().copy() for a in clones]
+    if local_inertia is not None:
+        gradients.extend(a.grad.numpy().copy() for a in local_inertia.parameters)
+    return gradients
 
 
 def _canonical_output(inputs, u, force, compliance, info, *, integrated_force=False):
@@ -657,7 +701,8 @@ def _canonical_output(inputs, u, force, compliance, info, *, integrated_force=Fa
     return output
 
 
-def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False):
+def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inertia=None):
+    inertia = None if inertia is None else inertia.frozen()
     device = inputs[0].device
     values = [a.numpy().copy() for a in inputs]
     if integrated_force:
@@ -667,13 +712,15 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False):
             np.zeros_like(values[1]),
             compliance_scale,
             integrated_force=True,
+            inertia=inertia,
         )
     else:
         u_numpy, traction_numpy, compliance, info = solve_primal(
-            values, compliance_scale, return_traction=True
+            values, compliance_scale, return_traction=True, inertia=inertia
         )
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     traction = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
+    sources = inputs + ([] if inertia is None else inertia.parameters)
     tape = wp._src.context.runtime.tape
     if tape is not None:
 
@@ -688,14 +735,20 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False):
                 traction.grad.numpy().ravel() / compliance,
                 closed=info.get("closed_linear_solution", False),
                 integrated_force=integrated_force,
+                inertia=inertia,
             )
-            for source, gradient in zip(inputs, gradients):
+            for source, gradient in zip(sources, gradients):
                 if source.requires_grad:
                     source.grad.assign(source.grad.numpy() + gradient)
 
-        tape.record_func(backward, [u, traction, *[a for a in inputs if a.requires_grad]])
+        tape.record_func(backward, [u, traction, *[a for a in sources if a.requires_grad]])
     selected_traction = _canonical_output(
-        inputs, u, traction, compliance, info, integrated_force=integrated_force
+        inputs,
+        u,
+        traction,
+        compliance,
+        info if inertia is None else dict(info, closed_linear_solution=False),
+        integrated_force=integrated_force,
     )
     result, _, _ = _evaluate(inputs, u, selected_traction, compliance, integrated_force=integrated_force)
     result_type = CohesiveForceStep if integrated_force else CohesiveStep
@@ -745,6 +798,7 @@ def _validated_inputs(
     duration,
     *,
     compliance_scale=1.0,
+    inertia=None,
     integrated_force=False,
 ):
     """Solve one inertial interface update in float64.
@@ -788,6 +842,10 @@ def _validated_inputs(
     if separation_map.ndim != 2 or separation_map.shape[1] == 0:
         raise ValueError("The separation map requires quadrature and particle axes")
     particles = separation_map.shape[1]
+    if inertia is not None and (
+        inertia.size != particles or any(a.device != free_gap.device for a in inertia.parameters)
+    ):
+        raise ValueError("Inertia must match the interface degrees of freedom and device")
     shapes = [
         (count,),
         (count,),
@@ -833,6 +891,7 @@ def solve(
     duration,
     *,
     compliance_scale=1.0,
+    inertia=None,
 ):
     """Return equilibrium displacement and response per reference interface area."""
     inputs, _ = _validated_inputs(
@@ -847,8 +906,9 @@ def solve(
         particle_mass,
         duration,
         compliance_scale=compliance_scale,
+        inertia=inertia,
     )
-    return _solve_arrays(inputs, compliance_scale)
+    return _solve_arrays(inputs, compliance_scale, inertia=inertia)
 
 
 def solve_force(
@@ -864,6 +924,7 @@ def solve_force(
     duration,
     *,
     compliance_scale=1.0,
+    inertia=None,
 ):
     """Return equilibrium using integrated forces, including zero-area supports."""
     inputs, _ = _validated_inputs(
@@ -878,6 +939,7 @@ def solve_force(
         particle_mass,
         duration,
         compliance_scale=compliance_scale,
+        inertia=inertia,
         integrated_force=True,
     )
-    return _solve_arrays(inputs, compliance_scale, integrated_force=True)
+    return _solve_arrays(inputs, compliance_scale, integrated_force=True, inertia=inertia)

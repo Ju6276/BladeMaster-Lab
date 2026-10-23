@@ -2,8 +2,10 @@
 
 import numpy as np
 
+from .reference_inertia import solve_inertia
 
-def fixed_normal_initial(values, compliance, *, integrated_force=False, max_iterations=500000):
+
+def fixed_normal_initial(values, compliance, *, integrated_force=False, max_iterations=500000, inertia=None):
     q, frame, reference, history, material, mapping, _, area, mass, dt = values
     normal = (
         reference[:, :1] * np.cross(frame[:, :, 1], frame[:, :, 2])
@@ -12,9 +14,16 @@ def fixed_normal_initial(values, compliance, *, integrated_force=False, max_iter
     ).astype(np.longdouble)
     normal /= np.linalg.norm(normal, axis=1)[:, None]
     root = (np.ones_like(area) if integrated_force else np.sqrt(area))[:, None]
-    left, singular, _ = np.linalg.svd(root * mapping, full_matrices=False)
+    left, singular, right = np.linalg.svd(root * mapping, full_matrices=False)
     rank = np.count_nonzero(singular > singular[0] * max(mapping.shape) * np.finfo(float).eps)
-    left = left[:, :rank].astype(np.longdouble)
+    left = left[:, :rank]
+    if inertia is not None:
+        modes = right[:rank].T
+        metric = modes.T @ solve_inertia(inertia, modes)
+        factor = np.linalg.cholesky(0.5 * (metric + metric.T))
+        rotation, singular, _ = np.linalg.svd(singular[:rank, None] * factor, full_matrices=False)
+        left = left @ rotation
+    left = left.astype(np.longdouble)
     coefficient = np.longdouble(mass[0]) / np.longdouble(dt[0]) ** 2
     eigen = singular[:rank].astype(np.longdouble) ** 2 / coefficient
     weighted_q = root * q.astype(np.longdouble)
@@ -64,6 +73,6 @@ def fixed_normal_initial(values, compliance, *, integrated_force=False, max_iter
             compliance = updated
     traction = multiplier / (compliance * root)
     measure = np.ones_like(area) if integrated_force else area
-    displacement = -mapping.T @ (measure[:, None] * traction) / coefficient
+    displacement = -solve_inertia(inertia, mapping.T @ (measure[:, None] * traction)) / coefficient
     info = dict(initial_iterations=iteration + 1, initial_primal=float(primal), initial_dual=float(dual))
     return displacement.astype(float), traction.astype(float), compliance, info

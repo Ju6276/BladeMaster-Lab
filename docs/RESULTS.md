@@ -1706,3 +1706,13 @@ RTX 4090，`09cf584`、dirty=true。界面运动 VJP 和 D⁻¹ 的参数收缩�
 55 位惯性逆作用与几何合并计算原型，使两阶段时长/历史反力梯度相对参考误差降为 **1.551e-7/1.640e-7**，最大反力差 **2.590e-14 N**。三档中心差分相对误差：时长 **3.833e-6/3.565e-5/1.164e-4**，历史 **3.356e-6/1.103e-4/4.318e-3**；四个较小扰动仍超过原 rtol=2e-5。入口 `runs/e5_release_audit/precise_fused_rollout.py`，报告 `runs/grid_update/precise_fused_rollout.json`。下一项核对局部平衡解的舍入误差并实现通用补偿作用量。
 
 提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1585 passed、8 skipped、18 subtests passed**（634.54 s），日志 `runs/grid_update/chain_precision_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：通用近端残差与补偿作用量对照
+
+RTX 4090 主机，`9250750`、dirty=false；状态与隐式反向在 GPU，高精度残差对照在 CPU。通用近端方程的 **10** 组参考面旋转/压力或总力算例通过，覆盖闭合、加载、混合历史、卸载、完全断裂；**16** 组时长/历史差分最大相对误差 **7.190e-8**。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/generic_precise_branches.py`。
+
+两个 99 维阶段 Jacobian 的补偿 GMRES 细化，经三次修正与 55 位解的相对差为 **2.653e-30/1.815e-31**，各耗时约 **0.032 s**。P/Pᵀ 补偿惯性逆作用的零时长、零速率、ηt=0.004/20 四例通过，最大相对误差 **2.811e-31**，各耗时 **0.020–0.022 s**。命令前缀同上：`runs/e5_release_audit/compensated_linear_probe.py`、`compensated_inertia_probe.py`。全部报告位于 `runs/grid_update/` 下同名 JSON。
+
+两阶段弹性原型保留广义速度线性更新的 55 位副本，κ=1e-15 m、dt=2 μs、η=2000 s⁻¹。原三档扰动 1e-2/1e-3/1e-4 共 **6/6** 组差分通过 rtol=2e-5：时长相对误差 **6.168e-7/6.123e-7/6.124e-7**，历史 **1.038e-6/3.172e-9/3.065e-8**。基准反力与独立高精度参考最大差 **2.169e-19 N**；时长/历史隐式梯度误差 **6.123e-7/7.196e-9**。命令 `runs/e5_release_audit/shadow_moment_rollout.py`，报告 `runs/grid_update/shadow_moment_rollout.json`。仅提高局部残差精度或另保留材料 H 时，最小历史扰动误差均约 **4.017e-4**；阶段间速度余量需同时保留。
+
+下一项：将补偿作用量、局部平衡细化及广义速度余量接入正式联合推进，核对塑性、重复约束、接触和能量。E5 第 6 项继续，第 7–8 项待完成。正式源码 `9250750` 的全量结果为 **1585 passed、8 skipped、18 subtests passed**，上述原型和报告保存在 runs。

@@ -1537,3 +1537,15 @@ RTX 4090，原型干净 `a211caf`、接口测试 `a211caf` dirty=true。相关 *
 RTX 4090，`4d6e6ac`、dirty=true。相关 **15 passed**（3.65 s），新增 **7** 项，覆盖 1e-150～1e150 尺度的独立有理数重心求交对照、大坐标下 2⁻⁶⁰ 偏移、零面积和零长度。完整/部分交叉的 **38784/29184** 条射线与 `4d6e6ac` 的精确判定差均为 **0**，耗时从 **8.556/4.735 s** 降至 **1.294/0.7021 s**；三种尺度随机三角片的判定差也均为 **0**。
 
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_reference_visibility.py -q`；`runs/e5_release_audit/visibility_filter_validate.py`。报告/日志为 `e5-grid-20261023/runs/grid_update/visibility_filter_{unit.log,source.json,source.log}`。提交前全量 **1390 passed、8 skipped、18 subtests passed**（485.87 s），日志 `visibility_filter_full.log`；8 项跳过为 CRESSim 上游构建。
+
+
+## 2026-10-23：切面出生朝向与永久侧码
+
+RTX 4090，`c0e09f7`、dirty=true。新增 **6** 项朝向检查通过，覆盖 6/4 mm、仿射形变与整体旋转、退刀重入、新刀追加及状态恢复；保存朝向与显式侧码的材料状态逐位一致，初速度伴随按 rtol=**2e-13**、atol=**1e-13** 通过。连同历史和可见性检查为 **31 passed**（23.14 s）。六组自然事件的 **1.6 ms** 几何观察中，四组生成 **1728/1140/1140/1464** 个积分点，两组未生成参考片；旧点朝向和损伤保持不变，三线性重现误差 ≤**1.333e-15**，恢复后的映射权重差 **0**。观察使用原自然切割力学推进，内聚力与 RK2 的联合接入继续进行。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_orientation.py tests/test_cohesive_history.py tests/test_reference_visibility.py -q`；`runs/e5_release_audit/birth_orientation_natural.py`。报告/日志在 `e5-grid-20261023/runs/grid_update/birth_orientation_{unit.log,natural.json,natural8.log}`。提交前全量 `-m pytest tests -q` 为 **1396 passed、8 skipped、18 subtests passed**（489.97 s），日志 `birth_orientation_full.log`；8 项跳过为 CRESSim 上游构建。
+
+
+## 2026-10-23：当前公式的 E3 六毫米下刀步长细化
+
+RTX 4090，干净 `ca90da9`，命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py cut_h6_refine`。0.24 s、15.625/7.8125/3.90625 μs 的 **12** 组自然差分全部通过，最大误差 **0.009032%**；三档 32 步检查点状态重算差 **0**。相邻位置最大差 **5.513→1.591 nm**，横向/深度梯度相邻差 **0.11836%→0.011813% / 0.18223%→0.11009%**。报告 `e3-current-20261022/runs/e3_ca90da9/cut_h6_refine/report.json`；队列继续完整轨迹细化及 4 mm 活跃释放补充检查。

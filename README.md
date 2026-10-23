@@ -63,7 +63,7 @@ ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
 
 `blademaster_warp.differentiable_cohesive.solve` 提供移动内聚界面的全局平衡与隐式反向，`solve_force` 使用积分总力并支持零面积；`cohesive_geometry.InterfaceGeometry` 保存几何舍入余量和检查点，`reference_interface.reconstruct` 重建参考表面。`reference_cut.quadrature` 计算切面参考积分；自然扫掠使用 `reference_surface.swept_edge(..., reference_coordinates=model.reference_coordinates)` 保留参考坐标与裁剪精度。`reference_grid.build_trace` 构造任意切面位置的双侧网格映射。`grid_constraints.project_velocity` 提供闭合网格约束，`cohesive_grid_update.advance_material` 用积分总力连接首阶 MUSL 与内聚损伤，`cohesive_history.CohesiveHistory` 在追加切面时保留旧积分点、损伤和检查点状态。运行 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_cohesive.py tests/test_cohesive_force.py tests/test_reference_interface.py tests/test_reference_coordinates.py tests/test_reference_surface.py tests/test_reference_cut.py tests/test_reference_grid.py tests/test_grid_constraints.py tests/test_cohesive_grid_update.py tests/test_cohesive_history.py -q` 核对几何、内力、能量、运动、输入导数及检查点。自然切口接入进度见可微分计划。
 
-`CohesiveHistory.reference_trace` 用有限切面可见性选择多刀界面的双侧网格场；`advance(..., positive_sides=...)` 将它用于材料推进。对应检查为 `tests/test_reference_visibility.py`。
+`CohesiveHistory.append(..., tool_rotation=...)` 保存切面出生朝向；`reference_trace` 用它和有限切面可见性选择多刀界面的双侧网格场，`advance(...)` 用于材料推进。对应检查为 `tests/test_reference_visibility.py` 和 `tests/test_cohesive_orientation.py`。
 
 ## 文档
 

@@ -16,6 +16,8 @@ from .reference_cut import CutQuadrature
 from .reference_grid import build_trace
 from .reference_surface import ReferenceSurface
 from .reference_visibility import ReferenceVisibility
+from ._exact_surface import cross
+from .reference_coordinates import rational
 
 
 @wp.kernel
@@ -43,6 +45,33 @@ def _concatenate(a, b):
     return out
 
 
+def _birth_sides(normals, owners, deformation, rotation):
+    if rotation.shape != (1,) or rotation.dtype != wp.quatd or rotation.device != normals.device:
+        raise ValueError("Birth orientation requires one matching float64 knife quaternion")
+    values = rotation.numpy()
+    if not np.isfinite(values).all() or np.all(values == 0):
+        raise ValueError("Birth knife orientation must be finite and nonzero")
+    q = rational(values[0])
+    v, w = q[:3], q[3]
+    axis = np.array([1, 0, 0], dtype=object)
+    positive_axis = ((w * w - np.dot(v, v)) * axis + 2 * v * v[0] + 2 * w * cross(v, axis)) / np.dot(q, q)
+    frames = deformation.numpy()
+    directions = {}
+    for owner in np.unique(owners):
+        F = rational(frames[owner])
+        determinant = np.dot(F[0], cross(F[1], F[2]))
+        if determinant <= 0:
+            raise ValueError("Birth side transport requires positive deformation determinants")
+        adjugate = np.array([cross(F[1], F[2]), cross(F[2], F[0]), cross(F[0], F[1])], dtype=object).T
+        directions[owner] = adjugate @ positive_axis / determinant
+    signs = np.array(
+        [np.dot(normal, directions[owner]) for normal, owner in zip(rational(normals.numpy()), owners)]
+    )
+    if np.any(signs == 0):
+        raise ValueError("A swept interface must separate the knife's two lateral sides")
+    return np.where(signs > 0, 2, 1).astype(np.int8)
+
+
 @dataclass(frozen=True)
 class CohesiveHistory:
     surface: ReferenceSurface
@@ -51,6 +80,7 @@ class CohesiveHistory:
     history: wp.array
     material: wp.array
     cut_indices: np.ndarray
+    positive_sides: np.ndarray | None = None
 
     def __post_init__(self):
         count = len(self.quadrature.area)
@@ -83,6 +113,16 @@ class CohesiveHistory:
         if any(not np.isfinite(a.numpy()).all() for a in arrays) or np.any(self.history.numpy() < 0):
             raise ValueError("Cohesive state must be finite with nonnegative damage history")
         object.__setattr__(self, "cut_indices", cuts.astype(np.int64, copy=True))
+        positive = (
+            np.zeros(count, dtype=np.int8) if self.positive_sides is None else np.asarray(self.positive_sides)
+        )
+        if (
+            positive.shape != (count,)
+            or not np.issubdtype(positive.dtype, np.integer)
+            or not np.isin(positive, [0, 1, 2]).all()
+        ):
+            raise ValueError("Birth sides must be ternary digits matching the quadrature")
+        object.__setattr__(self, "positive_sides", positive.astype(np.int8, copy=True))
 
     @classmethod
     def empty(cls, particle_count, *, device):
@@ -98,12 +138,14 @@ class CohesiveHistory:
             np.empty(0, dtype=np.int64),
         )
 
-    def append(self, candidate, reference, deformation, material, *, cut_index):
+    def append(self, candidate, reference, deformation, material, *, cut_index, tool_rotation=None):
         """Append newly swept reference area, including zero-measure boundary terms.
 
         Deformation and (strength, Gc, unused) parameters are indexed by particle.
         The birth frame is the affine map used to pull back the material sweep.
         Cut indices label creation; changing the current knife does not reset them.
+        A birth knife quaternion transports its positive lateral axis by F^-1;
+        the sign against each reference normal determines the permanent side order.
         """
         if (
             isinstance(cut_index, (bool, np.bool_))
@@ -123,6 +165,11 @@ class CohesiveHistory:
         if not fresh.polygons:
             return self
         quadrature = fresh.quadrature(reference)
+        positive = (
+            np.zeros(len(quadrature.area), dtype=np.int8)
+            if tool_rotation is None
+            else _birth_sides(quadrature.normals, quadrature.owners, deformation, tool_rotation)
+        )
         owners = wp.array(quadrature.owners, dtype=int, device=device)
         frame = wp.empty(len(owners), dtype=wp.mat33d, device=device, requires_grad=True)
         parameters = wp.empty(len(owners), dtype=wp.vec3d, device=device, requires_grad=True)
@@ -148,6 +195,7 @@ class CohesiveHistory:
             _concatenate(self.history, history),
             _concatenate(self.material, parameters),
             np.r_[self.cut_indices, np.full(len(owners), cut_index, dtype=np.int64)],
+            np.r_[self.positive_sides, positive],
         )
 
     def updated(self, geometry, history):
@@ -171,10 +219,10 @@ class CohesiveHistory:
         if not len(self.history):
             result = model.step(state, topology=topology, duration=duration, impulse=impulse, gravity=gravity)
             return result, self
-        if positive_sides is not None:
-            if sides is not None:
-                raise ValueError("Specify explicit side codes or natural face orientations")
+        if sides is None:
             trace = self.reference_trace(model, topology, positive_sides)
+        elif positive_sides is not None:
+            raise ValueError("Specify explicit side codes or natural face orientations")
         else:
             trace = build_trace(model, topology, self.quadrature.points, self.quadrature.normals, sides)
         step = advance_material(
@@ -194,13 +242,13 @@ class CohesiveHistory:
         )
         return step.state, self.updated(step.geometry, step.interface.history)
 
-    def reference_trace(self, model, topology, positive_sides):
+    def reference_trace(self, model, topology, positive_sides=None):
         """Map both sides using birth orientation and current finite cut geometry.
 
         Positive sides are ternary digits (1 or 2) on the positive reference
         normal side of each quadrature point. Other cuts use segment visibility.
         """
-        positive = np.asarray(positive_sides)
+        positive = self.positive_sides if positive_sides is None else np.asarray(positive_sides)
         if positive.shape != self.cut_indices.shape or not np.isin(positive, [1, 2]).all():
             raise ValueError("Each quadrature point requires its positive-normal cut side")
         digits = np.asarray([3 ** int(cut) for cut in self.cut_indices], dtype=object)
@@ -242,6 +290,7 @@ class CohesiveHistory:
             history=self.history.numpy().copy(),
             material=self.material.numpy().copy(),
             cut_indices=self.cut_indices.copy(),
+            positive_sides=self.positive_sides.copy(),
         )
 
     def differentiable_arrays(self):
@@ -283,4 +332,5 @@ class CohesiveHistory:
             array("history", wp.float64),
             array("material", wp.vec3d),
             snapshot["cut_indices"],
+            snapshot["positive_sides"],
         )

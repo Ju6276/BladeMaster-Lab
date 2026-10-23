@@ -333,12 +333,19 @@ def _solve_primal(values, compliance_factor=1.0, return_traction=False, *, integ
             break
         step = solve_blocks(jacobian, -residual, size)
         norm = np.linalg.norm(residual)
-        for backtrack in range(30):
-            candidate = y + 2.0 ** (-backtrack) * step
+        fraction = 1.0
+        roundoff = 64 * np.finfo(float).eps * scale
+        if not np.isfinite(step).all():
+            raise RuntimeError(f"Nonfinite semismooth step at {iteration}: {error}")
+        while fraction:
+            candidate = y + fraction * step
+            if np.array_equal(candidate, y):
+                raise RuntimeError(f"Semismooth line search stalled at {iteration}: {error}")
             updated = at(candidate)[0]
-            if np.linalg.norm(updated) <= (1 - 0.0001 * 2.0 ** (-backtrack)) * norm:
+            if np.linalg.norm(updated) <= (1 - 0.0001 * fraction) * norm + roundoff:
                 y = candidate
                 break
+            fraction *= 0.5
         else:
             raise RuntimeError(f"Semismooth line search failed at {iteration}: {error}")
     else:

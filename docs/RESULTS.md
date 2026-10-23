@@ -1666,3 +1666,11 @@ RTX 4090，`f2506bf`、dirty=true。闭合非均匀速度使用 ΠLΠ 的生成�
 RTX 4090，`bf0c2c9`、dirty=true。反力 Jacobian 直接使用 −Dprox；卸载时按操作数大小选择等价残差，加载保留牵引差。κ/(λσ) 从 **1e-18** 到 **1e3** 的八例解析核对通过；最小比值处旧表达的反力块相对误差 **1**，修复后所有比值及压力/积分总力表达的最大误差 **2.171e-16**。材料势、强度和最终求解容差保持原值。
 
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_closed_residual.py tests/test_cohesive_adjoint_refinement.py tests/test_cohesive_small_opening.py tests/test_cohesive_linear.py -q` 为 **55 passed**（2.53 s）；`runs/e5_release_audit/residual_jacobian_compare.py` 保存新旧表达对照。全量 `-m pytest tests -q` 为 **1548 passed、8 skipped、18 subtests passed**（608.00 s），8 项跳过为 CRESSim 上游构建。报告/日志在 `runs/grid_update/{residual_jacobian_compare.json,cohesive_residual_tests.log,cohesive_residual_full_final.log}`。
+
+## 2026-10-23：近相关压缩约束的线搜索
+
+RTX 4090，`05b5dcc`、dirty=true。线搜索加入舍入尺度后，64 粒子非均匀速度场的四例近闭合状态通过分裂尺度 1/0.25 的解一致性核对；位移 rtol=**2e-8**、atol=**1e-20 m**，反力 rtol=**2e-8**、atol=**1e-12 N**。原线搜索停滞的 κ=**1e-13/1e-15 m** 两例分别用 **14/7** 次半光滑迭代收敛，最终残差 **7.2124e-25/5.7700e-25**。最终残差标准保持原值，方法来源见 METHOD。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_globalization.py -q` 为 **4 passed**（14.52 s）；全量 `-m pytest tests -q` 为 **1552 passed、8 skipped、18 subtests passed**（623.98 s）。日志 `runs/grid_update/globalization_{unit,full}.log`；新旧线搜索对照为 `runs/e5_release_audit/globalization_generated_cases.py`，报告 `runs/grid_update/globalization_generated_cases.json`。
+
+耗散与内聚反力联合推进的极小历史梯度检查仍失败：κ=**1e-15 m** 时，时长到速度的三档差分相对误差 **2.36e-10/2.17e-9/2.03e-8**，时长到反力为 **0.258/0.707/1.177**。报告 `runs/grid_update/birth_channel_gradient.json`。下一项核对变形增量与反力的舍入误差传播，完成第 6 项联合求解后再接在线切面出生。

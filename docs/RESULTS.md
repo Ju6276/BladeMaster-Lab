@@ -1724,3 +1724,5 @@ RTX 4090，`f555c3f`、dirty=true。`CompensatedArray` 保存高位/余量、线
 局部残差/Jacobian 的两分量原型通过 **10** 组本构分支、**16** 组时长/历史差分，最大相对误差 **7.190e-8**。两阶段基准的反力差 **2.169e-19 N**，时长/历史梯度误差 **2.492e-7/7.196e-9**；99 维 Jacobian 与 55 位表达式的相对差 ≤**5.458e-33**。该对照的基底构造和阶段速度副本仍用 55 位计算。命令前缀同上：`runs/e5_release_audit/compensated_residual_branches.py`、`compensated_residual_rollout.py`；报告为 `runs/grid_update/` 下同名 JSON。下一项接入补偿局部平衡、位移余量与完整阶段状态。
 
 正式代码的解析检查覆盖 **2⁸⁰** 相消余量、**2⁻¹⁰²⁰/2¹⁰²⁰** 输入的乘积、90 位 Decimal 独立惯性解、零率导数和状态重启。全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1599 passed、8 skipped、18 subtests passed**（712.26 s），日志 `runs/grid_update/compensated_state_full.log`；8 项跳过为 CRESSim 上游构建。
+
+局部基底构造、残差和 Jacobian 全部使用两分量算术的原型，通过 **10** 组分支、**16** 组参数方向及两阶段 **6/6** 组差分。时长三档误差 **1.989e-6/1.994e-6/1.994e-6**，历史 **1.039e-6/2.998e-9/9.750e-10**；反力与独立参考差 **1.085e-19 N**。命令 `runs/e5_release_audit/paired_equilibrium_branches.py`、`paired_equilibrium_fd.py`，报告为 `runs/grid_update/` 下同名 JSON。阶段速度副本仍由 55 位对照传递；下一项将局部求解及位移余量纳入正式阶段状态，并核对重复/零面积约束与塑性。

@@ -1311,3 +1311,26 @@ OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extri
 日志和报告位于 `runs/interface_precision/`，工作树见 HANDOFF。
 
 干净 `66537e3` 的扩展精度原型已完成 160 步其余七类输入，加上初速度共 **8/8** 类均至少两档通过；其余七类的最差第二档误差 **1.42430e-6**。2 mm 节点空间对照的四档差分全部通过，最大误差 **4.02542e-6**，内部 Gauss 位置的最小间隙 **−1.54109 μm**。命令分别为 `extrinsic_precise_geometry_scan.py --solver unified --mode existing --steps 160 --inputs initial_gap initial_history initial_frame material young duration acceleration --output runs/e5_release_audit/precise_geometry160_remaining.json` 和 `extrinsic_fast_mesh_validate.py --spacing .002 --quadrature nodal --output runs/e5_release_audit/nodal_mesh_h002.json`，均使用 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/<入口>`。
+
+## 2026-10-23：当前公式的 E3 四毫米下刀
+
+干净 `ca90da9`，RTX 4090，4 mm、4892 粒子、0.24 s、18240 步、G_c=70，dt/PIC 参考时间 13.157895 μs。刀路、初始高度、E/G_c 共 **10** 组自然差分通过，最大相对误差 **0.374054%**；32/128 步检查点状态重算差 **0**，控制量/初始位置梯度差 **3.238e-14/8.881e-13**。释放 **5** 粒子，CUDA 数组峰值 **15.154 GiB**。命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/run_case.py cut_h4`，报告 `runs/e3_ca90da9/cut_h4/report.json`；队列进入 6 mm 完整轨迹。
+
+## 2026-10-23：参考表面重建与闭合场插入
+
+RTX 4090，`f507dc0`、dirty=true。`reference_interface.reconstruct` 的 **7 passed**（1.01 s），覆盖统一/双侧仿射运动、面形变的空间导数、六类输入的两档差分和整体平移虚功。实际 TLMPM 参考权重上的平移、旋转、拉伸、剪切状态，初始重建间隙 ≤**5.067e-18 m**、面形变误差 ≤**3.331e-16**。旋转状态在分侧网格推进后仍产生 **1.465e-6 m** 间隙，未切场为 **2.108e-18 m**，需要统一完整闭合场的网格运动更新。
+
+网格质量内积下的闭合投影同时用于旧速度、新速度和 MUSL 重映射。四种运动 × dt=2/1/0.5 μs 共 **12** 例通过：与未切物体的位置差 **0**、速度差 ≤**5.552e-17 m/s**、F 差 ≤**6.939e-18**、应力差 ≤**5.685e-14 Pa**。平移/旋转的牵引为 **0**；拉伸/剪切的牵引最大 **1604.938/370.486 Pa**，与均匀材料应力差 ≤**3.184e-12 Pa**。下一项连接闭合约束与损伤后的内聚响应。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_reference_interface.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/reference_kinematics_probe.py
+OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/closed_grid_insertion.py
+```
+
+全量 **1119 passed、8 skipped、18 subtests passed**（284.42 s）；8 项跳过为 CRESSim 上游构建。日志/报告 `runs/reference_interface/{unit.log,full.log,kinematics.json,closed_grid.json}`，工作树见 HANDOFF。
+
+插入对照使用 `b7048c7`、dirty=true（对应 `f507dc0` 源码）。普通粒子界面更新在平移的约 **1e-23 m** 间隙舍入处求解失败，旋转 dt=2 μs 产生假断裂耗散 **6.240e-6 J**。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_insertion_patch.py`，报告 `runs/interface_insertion/patch.json`。
+
+相同源码的 160 步几何精度核对已完成八类输入，各至少两档误差 ≤**2e-5**；其余七类的最差第二档误差 **1.39787e-6**。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/extrinsic_library_geometry_scan.py --solver unified --mode existing --steps 160 --inputs initial_gap initial_history initial_frame material young duration acceleration --output runs/interface_precision/remaining160.json`。

@@ -216,6 +216,46 @@ class CohesiveHistory:
         gravity=(0.0, 0.0, -9.81)
     ):
         """Advance retained points using side codes ordered along each face normal."""
+        from .cohesive_stages import AffineState, advance_affine
+        from .reference_affine import build_transfer
+
+        if isinstance(state, AffineState):
+            transfer = build_transfer(model, topology)
+            if not len(self.history):
+                separation = model.zeros((0, 4 * model.n), float)
+                frame = model.zeros((0, 4 * model.n), wp.vec3)
+            else:
+                if sides is None:
+                    trace = self.reference_trace(
+                        model, topology, positive_sides, equivalent_slots=transfer.equivalent_slots
+                    )
+                elif positive_sides is not None:
+                    raise ValueError("Specify explicit side codes or natural face orientations")
+                else:
+                    trace = build_trace(
+                        model,
+                        topology,
+                        self.quadrature.points,
+                        self.quadrature.normals,
+                        sides,
+                        equivalent_slots=transfer.equivalent_slots,
+                    )
+                separation, frame = transfer.compose_trace(trace)
+            step = advance_affine(
+                transfer,
+                state,
+                self.geometry,
+                self.history,
+                self.quadrature.normals,
+                self.material,
+                separation,
+                frame,
+                self.quadrature.area,
+                duration=model.duration if duration is None else duration,
+                impulse=impulse,
+                gravity=gravity,
+            )
+            return step.state, self.updated(step.geometry, step.history)
         if not len(self.history):
             result = model.step(state, topology=topology, duration=duration, impulse=impulse, gravity=gravity)
             return result, self

@@ -100,6 +100,32 @@ class InterfaceGeometry:
             tape.record_func(backward, [high_gap, high_frame, *[a for a in sources if a.requires_grad]])
         return result
 
+    def extrapolate(self, other, fraction):
+        """Form self + fraction * (other - self), including rounding remainders."""
+        if self.gap.shape != other.gap.shape or self.gap.device != other.gap.device:
+            raise ValueError("Geometry stages must have matching shapes and devices")
+        if not np.isfinite(fraction):
+            raise ValueError("Geometry stage fraction must be finite")
+        outputs, remainders = [], []
+        for name in ("gap", "frame"):
+            a, b = getattr(self, name), getattr(other, name)
+            av = a.numpy().astype(EXTENDED) + getattr(self, name + "_remainder")
+            bv = b.numpy().astype(EXTENDED) + getattr(other, name + "_remainder")
+            value = av + EXTENDED(fraction) * (bv - av)
+            out = wp.array(value.astype(float), dtype=a.dtype, device=a.device, requires_grad=True)
+            outputs.append(out)
+            remainders.append(value - out.numpy().astype(EXTENDED))
+            tape = wp._src.context.runtime.tape
+            if tape is not None:
+
+                def backward(a=a, b=b, out=out):
+                    seed = out.grad.numpy()
+                    _add_gradient(a, (1.0 - fraction) * seed)
+                    _add_gradient(b, fraction * seed)
+
+                tape.record_func(backward, [out, *[a for a in (a, b) if a.requires_grad]])
+        return InterfaceGeometry(*outputs, *remainders)
+
 
 def solve_geometry(
     geometry,

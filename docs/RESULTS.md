@@ -1617,4 +1617,25 @@ RTX 4090，`4f29254`、dirty=true。`reference_affine` 新增 **13** 项检查�
 
 ## 2026-10-23：E3 活跃释放的 4 mm 追加细化
 
-干净 `ca90da9`，RTX 4090，命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/release_h4_more.py`。50 ms、G_c=7、dt=1.64473684 μs，释放 **5** 粒子；四组自然差分最大相对误差 **4.921e-7**，32 步检查点全部状态重算差 **0**。与 dt=3.28947368 μs 相比，位置差 **0.184 nm**，横向/深度梯度差 **0.013614%/0.219121%**；侧码、释放及事件集合一致，事件时刻差 **1.022 ns**。报告 `e3-current-20261022/runs/e3_ca90da9/release_h4_more/report.json`；dt/16 继续核对。
+干净 `ca90da9`，RTX 4090，命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/release_h4_more.py`。50 ms、G_c=7、dt=1.64473684 μs，释放 **5** 粒子；四组自然差分最大相对误差 **4.921e-7**，32 步检查点全部状态重算差 **0**。与 dt=3.28947368 μs 相比，位置差 **0.184 nm**，横向/深度梯度差 **0.013614%/0.219121%**；侧码、释放及事件集合一致，事件时刻差 **1.022 ns**。报告 `e3-current-20261022/runs/e3_ca90da9/release_h4_more/report.json`。
+
+同报告的 dt/16=**0.822368421 μs**、60800 步细化已完成，队列退出码 **0**。32 步检查点状态重算差 **0**，释放仍为 **5** 粒子；最细相邻位置差 **0.0545 nm**，横向/深度梯度差 **0.0019415%/0.0269824%**，E/G_c 梯度差 **0.0280664%/0.0209865%**；侧码、释放、接触对及事件集合一致，事件时刻差 **0.2658 ns**。该档执行状态/梯度细化，刀路有限差分在 dt/8 执行。独立正向 **725.48 s**，检查点正向/重算/反向 **524.78/546.86/216.52 s**。
+
+## 2026-10-23：仿射材料分阶段推进与永久历史入口
+
+RTX 4090，`5212332`、dirty=true。`cohesive_stages.advance_affine` 和 `CohesiveHistory.advance` 已连接独立仿射状态、两阶段内聚求解及永久损伤。自由落体的端点/查询中点/时长导数符合解析解；三类轨迹重启逐位一致；分段反向保留应力、仿射速度及界面伴随。已有损伤/受载开裂的八步轨迹共 **44** 组输入差分通过（rtol=2e-5、atol=2e-8），活跃塑性的 E/屈服应力/仿射速度共 **6** 组差分通过（rtol=2e-5、atol=1e-8）；64 粒子全部塑性更新，塑性体积比按 rtol=2e-12 通过，逐步塑性耗散非负。
+
+公开入口的 **15** 例能量/步长检查完成：纯旋转及预载旋转均零开口、零损伤；受载开裂在 dt=2/1/0.5 μs 的能量相对残差 **8.80347e-8/1.10049e-8/1.37588e-9**，相邻速度差 **6.14264e-5→1.53614e-5 m/s**。200 μs 塑性例的残差 **5.65980e-5/2.82956e-5/1.41469e-5**，耗散 **2.04170e-6/2.03326e-6/2.02904e-6 J**；动能包含独立仿射矩。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_stages.py -q`；`-m pytest tests/test_cohesive_stages.py -k 'retained_surface or active_plastic' -q`；`runs/e5_release_audit/stages_source_validate.py`。定向检查 **8 passed**（139.91 s）及追加 **2 passed**（5.67 s）；日志/报告为 `e5-grid-20261023/runs/grid_update/stages_{unit.log,extra.log,source_validate.json}`。下一项接入固定耗散率、刀/板与界面闭合接触、在线切面出生和自然事件重算。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1527 passed、8 skipped、18 subtests passed**（568.50 s），日志 `runs/grid_update/stages_full.log`；8 项跳过为 CRESSim 上游构建。
+
+
+## 2026-10-23：固定率仿射传递耗散原型
+
+RTX 4090，`5212332`、dirty=true。6/4 mm 方块、扰动方块和圆柱六例，η=**2000 s⁻¹**，200 μs 的随机速度/仿射矩耗散均为正；一次推进与四次等分最大差 **1.5544e-15 m/s**，全局仿射场最大变化 **5.8634e-16 m/s**。速度、仿射矩、时长、速率共 **48** 组两档差分最大相对误差 **8.691e-8**。
+
+对称半步组合的纯旋转、受载开裂、塑性及含随机速度的已有损伤共 **12** 例完成。已有损伤三档的实际传递耗散 **9.6220254e-7/9.6220258e-7/9.6220259e-7 J**，能量相对残差 ≤**2.05e-12**，最细相邻速度差 **2.6805e-8 m/s**，永久历史保持 **1e-3 m**。仿射运动例的计算耗散处于舍入尺度（单步最小 **−3.69e-18 J**），按带符号原值计入账本。方法和本地推导见 METHOD；组合的时长链及接触联合推进继续核对。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`runs/e5_release_audit/affine_damping_probe.py`；`runs/e5_release_audit/stages_damping_validate.py`；`runs/e5_release_audit/stages_damping_opened.py`。报告在 `e5-grid-20261023/runs/grid_update/`，同名 JSON。

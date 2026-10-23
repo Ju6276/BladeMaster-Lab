@@ -46,11 +46,22 @@ def material_energy(x, v, F, Fp, mass, volume, young, poisson, gravity=(0., 0., 
     return result
 
 
-def energy_snapshot(model, state, gravity=(0., 0., -9.81)):
-    return material_energy(
+def energy_snapshot(model, state, gravity=(0., 0., -9.81), *, affine_transfer=None):
+    result = material_energy(
         *(getattr(state, name).numpy() for name in ('x', 'v', 'F', 'Fp')),
         model.mass, model.volume, float(model.young.numpy()[0]), model.config.poisson_ratio, gravity,
     )
+    affine = getattr(state, "affine", None)
+    if affine is not None:
+        if affine_transfer is None or affine_transfer.model is not model:
+            raise ValueError("Affine-state energy requires the matching reference transfer")
+        if affine.shape != state.v.shape or not np.isfinite(affine.numpy()).all():
+            raise ValueError("Affine energy requires finite particle velocity gradients")
+        moments = affine.numpy() @ affine_transfer.root.numpy()
+        result["affine_kinetic_j"] = float(0.5 * model.mass * np.sum(moments * moments))
+        if not np.isfinite(result["affine_kinetic_j"]):
+            raise FloatingPointError("Nonfinite affine kinetic energy")
+    return result
 
 
 def contact_storage(gap, history, normal_stiffness, tangent_stiffness):

@@ -1419,3 +1419,13 @@ RTX 4090，`4646fa0`、dirty=true。闭合约束直接使用固定秩伪逆 VJP�
 界面测试 **38 passed**（16.76 s），覆盖十类输入差分、重复积分点、检查点、12 例小面积解析导数及三例损伤历史单侧导数。命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_differentiable_cohesive.py -q`；`runs/e5_release_audit/cohesive_area_analytic.py`。日志/报告在 `e5-grid-20261023/runs/grid_update/{closed_adjoint_final_unit.log,cohesive_area_analytic.json}`。
 
 提交前全量 **1191 passed、8 skipped、18 subtests passed**（352.79 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/closed_adjoint_full.log`。
+
+## 2026-10-23：自然切面与部分侧码的网格映射
+
+RTX 4090，`9765655`、dirty=true。6/4 mm 方块/圆柱、共享场/单侧/交叉侧码的多项式重现、界面—粒子虚功、总内力与位置/法向导数共 **18** 项检查通过（61.01 s）。同节点相容场按参考质量取值，系数及来源见 METHOD；全共享场分离映射严格为 **0**。
+
+两种采样、直刀/0.2 rad 斜刀各推进两步，共 **31** 个接受段、**24** 个非空参考切面和 **1716** 个积分点，双侧映射全部建立。干净 `9765655` 的同组输入有 **10** 次缺失侧码错误；首次扫掠面积 **5.92095e-7 m²**，当时全部 **64** 个粒子的侧码仍为 0。下一项处理 Q=0 共享场、零面积项的物理装配和永久界面历史。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_reference_grid.py -q`；`runs/e5_release_audit/natural_surface_support.py`。工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，日志/报告 `runs/grid_update/{partial_trace_unit.log,natural_surface_support.json,natural_surface_support_baseline.json}`。
+
+提交前全量 **1203 passed、8 skipped、18 subtests passed**（413.32 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/partial_trace_full.log`。

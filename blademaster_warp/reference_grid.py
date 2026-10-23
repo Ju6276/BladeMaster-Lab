@@ -1,7 +1,8 @@
 """Reference-grid traces with polynomial extension of unsupported side nodes.
 
 Positions and grid spacing are in metres. Each surface point selects two cut
-codes; missing node values use the trilinear polynomial of a supported cell.
+codes. Compatible fields share a mass-weighted nodal value; missing nodes use
+the trilinear polynomial of a supported cell.
 """
 
 from dataclasses import dataclass
@@ -88,37 +89,65 @@ class ReferenceGridTrace:
     gradients: wp.array
 
 
+def _compatible(codes, side):
+    codes = codes.copy()
+    result = np.ones(codes.shape, dtype=bool)
+    while side:
+        digit = side % 3
+        if digit:
+            result &= (codes % 3 == 0) | (codes % 3 == digit)
+        codes //= 3
+        side //= 3
+    return result
+
+
 def _coefficients(model, topology, bases, sides, origin, cells):
     spacing = model.config.grid_spacing
     keys = topology.keys.numpy()
-    lookup = {int(key): slot for slot, key in enumerate(keys)}
-    codes = keys[topology.slots.numpy()[:, 0]] // model.node_count
+    slots = topology.slots.numpy()
+    codes = keys // model.node_count
+    particle_codes = codes[slots[:, 0]]
+    masses = np.bincount(
+        slots.ravel(), weights=model.weights.numpy().ravel() * model.mass, minlength=topology.count
+    )
     particle_cells = np.floor((model.reference - origin) / spacing).astype(int)
-    roots = {int(code): np.unique(particle_cells[codes == code], axis=0) for code in np.unique(sides)}
+    roots, nodal = {}, {}
+    for code in np.unique(sides):
+        code = int(code)
+        roots[code] = np.unique(particle_cells[_compatible(particle_codes, code)], axis=0)
+        groups = {}
+        for slot in np.flatnonzero(_compatible(codes, code) & (masses > 0)):
+            groups.setdefault(int(keys[slot] % model.node_count), []).append(int(slot))
+        nodal[code] = {}
+        for node, group in groups.items():
+            total = np.sum(masses[group])
+            nodal[code][node] = [(slot, masses[slot] / total) for slot in group]
     if any(len(value) == 0 for value in roots.values()):
-        raise ValueError("Each trace side requires particle support for its cut code")
+        raise ValueError("Each trace side requires compatible particle support")
     extension = {}
     indices, coefficients = [], []
     for q, base in enumerate(bases):
         nodes = np.ravel_multi_index((base + CORNERS).T, tuple(cells + 1))
         for side, code in enumerate(sides[q]):
+            code = int(code)
             row = {}
             for a, (node, index) in enumerate(zip(nodes, base + CORNERS)):
-                key = int(code * model.node_count + node)
+                key = (code, int(node))
                 if key not in extension:
-                    if key in lookup:
-                        extension[key] = [(lookup[key], 1.0)]
+                    if node in nodal[code]:
+                        extension[key] = nodal[code][node]
                     else:
-                        candidates = roots[int(code)]
+                        candidates = roots[code]
                         distance = np.maximum(np.maximum(candidates - index, index - candidates - 1), 0)
                         root = candidates[np.argmin(np.sum(distance**2, axis=1))]
                         local = index - root
                         values = np.where(CORNERS, local, 1 - local).prod(axis=1)
                         root_nodes = np.ravel_multi_index((root + CORNERS).T, tuple(cells + 1))
                         extension[key] = [
-                            (lookup[int(code * model.node_count + node_id)], float(value))
+                            (slot, float(value) * coefficient)
                             for node_id, value in zip(root_nodes, values)
                             if value != 0
+                            for slot, coefficient in nodal[code][node_id]
                         ]
                 for slot, coefficient in extension[key]:
                     row.setdefault(slot, np.zeros(8))[a] += coefficient
@@ -131,9 +160,11 @@ def _coefficients(model, topology, bases, sides, origin, cells):
 def build_trace(model, topology, points, normals, sides):
     """Return double-sided values, spatial derivatives and cohesive grid maps.
 
-    Sides is an integer array (point, 2) of cut codes. A missing node takes the
-    polynomial extension from its closest particle-supported cell; ties use
-    lexicographic cell order. Cell and root selection are rebuilt for each call.
+    Sides is an integer array (point, 2) of cut codes. Zero ternary digits are
+    shared sides. Compatible fields at a node contribute in proportion to their
+    reference mass. Missing nodes use the polynomial of the closest compatible
+    particle-supported cell; ties use lexicographic cell order. Cell and root
+    selection are rebuilt for each call.
     """
     count = len(points)
     sides = np.asarray(sides)

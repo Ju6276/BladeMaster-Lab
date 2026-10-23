@@ -285,4 +285,6 @@ E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-2026
 
 `differentiable_cohesive._closed_pullback` 对闭合线性约束及所选反力直接求固定秩导数，保留 κ=0 的历史单侧导数。`closed_adjoint_final_unit.log` 为 **38 passed**（16.76 s），全量 `closed_adjoint_full.log` 为 **1191 passed、8 skipped、18 subtests passed**（352.79 s）。`cohesive_area_analytic.json` 的四种状态、五档面积共 **20** 例符合解析解。受压总反力在 A→0 时保持有限，张开和卸载总力趋零；下一步在实际自然分侧状态下核对约束建立、零面积积分项和永久历史。
 
+`reference_grid.build_trace` 的部分侧码映射按同节点相容场的参考质量加权，随后采用现有多项式延拓。CRAMP 来源及本地推导见 METHOD。`runs/grid_update/partial_trace_unit.log` 为 **18 passed**（61.01 s），全量 `partial_trace_full.log` 为 **1203 passed、8 skipped、18 subtests passed**（413.32 s）；`natural_surface_support.json` 的四种初态/刀角共 **31** 个接受段、**24** 个非空面、**1716** 个积分点全部建立映射；基线的十次缺失侧码错误已修复。全共享场的分离映射 Q=0；下一项处理其内聚平衡零自由度、零面积积分项、永久历史和 RK2 接入。
+
 插入失败对照位于 `e5-interface-20261023/runs/interface_insertion/patch.json`：平移在 1.096e-23～4.386e-23 m 的间隙舍入处触发半光滑线搜索失败；刚体旋转 dt=2 μs 的假断裂耗散为 6.240e-6 J。该对照对应 `b7048c7`、dirty=true 的 `f507dc0` 源码。入口 `runs/e5_release_audit/extrinsic_insertion_patch.py`。

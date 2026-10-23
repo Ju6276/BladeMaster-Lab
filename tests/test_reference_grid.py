@@ -190,3 +190,147 @@ def test_moving_plane_derivatives_through_coupled_material_steps():
                 losses.append(sum(float(np.sum(a.numpy() * seed)) for a, seed in zip(run(), seeds)))
             np.testing.assert_allclose(ad, (losses[1] - losses[0]) / (2 * epsilon), rtol=2e-5, atol=1e-9)
         source.assign(base)
+
+
+def partial_setup(spacing, shape, case):
+    cfg = Config(
+        size=(0.012, 0.012, 0.012),
+        grid_spacing=spacing,
+        shape=shape,
+        dt=1e-6,
+        young_modulus=20000.0,
+        yield_stress=0.0,
+        external_tool=True,
+    )
+    model = MaterialTrajectory(cfg, precision="float64", ordered_transfers=True)
+    x, y, z = model.reference.T
+    sides = np.tile([1, 2], (3, 1))
+    if case == "uncut":
+        codes = np.zeros(model.n, dtype=np.int64)
+    elif case == "front":
+        codes = np.where((x > 0) & (z > 0.006), 2, 0)
+    else:
+        codes = np.where(x < 0, 1, 2) + 3 * np.where(y < 0, 0, 2)
+        sides = np.array([[4, 5], [7, 8], [1, 2]])
+    topology = model.topology(codes)
+    points = model.array(
+        [[0.0003, -0.0004, 0.0053], [0.0011, 0.0013, 0.0067], [-0.0012, 0.0007, 0.0081]], wp.vec3
+    )
+    normals = model.array([[1.0, 0.2, -0.1], [0.1, 1.0, 0.3], [0.2, -0.1, 1.0]], wp.vec3)
+    return model, topology, points, normals, sides
+
+
+@pytest.mark.parametrize("spacing,shape", [(0.006, "block"), (0.004, "cylinder")])
+@pytest.mark.parametrize("case", ["uncut", "front", "crossing"])
+def test_partial_side_traces_preserve_polynomials(spacing, shape, case):
+    model, topology, points, normals, sides = partial_setup(spacing, shape, case)
+    trace = build_trace(model, topology, points, normals, sides)
+    nodal, _ = polynomial(nodal_coordinates(model, topology), spacing)
+    expected, gradient = polynomial(points.numpy(), spacing)
+    np.testing.assert_allclose(trace.weights.numpy().sum(axis=2), 1.0, atol=2e-15)
+    for side in [0, 1]:
+        np.testing.assert_allclose(trace.weights.numpy()[:, side] @ nodal, expected, rtol=2e-14, atol=2e-15)
+        np.testing.assert_allclose(
+            np.einsum("qna,n->qa", trace.gradients.numpy()[:, side], nodal), gradient, rtol=2e-14, atol=2e-13
+        )
+    if case == "uncut":
+        np.testing.assert_array_equal(trace.separation_map.numpy(), 0.0)
+
+
+def test_shared_nodal_field_uses_reference_mass_and_coupled_velocity():
+    model, _, _, _, _ = partial_setup(0.006, "block", "uncut")
+    point = model.array([[0.0, 0.0, 0.006]], wp.vec3)
+    normal = model.array([[1.0, 0.0, 0.0]], wp.vec3)
+    codes = np.arange(model.n) % 3
+    topology = model.topology(codes)
+    coordinates = nodal_coordinates(model, topology)
+    selected = np.flatnonzero(np.all(coordinates == point.numpy()[0], axis=1))
+    assert len(selected) == 3
+    slots = topology.slots.numpy()
+    masses = np.bincount(slots.ravel(), weights=model.weights.numpy().ravel() * model.mass)
+    trace = build_trace(model, topology, point, normal, [[1, 2]])
+    weights = trace.weights.numpy()[0]
+    m0, m1, m2 = masses[selected]
+    expected = np.zeros((2, topology.count))
+    expected[0, selected] = [m0 / (m0 + m1), m1 / (m0 + m1), 0]
+    expected[1, selected] = [m0 / (m0 + m2), 0, m2 / (m0 + m2)]
+    np.testing.assert_allclose(weights, expected, rtol=2e-15, atol=2e-15)
+
+    # With only shared and one assigned side, Eq. 8 gives one velocity per node.
+    codes[codes == 1] = 0
+    topology = model.topology(codes)
+    slots = topology.slots.numpy()
+    masses = np.bincount(slots.ravel(), weights=model.weights.numpy().ravel() * model.mass)
+    momentum = model.array(np.random.default_rng(761).normal(size=(topology.count, 3)), wp.vec3)
+    velocity = model.couple(topology, momentum).numpy() / masses[:, None]
+    trace = build_trace(model, topology, point, normal, [[1, 2]])
+    np.testing.assert_allclose(trace.separation_map.numpy() @ velocity, 0.0, atol=2e-12)
+
+
+@pytest.mark.parametrize("case", ["front", "crossing"])
+def test_partial_traces_pair_interface_power_with_material_work(case):
+    model, topology, points, normals, sides = partial_setup(0.006, "block", case)
+    mapped = build_trace(model, topology, points, normals, sides)
+    rng = np.random.default_rng(436)
+    velocity = rng.normal(scale=0.01, size=(model.n, 3))
+    traction = rng.normal(size=(len(points), 3))
+    surface_stress = model.config.grid_spacing * rng.normal(size=(len(points), 3, 3))
+    separation, frame = mapped.separation_map.numpy(), mapped.frame_map.numpy()
+    force = separation.T @ traction + np.einsum("qnb,qab->na", frame, surface_stress)
+    state = model.state(v=velocity)
+    zero = model.zeros(model.n, wp.vec3, False)
+    trace = {}
+    loaded = model.step(
+        state,
+        topology=topology,
+        impulse=zero,
+        stage_base=state,
+        grid_load=model.array(model.config.dt * force, wp.vec3),
+        trace=trace,
+    )
+    unloaded = model.step(state, topology=topology, impulse=zero, stage_base=state)
+    acceleration = (loaded.v.numpy() - unloaded.v.numpy()) / model.config.dt
+    grid_velocity = trace["old_v"].numpy()
+    gap_rate = separation @ grid_velocity
+    frame_rate = np.einsum("na,qnb->qab", grid_velocity, frame)
+    interface_power = np.sum(traction * gap_rate) + np.sum(surface_stress * frame_rate)
+    material_power = model.mass * np.sum(velocity * acceleration)
+    np.testing.assert_allclose(material_power, interface_power, rtol=2e-12, atol=2e-14)
+    np.testing.assert_allclose(model.mass * acceleration.sum(axis=0), 0.0, atol=2e-13)
+
+
+@pytest.mark.parametrize("case", ["front", "crossing"])
+def test_partial_trace_point_and_normal_gradients(case):
+    model, topology, points, normals, sides = partial_setup(0.006, "block", case)
+    rng = np.random.default_rng(425)
+    seed_q = rng.normal(size=(len(points), topology.count))
+    seed_g = model.config.grid_spacing * rng.normal(size=(len(points), topology.count, 3))
+    with wp.Tape() as tape:
+        trace = build_trace(model, topology, points, normals, sides)
+    tape.backward(
+        grads={
+            trace.separation_map: model.array(seed_q, float, False),
+            trace.frame_map: model.array(seed_g, wp.vec3, False),
+        }
+    )
+    for source, scale in [(points, 0.001), (normals, 0.1)]:
+        base = source.numpy().copy()
+        direction = scale * rng.normal(size=base.shape)
+        ad = float(np.sum(source.grad.numpy() * direction))
+        for epsilon in [1e-4, 1e-5]:
+            losses = []
+            for sign in [-1, 1]:
+                source.assign(base + sign * epsilon * direction)
+                trial = build_trace(model, topology, points, normals, sides)
+                losses.append(
+                    np.sum(seed_q * trial.separation_map.numpy()) + np.sum(seed_g * trial.frame_map.numpy())
+                )
+            np.testing.assert_allclose(ad, (losses[1] - losses[0]) / (2 * epsilon), rtol=2e-6, atol=1e-8)
+        source.assign(base)
+
+
+def test_trace_rejects_a_side_without_any_compatible_particle():
+    model, _, points, normals, sides = partial_setup(0.006, "block", "uncut")
+    topology = model.topology(np.full(model.n, 2))
+    with pytest.raises(ValueError, match="compatible particle support"):
+        build_trace(model, topology, points, normals, sides)

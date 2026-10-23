@@ -101,7 +101,7 @@ def _compatible(codes, side):
     return result
 
 
-def _coefficients(model, topology, bases, sides, origin, cells, visibility):
+def _coefficients(model, topology, bases, sides, origin, cells, visibility, equivalent_slots):
     spacing = model.config.grid_spacing
     keys = topology.keys.numpy()
     slots = topology.slots.numpy()
@@ -129,8 +129,16 @@ def _coefficients(model, topology, bases, sides, origin, cells, visibility):
             groups.setdefault(int(keys[slot] % model.node_count), []).append(int(slot))
         nodal = {}
         for node, group in groups.items():
-            total = np.sum(masses[group])
-            nodal[node] = [(slot, masses[slot] / total) for slot in group]
+            if equivalent_slots is None:
+                total = np.sum(masses[group])
+                nodal[node] = [(slot, masses[slot] / total) for slot in group]
+                continue
+            combined = {}
+            for slot in group:
+                representative = int(equivalent_slots[slot])
+                combined[representative] = combined.get(representative, 0.0) + masses[slot]
+            total = sum(combined.values())
+            nodal[node] = [(slot, mass / total) for slot, mass in combined.items()]
         supports[key] = roots, nodal
         return key, supports[key]
 
@@ -168,7 +176,7 @@ def _coefficients(model, topology, bases, sides, origin, cells, visibility):
     return indices, coefficients
 
 
-def build_trace(model, topology, points, normals, sides, *, visibility=None):
+def build_trace(model, topology, points, normals, sides, *, visibility=None, equivalent_slots=None):
     """Return double-sided values, spatial derivatives and cohesive grid maps.
 
     Sides is an integer array (point, 2) of cut codes. Zero ternary digits are
@@ -178,6 +186,8 @@ def build_trace(model, topology, points, normals, sides, *, visibility=None):
     particle-supported cell; ties use lexicographic cell order. Cell and root
     selection are rebuilt for each call. Particle-domain faces beyond the
     nominal grid use the boundary cell polynomial at their actual coordinates.
+    Equivalent slots must carry identical velocities at the same physical node;
+    their visible masses are combined before normalizing the trace weights.
     """
     count = len(points)
     sides = np.asarray(sides)
@@ -197,6 +207,18 @@ def build_trace(model, topology, points, normals, sides, *, visibility=None):
         visibility = np.asarray(visibility)
         if visibility.dtype != bool or visibility.shape != (count, model.n):
             raise ValueError("Trace visibility must be a boolean (point, particle) mask")
+    if equivalent_slots is not None:
+        equivalent_slots = np.asarray(equivalent_slots)
+        if (
+            equivalent_slots.shape != (topology.count,)
+            or not np.issubdtype(equivalent_slots.dtype, np.integer)
+            or np.any(equivalent_slots < 0)
+            or np.any(equivalent_slots >= topology.count)
+        ):
+            raise ValueError("Equivalent slots require one valid integer representative per grid slot")
+        keys = topology.keys.numpy() % model.node_count
+        if not np.array_equal(keys[equivalent_slots], keys):
+            raise ValueError("Equivalent slots must belong to the same physical grid node")
     values, normal_values = points.numpy(), normals.numpy()
     if (
         not np.isfinite(values).all()
@@ -208,7 +230,9 @@ def build_trace(model, topology, points, normals, sides, *, visibility=None):
     origin = -np.array([model.config.size[0] / 2, model.config.size[1] / 2, 0.0])
     cells = grid_cells(model.config.size, spacing)
     bases = np.clip(np.floor((values - origin) / spacing).astype(int), 0, cells - 1)
-    indices, coefficients = _coefficients(model, topology, bases, sides, origin, cells, visibility)
+    indices, coefficients = _coefficients(
+        model, topology, bases, sides, origin, cells, visibility, equivalent_slots
+    )
     weights = model.zeros((count, 2, topology.count), float)
     gradients = model.zeros((count, 2, topology.count), wp.vec3)
     separation = model.zeros((count, topology.count), float)

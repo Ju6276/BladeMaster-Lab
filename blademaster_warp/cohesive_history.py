@@ -242,7 +242,7 @@ class CohesiveHistory:
         )
         return step.state, self.updated(step.geometry, step.interface.history)
 
-    def reference_trace(self, model, topology, positive_sides=None):
+    def reference_trace(self, model, topology, positive_sides=None, *, equivalent_slots=None):
         """Map both sides using birth orientation and current finite cut geometry.
 
         Positive sides are ternary digits (1 or 2) on the positive reference
@@ -270,7 +270,13 @@ class CohesiveHistory:
         )
         visible = faces.particle_mask(self.quadrature.points.numpy(), model.reference, self.cut_indices)
         return build_trace(
-            model, topology, self.quadrature.points, self.quadrature.normals, sides, visibility=visible
+            model,
+            topology,
+            self.quadrature.points,
+            self.quadrature.normals,
+            sides,
+            visibility=visible,
+            equivalent_slots=equivalent_slots,
         )
 
     def snapshot(self):

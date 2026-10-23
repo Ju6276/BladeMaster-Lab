@@ -1601,3 +1601,20 @@ RTX 4090，`7c9c470`、dirty=true。新增 **20** 项碰撞检查通过（0.93 s
 刚体旋转检查失败：dt=2 μs、32 μs 轨迹产生 **1.5471 μm** 损伤历史；dt=1 μs 在第 28 步反力选择报约束不相容。纯旋转经原型的分侧速度映射产生非零切向跳量，下一项核对仿射重现和界面速度/功的共同映射。命令为 `runs/e5_release_audit/cohesive_ars_rigid.py`，报告及复现输入为 `cohesive_ars_rigid.json`、`ars_rigid_failure.npz`。
 
 提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1503 passed、8 skipped、18 subtests passed**（454.94 s），日志 `runs/grid_update/impact_full.log`；8 项跳过为 CRESSim 上游构建。
+
+
+## 2026-10-23：参考仿射速度传递及共享场的精确消元
+
+RTX 4090，`4f29254`、dirty=true。`reference_affine` 新增 **13** 项检查，连同参考迹和弱约束检查为 **40 passed**（46.64 s）。覆盖 6/4 mm 方块/圆柱、扰动采样、仿射运动、线动量/参考角动量、网格传递动能、虚功及移动切面导数。同节点完全相容场先合并动量，迹按等价速度场合并可见质量；共享开口映射与切面位置导数严格为 **0**。自然事件生成的 **288/576/1152** 点参考界面在八步旋转检查中均保持零开口、零损伤。
+
+32 μs、dt=2/1/0.5 μs 的纯旋转、预载旋转、已有损伤与受载开裂共 **12** 例完成。前两组开口/损伤为 **0**；受载开裂能量相对残差 **8.80347e-8/1.10049e-8/1.37588e-9**，相邻速度最大差 **6.14264e-5→1.53614e-5 m/s**。三类八步轨迹共 **58** 组差分，非零导数最大相对误差 **3.669e-6**，零导数最大绝对差 **2.997e-11**。切面位置、法向、平移/仿射速度和面积到八步材料状态的十组差分最大相对误差 **7.090e-7**。
+
+同版 200 μs 塑性原型中，64 粒子均发生塑性更新，屈服应力 200 Pa。dt=2/1/0.5 μs 的能量相对残差为 **5.65980e-5/2.82956e-5/1.41469e-05**，塑性耗散增量非负，界面损伤为 **0**；能量收支包含每步固定总形变下塑性返回的储能下降。报告 `affine_plastic_probe.json`，命令 `runs/e5_release_audit/affine_plastic_probe.py`。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_reference_affine.py tests/test_reference_grid.py tests/test_cohesive_closed_motion.py -q`；`runs/e5_release_audit/affine_source_validate.py`；`runs/e5_release_audit/affine_material_grad_source.py`；`runs/e5_release_audit/affine_chain_probe.py`；`runs/e5_release_audit/natural_affine_patch.py`。报告/日志在 `e5-grid-20261023/runs/grid_update/`，同名 JSON 及 `affine_unit.log`。下一项连接分阶段材料推进、自然事件与接触历史，再核对完整切割能量。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1516 passed、8 skipped、18 subtests passed**（496.71 s），日志 `runs/grid_update/affine_full_final.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：E3 活跃释放的 4 mm 追加细化
+
+干净 `ca90da9`，RTX 4090，命令 `PYTHONPATH=. .venv/bin/python runs/e3_ca90da9/release_h4_more.py`。50 ms、G_c=7、dt=1.64473684 μs，释放 **5** 粒子；四组自然差分最大相对误差 **4.921e-7**，32 步检查点全部状态重算差 **0**。与 dt=3.28947368 μs 相比，位置差 **0.184 nm**，横向/深度梯度差 **0.013614%/0.219121%**；侧码、释放及事件集合一致，事件时刻差 **1.022 ns**。报告 `e3-current-20261022/runs/e3_ca90da9/release_h4_more/report.json`；dt/16 继续核对。

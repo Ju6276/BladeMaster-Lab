@@ -130,6 +130,17 @@ class ElasticTrajectory:
     Poisson ratio and time step are constants during differentiation.
     """
 
+    @property
+    def reference_coordinates(self):
+        from .reference_coordinates import ReferenceCoordinates
+
+        if not hasattr(self, "_reference_coordinates"):
+            cfg = self.config
+            self._reference_coordinates = ReferenceCoordinates.sampled(
+                cfg.size, cfg.grid_spacing, cfg.shape, cfg.sampling_seed
+            )
+        return self._reference_coordinates
+
     def __init__(self, config=Config(), device="cuda:0", requires_grad=True):
         if config.yield_stress or config.dynamic_viscosity or config.maxwell_tau:
             raise ValueError("ElasticTrajectory requires zero plasticity and viscosity")

@@ -182,6 +182,8 @@ class CohesiveHistory:
     def snapshot(self):
         return dict(
             vertices=self.surface.vertices.numpy().copy(),
+            exact_vertices=self.surface.coordinates().copy(),
+            reference_remainder=self.surface.reference_remainder.copy(),
             polygons=self.surface.polygons,
             surface_owners=self.surface.owners.copy(),
             roundoff=self.surface.roundoff.copy(),
@@ -222,6 +224,8 @@ class CohesiveHistory:
                 snapshot["surface_owners"].copy(),
                 snapshot["roundoff"].copy(),
                 array("surface_normals", wp.vec3d),
+                snapshot["exact_vertices"].copy(),
+                snapshot["reference_remainder"].copy(),
             ),
             CutQuadrature(
                 array("points", wp.vec3d),

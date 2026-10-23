@@ -1509,3 +1509,13 @@ RTX 4090，`016b255`、dirty=true。`advance_material` 使用积分总力接口�
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_grid_update.py tests/test_cohesive_history.py tests/test_reference_grid.py -q`；`runs/e5_release_audit/force_material_compare.py`。报告/日志为 `e5-grid-20261023/runs/grid_update/{force_material_unit.log,force_material_compare160.json,force_material_compare.log}`。
 
 提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1335 passed、8 skipped、18 subtests passed**（427.09 s），日志 `runs/grid_update/force_material_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：精确参考面与退刀后的材料运动
+
+RTX 4090，`4e5a892`、dirty=true。几何/历史/参考坐标共 **59 passed**（82.01 s），覆盖 6/4 mm 共享边界、零面积单侧导数、宽度 2⁻³⁰/2⁻⁶⁰ 的正面积、11 类输入差分、分段反向，以及方块/圆柱/香蕉 × 原位/扰动采样 × 直/斜刀。18 种采样配置与 `4e5a892` 的粒子坐标、原点和网格尺寸差均为 **0**。
+
+64 粒子的已断裂材料退刀例：旧 **6** 个积分点的面积为 **1.5e-6 m²**，新增 **45** 点的面积严格为 **0**；实际材料推进的 x/v/F/Fp/应力与自由推进差均为 **0**，动能同为 **9.504e-6 J**。该项 **1 passed**（1.16 s）。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_reference_coordinates.py tests/test_reference_surface.py tests/test_cohesive_history.py -q`；`-m pytest tests/test_cohesive_history.py -k withdrawal_zero -q`；`runs/e5_release_audit/reference_sampling_compare.py`；`runs/e5_release_audit/exact_reference_material_measure.py`。报告/日志位于 `e5-grid-20261023/runs/grid_update/{exact_reference_unit2.log,exact_reference_material2.log,reference_sampling_compare.json,exact_reference_material.json}`。
+
+提交前全量 `PYTHONPATH=. .venv/bin/python -m pytest tests -q` 为 **1375 passed、8 skipped、18 subtests passed**（487.88 s），日志 `runs/grid_update/exact_reference_full.log`；新增 **40** 项检查，8 项跳过为 CRESSim 上游构建。

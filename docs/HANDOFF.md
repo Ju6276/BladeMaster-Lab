@@ -295,16 +295,20 @@ E5 参考表面测试工作树为 `~/Projects/BladeMaster-Warp-e5-reference-2026
 
 闭合分支按参考面积选择最小压力范数反力，位移及其 VJP 保持同一约束；固定法向 ADMM 统一提供初值，初值牵引采用近端核的直接表达。`weighted_area_limit.json` 的 14 组正向、42 组单侧扰动全部完成，最小 1e-12 m 档相对误差 ≤**6.24702e-7**。`weighted_compare160.json` 三种轨迹与 `e4cf414` 求解器的归一化状态差 ≤**1.95528e-14**、能量差 ≤**4.337e-19 J**。新增 22 项解析及面积拆分检查；全量 `weighted_area_full.log` 为 **1252 passed、8 skipped、18 subtests passed**（366.51 s）。同一 `e5-grid` 工作树的 `weighted_existing160.json/.log` 已完成八类输入长梯度，每类至少两档通过，最差第二档误差 **1.07018e-6**。`weighted_energy.json/.log` 的十二例残差随步长减半约减半，最细档幅值 **0.017552%/0.002262%/0.007322%/0.348344%**。
 
-零面积片仍被 κ=0 的闭合投影当作完整约束：6/4 mm 的完全断裂后退刀例产生额外动能损失 **4.62607e-6/2.46949e-6 J**，报告 `runs/grid_update/zero_area_history_projection.json`。`cohesive_measure_proximal_response` 以积分总力为输出，局部零面积运动、正面积等价性及单侧面积导数共 **18** 项检查通过；连同原局部核为 **39 passed**（0.58 s），日志 `measure_proximal_unit.log`。下一项连接总力形式的全局平衡、闭合投影与自然出生事件，再接自然双侧码、接触去重及 RK2 分段。
+`95eaf2d` 的零面积片被 κ=0 闭合投影当作完整约束：6/4 mm 的完全断裂后退刀例产生额外动能损失 **4.62607e-6/2.46949e-6 J**，报告 `runs/grid_update/zero_area_history_projection.json`。`cohesive_measure_proximal_response` 以积分总力为输出，局部零面积运动、正面积等价性及单侧面积导数共 **18** 项检查通过；连同原局部核为 **39 passed**（0.58 s），日志 `measure_proximal_unit.log`。下一项连接总力形式的全局平衡、闭合投影与自然出生事件，再接自然双侧码、接触去重及 RK2 分段。
 
 提交前全量 `measure_proximal_full.log` 为 **1270 passed、8 skipped、18 subtests passed**（357.68 s）。
 
-积分总力全局入口 `solve_force` 与 `solve_geometry(..., integrated_force=True)` 共用当前半光滑方程，含零面积、扩展精度残差细化和反力选择的 VJP。`force_global_unit7.log` 为 **132 passed**（74.98 s）；补充 **6** 例载荷尺度检查通过（1.80 s），日志 `force_scaled_constraint2.log`。`force_compare160.json` 比较共用代码更新前后的首阶轨迹，三种 160 步状态归一化差 ≤**6.006e-13**、能量差 ≤**8.882e-16 J**。`cohesive_grid_update.advance_material` 已连接总力接口与正面积闭合掩码；下一项处理 `ReferenceSurface.quadrature` 的退化片舍入及参考单元边界表示，保留其面积导数，随后接自然双侧码、接触去重及 RK2 分段。
+积分总力全局入口 `solve_force` 与 `solve_geometry(..., integrated_force=True)` 共用当前半光滑方程，含零面积、扩展精度残差细化和反力选择的 VJP。`force_global_unit7.log` 为 **132 passed**（74.98 s）；补充 **6** 例载荷尺度检查通过（1.80 s），日志 `force_scaled_constraint2.log`。`force_compare160.json` 比较共用代码更新前后的首阶轨迹，三种 160 步状态归一化差 ≤**6.006e-13**、能量差 ≤**8.882e-16 J**。`cohesive_grid_update.advance_material` 已连接总力接口与正面积闭合掩码；参考单元边界和精确裁剪已接入并保留面积导数；下一项连接自然双侧码、接触去重及 RK2 分段。
 
 插入失败对照位于 `e5-interface-20261023/runs/interface_insertion/patch.json`：平移在 1.096e-23～4.386e-23 m 的间隙舍入处触发半光滑线搜索失败；刚体旋转 dt=2 μs 的假断裂耗散为 6.240e-6 J。该对照对应 `b7048c7`、dirty=true 的 `f507dc0` 源码。入口 `runs/e5_release_audit/extrinsic_insertion_patch.py`。
 
 积分总力全局接口提交前全量 `force_global_final_full.log` 为 **1330 passed、8 skipped、18 subtests passed**（413.20 s）；新增 60 项检查。
 
-总力材料装配的相关检查 `force_material_unit.log` 为 **41 passed**（107.00 s），新增 **5** 项零面积运动、状态梯度及面积单侧导数检查。`force_material_compare160.json` 比较 `016b255` 牵引装配与总力装配，闭合承载/已有损伤/受载断裂三种 160 步的归一化状态差 ≤**8.994e-15**、能量差 ≤**8.674e-19 J**、外功差 ≤**5.422e-20 J**。自然表面几何仍存在退化片舍入；相关原型位于 `runs/e5_release_audit/exact_construction/`，精确裁剪与边界输入表示需一起处理。
+总力材料装配的相关检查 `force_material_unit.log` 为 **41 passed**（107.00 s），新增 **5** 项零面积运动、状态梯度及面积单侧导数检查。`force_material_compare160.json` 比较 `016b255` 牵引装配与总力装配，闭合承载/已有损伤/受载断裂三种 160 步的归一化状态差 ≤**8.994e-15**、能量差 ≤**8.674e-19 J**、外功差 ≤**5.422e-20 J**。参考采样坐标与精确裁剪已接入，退刀新增零面积及实际材料运动检查通过；下一项连接自然切割的侧码和事件推进。
 
 总力材料装配提交前全量 `force_material_full.log` 为 **1335 passed、8 skipped、18 subtests passed**（427.09 s）。E3 补充任务 `e3-current/runs/e3_ca90da9/after_queue.py` 等待当前八项队列成功退出，随后执行 `release_h4_more.py`：4 mm、50 ms、G_c=7 的 dt/8 与 dt/16；dt/8 含两档刀路差分，dt/16 比较梯度与状态细化趋势。状态文件 `after_queue_status.json`，日志 `release_h4_more.log`。
+
+自然参考面采用 `ReferenceCoordinates.sampled` 与精确交点构造，材料入口使用 `model.reference_coordinates`；解析 VJP 与参考坐标公式见 METHOD。`exact_reference_unit2.log` 为 **59 passed**（82.01 s），`exact_reference_material2.log` 的实际退刀材料推进为 **1 passed**（1.16 s）。`exact_reference_material.json` 中旧 **6** 个正面积点保留，退刀新增 **45** 个点的面积全为 **0**；x/v/F/Fp/应力差 **0**，动能同为 **9.504e-6 J**。`reference_sampling_compare.json` 的 18 种配置与 `4e5a892` 逐位一致。下一项是自然多刀侧码、接触去重与 RK2 分段，然后复测完整能量扫描和受影响的 E1–E4。
+
+精确参考面提交前全量 **1375 passed、8 skipped、18 subtests passed**（487.88 s），日志 `e5-grid-20261023/runs/grid_update/exact_reference_full.log`。

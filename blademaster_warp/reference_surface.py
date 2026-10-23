@@ -5,31 +5,16 @@ Coordinates are particle-local reference offsets in metres. Coplanar polygon
 difference removes covered area while existing polygons remain unchanged.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import warp as wp
 
 from .reference_cut import CutQuadrature, _clip_polygon
+from . import _exact_surface as exact
 
 
 EPS = np.finfo(np.float64).eps
-
-
-@wp.kernel
-def _pullback_edge(
-    x: wp.array(dtype=wp.vec3d),
-    F: wp.array(dtype=wp.mat33d),
-    position: wp.array(dtype=wp.vec3d),
-    rotation: wp.array(dtype=wp.quatd),
-    half: wp.array(dtype=wp.vec3d),
-    vertices: wp.array(dtype=wp.vec3d),
-):
-    p, side = wp.tid()
-    sign = wp.float64(2 * side - 1)
-    local = wp.vec3d(wp.float64(0.0), sign * half[0][1], -half[0][2])
-    relative = (position[0] - x[p]) + wp.quat_rotate(wp.normalize(rotation[0]), local)
-    vertices[2 * p + side] = wp.inverse(F[p]) * relative
 
 
 @wp.kernel
@@ -39,41 +24,6 @@ def _join(a: wp.array(dtype=wp.vec3d), b: wp.array(dtype=wp.vec3d), out: wp.arra
         out[i] = a[i]
     else:
         out[i] = b[i - a.shape[0]]
-
-
-@wp.kernel
-def _subdivide(
-    vertices: wp.array(dtype=wp.vec3d),
-    edges: wp.array(dtype=wp.vec2i),
-    fraction: wp.array(dtype=wp.float64),
-    out: wp.array(dtype=wp.vec3d),
-):
-    i = wp.tid()
-    out[i] = (wp.float64(1.0) - fraction[i]) * vertices[edges[i][0]] + fraction[i] * vertices[edges[i][1]]
-
-
-@wp.kernel
-def _clip_vertices(
-    previous: wp.array(dtype=wp.vec3d),
-    edges: wp.array(dtype=wp.vec2i),
-    owners: wp.array(dtype=int),
-    point: wp.array(dtype=wp.vec3d),
-    normal: wp.array(dtype=wp.vec3d),
-    per_particle: int,
-    sign: wp.float64,
-    out: wp.array(dtype=wp.vec3d),
-):
-    i = wp.tid()
-    a, b = previous[edges[i][0]], previous[edges[i][1]]
-    j = 0
-    if per_particle != 0:
-        j = owners[i]
-    value = a
-    if edges[i][0] != edges[i][1]:
-        ga = sign * wp.dot(normal[j], a - point[j])
-        gb = sign * wp.dot(normal[j], b - point[j])
-        value = a + ga / (ga - gb) * (b - a)
-    out[i] = value
 
 
 @wp.kernel
@@ -90,19 +40,6 @@ def _box_plane(
     n[axis] = sign
     point[p] = a
     normal[p] = n
-
-
-@wp.kernel
-def _polygon_plane(
-    vertices: wp.array(dtype=wp.vec3d),
-    normals: wp.array(dtype=wp.vec3d),
-    face: int,
-    edge: wp.vec2i,
-    point: wp.array(dtype=wp.vec3d),
-    normal: wp.array(dtype=wp.vec3d),
-):
-    point[0] = vertices[edge[0]]
-    normal[0] = wp.cross(vertices[edge[1]] - vertices[edge[0]], normals[face])
 
 
 @wp.kernel
@@ -134,30 +71,6 @@ def _gather(values, indices):
     return out
 
 
-@wp.kernel
-def _quadrature(
-    vertices: wp.array(dtype=wp.vec3d),
-    triangles: wp.array(dtype=wp.vec3i),
-    owners: wp.array(dtype=int),
-    face_ids: wp.array(dtype=int),
-    orientation: wp.array(dtype=wp.vec3d),
-    reference: wp.array(dtype=wp.vec3d),
-    points: wp.array(dtype=wp.vec3d),
-    area: wp.array(dtype=wp.float64),
-    normals: wp.array(dtype=wp.vec3d),
-):
-    i, j = wp.tid()
-    ids = triangles[i]
-    a, b, c = vertices[ids[0]], vertices[ids[1]], vertices[ids[2]]
-    w = wp.vec3d(wp.float64(1.0) / wp.float64(6.0))
-    w[j] = wp.float64(2.0) / wp.float64(3.0)
-    cross = wp.cross(b - a, c - a)
-    points[3 * i + j] = reference[owners[i]] + (w[0] * a + w[1] * b + w[2] * c)
-    n = orientation[face_ids[i]]
-    area[3 * i + j] = wp.dot(cross, n) / wp.float64(6.0)
-    normals[3 * i + j] = n
-
-
 def _face(values, polygon, error):
     """Select a resolved fan triangle using propagated coordinate roundoff."""
     best, magnitude = None, np.longdouble(0)
@@ -180,8 +93,30 @@ class ReferenceSurface:
     owners: np.ndarray
     roundoff: np.ndarray
     normals: wp.array | None = None
+    exact_vertices: np.ndarray | None = None
+    reference_remainder: np.ndarray | None = None
+    vertex_head: np.ndarray = field(init=False, repr=False)
 
     def __post_init__(self):
+        coordinates = (
+            exact.rational(self.vertices.numpy()) if self.exact_vertices is None else self.exact_vertices
+        )
+        coordinates = np.array(coordinates, dtype=object, copy=True)
+        if coordinates.shape != (len(self.vertices), 3):
+            raise ValueError("Exact surface coordinates must match the vertex array")
+        coordinates.flags.writeable = False
+        object.__setattr__(self, "exact_vertices", coordinates)
+        head = self.vertices.numpy().copy()
+        head.flags.writeable = False
+        object.__setattr__(self, "vertex_head", head)
+        remainder = self.reference_remainder
+        if remainder is None:
+            remainder = exact.rational(np.zeros((len(self.roundoff), 3)))
+        remainder = np.array(remainder, dtype=object, copy=True)
+        if remainder.shape != (len(self.roundoff), 3):
+            raise ValueError("Reference remainders must match the particle set")
+        remainder.flags.writeable = False
+        object.__setattr__(self, "reference_remainder", remainder)
         if self.normals is None:
             normals = wp.empty(
                 len(self.polygons), dtype=wp.vec3d, device=self.vertices.device, requires_grad=True
@@ -199,6 +134,14 @@ class ReferenceSurface:
                     device=self.vertices.device,
                 )
             object.__setattr__(self, "normals", normals)
+
+    def coordinates(self):
+        """Apply edits to the float64 head while retaining construction remainders."""
+        current = self.vertices.numpy()
+        head = self.vertex_head
+        if np.array_equal(current, head):
+            return self.exact_vertices
+        return self.exact_vertices + exact.rational(current) - exact.rational(head)
 
     @classmethod
     def empty(cls, particle_count, *, device):
@@ -220,6 +163,8 @@ class ReferenceSurface:
             self.owners[indices],
             self.roundoff,
             _gather(self.normals, indices),
+            self.coordinates()[used],
+            self.reference_remainder,
         )
 
     def join(self, other):
@@ -229,6 +174,8 @@ class ReferenceSurface:
             return self
         if self.vertices.device != other.vertices.device or self.roundoff.shape != other.roundoff.shape:
             raise ValueError("Joined reference surfaces must use the same particle set and device")
+        if not np.array_equal(self.reference_remainder, other.reference_remainder):
+            raise ValueError("Joined surfaces must use the same reference coordinate system")
         offset = len(self.vertices)
         vertices = wp.empty(
             offset + len(other.vertices), dtype=wp.vec3d, device=self.vertices.device, requires_grad=True
@@ -255,26 +202,34 @@ class ReferenceSurface:
             np.r_[self.owners, other.owners],
             np.maximum(self.roundoff, other.roundoff),
             normals,
+            np.concatenate([self.coordinates(), other.coordinates()]),
+            self.reference_remainder,
         )
 
-    def clip(self, point, normal, *, sign=1, include_boundary=True):
+    def clip(
+        self,
+        point,
+        normal,
+        *,
+        sign=1,
+        include_boundary=True,
+        exact_point=None,
+        exact_normal=None,
+    ):
         if sign not in (-1, 1):
             raise ValueError("Half-plane orientation must be -1 or 1")
-        values = self.vertices.numpy().astype(np.longdouble)
-        points, normals = point.numpy().astype(np.longdouble), normal.numpy().astype(np.longdouble)
+        values = self.coordinates()
+        points = exact.rational(point.numpy()) if exact_point is None else exact_point
+        normals = exact.rational(normal.numpy()) if exact_normal is None else exact_normal
         per_particle = len(point) != 1
         if point.shape != normal.shape or len(point) not in (1, len(self.roundoff)):
             raise ValueError("Clip planes must be global or indexed by particle")
-        edges, owners, vertex_owners, polygons, parents = [], [], [], [], []
+        edges, owners, vertex_owners, polygons, parents, locations_all = [], [], [], [], [], []
         for face, (polygon, p) in enumerate(zip(self.polygons, self.owners)):
             j = p if per_particle else 0
             coordinates = values[list(polygon)]
             n, c = sign * normals[j], points[j]
             level = (coordinates - c) @ n
-            bound = 16 * EPS * ((np.abs(coordinates) + np.abs(c)) @ np.abs(n)) + self.roundoff[
-                p
-            ] * np.linalg.norm(n)
-            level[np.abs(level) <= bound] = 0
             descriptors, locations = _clip_polygon(
                 values, polygon, level, boundary_intersections=True, include_boundary=include_boundary
             )
@@ -283,32 +238,21 @@ class ReferenceSurface:
             start = len(edges)
             polygons.append(tuple(range(start, start + len(descriptors))))
             edges.extend(descriptors)
+            locations_all.extend(locations)
             owners.append(p)
             parents.append(face)
             vertex_owners.extend([p] * len(descriptors))
-        result = wp.empty(len(edges), dtype=wp.vec3d, device=self.vertices.device, requires_grad=True)
-        if edges:
-            wp.launch(
-                _clip_vertices,
-                len(edges),
-                inputs=[
-                    self.vertices,
-                    wp.array(edges, dtype=wp.vec2i, device=result.device),
-                    wp.array(vertex_owners, dtype=int, device=result.device),
-                    point,
-                    normal,
-                    int(per_particle),
-                    wp.float64(sign),
-                ],
-                outputs=[result],
-                device=result.device,
-            )
+        result, coordinates = exact.intersections(
+            self.vertices, values, edges, vertex_owners, point, normal, points, normals, locations_all
+        )
         return ReferenceSurface(
             result,
             tuple(polygons),
             np.asarray(owners, dtype=np.int64),
             self.roundoff,
             _gather(self.normals, parents),
+            coordinates,
+            self.reference_remainder,
         )
 
     def subtract(self, previous):
@@ -349,17 +293,12 @@ class ReferenceSurface:
                 continue
             remaining, kept = result.select(selected), result.select(other)
             for edge in edge_ids:
-                point = wp.empty(1, dtype=wp.vec3d, device=self.vertices.device, requires_grad=True)
-                normal = wp.empty(1, dtype=wp.vec3d, device=self.vertices.device, requires_grad=True)
-                wp.launch(
-                    _polygon_plane,
-                    1,
-                    inputs=[previous.vertices, previous.normals, old_face, wp.vec2i(edge)],
-                    outputs=[point, normal],
-                    device=self.vertices.device,
+                point, normal, exact_point, exact_normal = exact.polygon_plane(
+                    previous.vertices, previous.coordinates(), previous.normals, old_face, edge
                 )
-                kept = kept.join(remaining.clip(point, normal, sign=-1))
-                remaining = remaining.clip(point, normal, include_boundary=False)
+                planes = dict(exact_point=exact_point, exact_normal=exact_normal)
+                kept = kept.join(remaining.clip(point, normal, sign=-1, **planes))
+                remaining = remaining.clip(point, normal, include_boundary=False, **planes)
                 if not remaining.polygons:
                     break
             result = kept
@@ -373,25 +312,16 @@ class ReferenceSurface:
                 triangles.append(triangle)
                 owners.append(p)
                 face_ids.append(i)
-        count, device = 3 * len(triangles), self.vertices.device
-        points = wp.empty(count, dtype=wp.vec3d, device=device, requires_grad=True)
-        area = wp.empty(count, dtype=wp.float64, device=device, requires_grad=True)
-        normals = wp.empty(count, dtype=wp.vec3d, device=device, requires_grad=True)
-        if triangles:
-            wp.launch(
-                _quadrature,
-                (len(triangles), 3),
-                inputs=[
-                    self.vertices,
-                    wp.array(triangles, dtype=wp.vec3i, device=device),
-                    wp.array(owners, dtype=int, device=device),
-                    wp.array(face_ids, dtype=int, device=device),
-                    self.normals,
-                    reference,
-                ],
-                outputs=[points, area, normals],
-                device=device,
-            )
+        points, area, normals = exact.quadrature(
+            self.vertices,
+            self.coordinates(),
+            triangles,
+            owners,
+            face_ids,
+            self.normals,
+            reference,
+            self.reference_remainder,
+        )
         return CutQuadrature(points, area, normals, np.repeat(owners, 3).astype(np.int64))
 
 
@@ -408,6 +338,7 @@ def swept_edge(
     tool_half_size,
     *,
     edge_segments=None,
+    reference_coordinates=None,
 ):
     """Pull both accepted edge poses into each particle's material coordinates.
 
@@ -458,19 +389,20 @@ def swept_edge(
         raise ValueError(
             "Swept edges require positive domain sizes, deformation determinants and nonzero rotations"
         )
-    endpoints, errors = [], []
+    endpoints, errors, exact_endpoints = [], [], []
+    remainder = (
+        exact.rational(np.zeros((count, 3)))
+        if reference_coordinates is None
+        else reference_coordinates.remainder
+    )
+    if remainder.shape != (count, 3):
+        raise ValueError("Reference coordinates must match the particle states")
     for x, F, position, rotation in [
         (position0, deformation0, tool_position0, tool_rotation0),
         (position1, deformation1, tool_position1, tool_rotation1),
     ]:
-        vertices = wp.empty(2 * count, dtype=wp.vec3d, device=device, requires_grad=True)
-        wp.launch(
-            _pullback_edge,
-            (count, 2),
-            inputs=[x, F, position, rotation, tool_half_size],
-            outputs=[vertices],
-            device=device,
-        )
+        vertices, coordinates = exact.pullback(x, F, position, rotation, tool_half_size, remainder)
+        exact_endpoints.append(coordinates)
         endpoints.append(vertices)
         inverse = np.linalg.inv(F.numpy())
         condition = np.linalg.norm(F.numpy(), ord=np.inf, axis=(1, 2)) * np.linalg.norm(
@@ -499,19 +431,7 @@ def swept_edge(
         for time in range(2):
             edges.extend([(2 * p + 2 * count * time, 2 * p + 2 * count * time + 1)] * (pieces + 1))
             fractions.extend(np.arange(pieces + 1) / pieces)
-    refined = wp.empty(len(edges), dtype=wp.vec3d, device=device, requires_grad=True)
-    wp.launch(
-        _subdivide,
-        len(edges),
-        inputs=[
-            vertices,
-            wp.array(edges, dtype=wp.vec2i, device=device),
-            wp.array(fractions, dtype=wp.float64, device=device),
-        ],
-        outputs=[refined],
-        device=device,
-    )
-    vertices = refined
+    vertices, coordinates = exact.subdivide(vertices, edges, fractions, np.concatenate(exact_endpoints))
     values = vertices.numpy().astype(np.longdouble)
     roundoff = np.maximum(*errors)
     polygons, owners = [], []
@@ -520,13 +440,17 @@ def swept_edge(
             a = starts[p] + j
             b, c, d = a + 1, a + segments[p] + 1, a + segments[p] + 2
             for face in [(a, b, c), (c, b, d)]:
-                offsets = values[list(face)]
-                # Positive box faces are owned by the neighbouring particle domain.
-                shared = np.any(np.all(np.abs(offsets - data[4][p]) <= roundoff[p], axis=0))
-                if not shared and _face(values, face, roundoff[p]) is not None:
+                if _face(values, face, roundoff[p]) is not None:
                     polygons.append(face)
                     owners.append(p)
-    result = ReferenceSurface(vertices, tuple(polygons), np.asarray(owners, dtype=np.int64), roundoff)
+    result = ReferenceSurface(
+        vertices,
+        tuple(polygons),
+        np.asarray(owners, dtype=np.int64),
+        roundoff,
+        exact_vertices=coordinates,
+        reference_remainder=remainder,
+    )
     for axis in range(3):
         for sign in [-1, 1]:
             point = wp.empty(count, dtype=wp.vec3d, device=device, requires_grad=True)

@@ -52,25 +52,38 @@ def grid_cells(size, spacing):
 def points(size, spacing, shape, seed=0):
     """Two particles per cell and axis, at sub-cell centres (seed 0) or
     uniformly jittered inside their sub-cells (seed > 0)."""
+    return _sample(size, spacing, shape, seed)
+
+
+def _sample(size, spacing, shape, seed=0, *, metadata=False):
     size = np.asarray(size)
     check_domain(size, shape)
     cells = grid_cells(size, spacing)
     origin = -np.array([size[0] / 2, size[1] / 2, 0.0])
     coords = [origin[i] + (np.arange(2 * cells[i]) + 0.5) * spacing / 2 for i in range(3)]
     x = np.array(list(product(*coords)))
+    indices = np.array(list(product(*(range(2 * c) for c in cells)))) if metadata else None
+    offsets = np.zeros_like(x) if metadata else None
     if seed:
-        x += np.random.default_rng(seed).uniform(-spacing / 4, spacing / 4, size=x.shape)
+        offsets = np.random.default_rng(seed).uniform(-spacing / 4, spacing / 4, size=x.shape)
+        x += offsets
     if shape in ("banana", "cylinder"):
-        x = x[levelset(x, size, shape) <= 0]
+        selected = levelset(x, size, shape) <= 0
     elif shape == "block":
         # A spacing that does not divide the size leaves partial cells at the far faces.
-        x = x[np.all(x - origin <= size, axis=1)]
+        selected = np.all(x - origin <= size, axis=1)
     else:
         raise ValueError(shape)
+    x = x[selected]
+    if metadata:
+        indices, offsets = indices[selected], offsets[selected]
+        reflected = x[:, 2] < spacing / 4 if seed else np.zeros(len(x), dtype=bool)
     if seed:
         # The board contacts particles at distance h/4; a bottom particle jittered
         # below it starts inside the board and the recovery impulse lifts the body.
         x[:, 2] = spacing / 4 + np.abs(x[:, 2] - spacing / 4)
+    if metadata:
+        return x, origin, cells, indices, offsets, reflected
     return x, origin, cells
 
 

@@ -7,9 +7,9 @@ import warp as wp
 from blademaster_warp.cohesive_geometry import InterfaceGeometry
 from blademaster_warp.cohesive_history import CohesiveHistory
 from blademaster_warp.differentiable_material import MaterialTrajectory
-from blademaster_warp.reference_surface import ReferenceSurface, swept_edge
+from blademaster_warp.reference_surface import ReferenceSurface
 from blademaster_warp.solver import Config
-from test_reference_surface import arrays, block
+from test_reference_surface import arrays, block, swept_edge
 
 
 def same_snapshot(a, b):
@@ -24,6 +24,46 @@ def same_snapshot(a, b):
 
 
 @pytest.mark.parametrize("spacing", [0.006, 0.004])
+def test_clipped_surface_restart_preserves_remainders_and_front_pullback(spacing):
+    reference, values = block(spacing, end=0.0063)
+    old_sources = arrays(values)
+    _, values = block(spacing, start=0.010, end=0.002)
+    new_sources = arrays(values)
+    ref = wp.array(reference, dtype=wp.vec3d)
+    material = wp.array(np.tile([5e4, 70.0, 0.0], (len(ref), 1)), dtype=wp.vec3d)
+    initial = CohesiveHistory.empty(len(ref), device=ref.device)
+    with wp.Tape() as first:
+        old = initial.append(
+            swept_edge(*old_sources, spacing=spacing), ref, old_sources[3], material, cut_index=0
+        )
+    candidate = swept_edge(*new_sources, spacing=spacing)
+    with wp.Tape() as full:
+        result = old.append(candidate, ref, new_sources[3], material, cut_index=1)
+    weights = np.where(result.cut_indices == 0, 2.0, 3.0)
+    full.backward(grads={result.quadrature.area: wp.array(weights, dtype=wp.float64)})
+    expected = {name: a.grad.numpy().copy() for name, a in old.differentiable_arrays().items()}
+    first.backward(
+        grads={a: wp.array(expected[name], dtype=a.dtype) for name, a in old.differentiable_arrays().items()}
+    )
+    expected_front = old_sources[7].grad.numpy().copy()
+    np.testing.assert_allclose(expected_front[0, 2], 0.0074, rtol=2e-13)
+    first.zero()
+    full.zero()
+    restored = CohesiveHistory.restore(old.snapshot(), device=ref.device)
+    with wp.Tape() as local:
+        replay = restored.append(candidate, ref, new_sources[3], material, cut_index=1)
+    same_snapshot(result.snapshot(), replay.snapshot())
+    local.backward(grads={replay.quadrature.area: wp.array(weights, dtype=wp.float64)})
+    actual = {name: a.grad.numpy().copy() for name, a in restored.differentiable_arrays().items()}
+    for name in expected:
+        np.testing.assert_allclose(actual[name], expected[name], rtol=2e-13, atol=1e-16)
+    first.backward(
+        grads={a: wp.array(actual[name], dtype=a.dtype) for name, a in old.differentiable_arrays().items()}
+    )
+    np.testing.assert_allclose(old_sources[7].grad.numpy(), expected_front, rtol=2e-13, atol=1e-16)
+
+
+@pytest.mark.parametrize("spacing", [0.006, 0.004])
 def test_sweep_growth_reentry_and_new_cut_keep_old_quadrature_and_history(spacing):
     reference, values = block(spacing)
     ref = wp.array(reference, dtype=wp.vec3d)
@@ -34,7 +74,7 @@ def test_sweep_growth_reentry_and_new_cut_keep_old_quadrature_and_history(spacin
     for start, end, depth in zip(heights, heights[1:], [0.003, 0.009, 0.009, 0.011]):
         _, values = block(spacing, start=start, end=end)
         sources = arrays(values)
-        candidate = swept_edge(*sources)
+        candidate = swept_edge(*sources, spacing=spacing)
         old = state.snapshot()
         n = len(state.history)
         state = state.append(candidate, ref, sources[3], parameters, cut_index=0)
@@ -60,7 +100,7 @@ def test_sweep_growth_reentry_and_new_cut_keep_old_quadrature_and_history(spacin
     _, values = block(spacing)
     values[6][0] = values[8][0] = [0, 0, np.sqrt(0.5), np.sqrt(0.5)]
     sources = arrays(values)
-    candidate = swept_edge(*sources)
+    candidate = swept_edge(*sources, spacing=spacing)
     extended = state.append(candidate, ref, sources[3], parameters, cut_index=1)
     n = len(state.history)
     np.testing.assert_array_equal(extended.history.numpy()[:n], old["history"])
@@ -259,6 +299,65 @@ def test_empty_history_matches_material_step():
     same_snapshot(history.snapshot(), CohesiveHistory.restore(history.snapshot(), device=m.device).snapshot())
     for name in ["x", "v", "F", "Fp", "stress"]:
         np.testing.assert_array_equal(getattr(direct, name).numpy(), getattr(result, name).numpy())
+
+
+def test_withdrawal_zero_area_points_preserve_released_material_motion():
+    from blademaster_warp.reference_surface import swept_edge as sweep
+
+    cfg = Config(
+        size=(0.012,) * 3,
+        grid_spacing=0.006,
+        dt=2e-6,
+        young_modulus=20000.0,
+        yield_stress=0.0,
+        external_tool=True,
+    )
+    m = MaterialTrajectory(cfg, precision="float64", ordered_transfers=True)
+    codes = np.where(m.reference[:, 0] < 0.0007, 1, 2)
+    grid = m.topology(codes)
+    reference = m.array(m.reference, wp.vec3, False)
+    deformation = m.array(np.tile(np.eye(3), (m.n, 1, 1)), wp.mat33, False)
+    half = m.array(np.full((m.n, 3), cfg.grid_spacing / 4), wp.vec3, False)
+    rotation = m.array([[0, 0, 0, 1]], wp.quat, False)
+    blade = m.array([[0.0005, 0.0003, 0.004]], wp.vec3, False)
+    material = m.array(np.tile([5e4, 70.0, 0.0], (m.n, 1)), wp.vec3, False)
+
+    def candidate(start, end):
+        return sweep(
+            reference,
+            deformation,
+            reference,
+            deformation,
+            half,
+            m.array([[0.0007, 0.0004, start + 0.004]], wp.vec3, False),
+            rotation,
+            m.array([[0.0007, 0.0004, end + 0.004]], wp.vec3, False),
+            rotation,
+            blade,
+            reference_coordinates=m.reference_coordinates,
+        )
+
+    history = CohesiveHistory.empty(m.n, device=m.device).append(
+        candidate(0.009, 0.0065), reference, deformation, material, cut_index=0
+    )
+    history = history.updated(history.geometry, m.array(np.full(len(history.history), 0.003), float))
+    old_count = len(history.history)
+    extended = history.append(candidate(0.0065, 0.008), reference, deformation, material, cut_index=0)
+    assert len(extended.history) > old_count
+    np.testing.assert_array_equal(extended.quadrature.area.numpy()[old_count:], 0.0)
+    side = np.where(codes == 1, -1.0, 1.0)[:, None]
+    state = m.state(v=side * np.array([0.1, 0.0, 0.0]))
+    free = m.step(state, topology=grid, gravity=(0, 0, 0))
+    sides = np.tile([1, 2], (len(extended.history), 1))
+    sides[extended.quadrature.normals.numpy()[:, 0] < 0] = [2, 1]
+    result, _ = extended.advance(m, state, topology=grid, sides=sides, gravity=(0, 0, 0))
+    for name in ["x", "v", "F", "Fp", "stress"]:
+        np.testing.assert_allclose(
+            getattr(result, name).numpy(), getattr(free, name).numpy(), rtol=2e-13, atol=1e-13
+        )
+    expected = 0.5 * m.mass * np.sum(free.v.numpy() ** 2)
+    actual = 0.5 * m.mass * np.sum(result.v.numpy() ** 2)
+    np.testing.assert_allclose(actual, expected, rtol=2e-13)
 
 
 def test_material_trajectory_derivatives_through_surface_append():

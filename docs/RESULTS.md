@@ -1736,3 +1736,11 @@ RTX 4090，`95efe9d`、dirty=true。界面响应新增 `displacement_state`，�
 70 位独立接触对照，在相关约束的自由间隙增加 **±2⁻⁸⁰ m**，活跃集合分别为 `{0,1}` 和 `{1,2}`。单点反力差 **0.002 N**，粒子合力差 **1.379e-19 N**，位移差 **5.515e-25 m**；两侧动量残差为 0。命令 `runs/e5_release_audit/contact_boundary_reference.py`，报告 `runs/grid_update/contact_boundary_reference.json`（`95efe9d`、dirty=true）。下一项在保留几何关系的状态参数化下核对冗余反力梯度，并对独立间隙引起的接触切换核对单侧响应及集合重建。
 
 提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1607 passed、8 skipped、18 subtests passed**（707.95 s），日志 `runs/grid_update/displacement_precision_full.log`。8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：界面输出与伴随的总几何
+
+RTX 4090，`74971d6`、dirty=true，工作树 `~/Projects/BladeMaster-Warp-e5-state-20261023`。本构输出和局部伴随共用补偿后的间隙、面形变及位移；零面积行保留自由几何。**±2⁻⁸⁰/±2⁻¹⁰⁰ m** 四例的间隙、法向间隙、损伤历史、储能和断裂计功与解析值一致，解析导数及两档差分通过。相关检查 **31 passed**（2.38 s）。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests/test_cohesive_displacement_precision.py tests/test_cohesive_closed_motion.py tests/test_cohesive_small_opening.py -q`；日志 `runs/grid_update/geometry_output_unit.log`。
+
+`74971d6` 的非线性原型在三档不相容自由间隙上与 70 位接触参考解一致，原方程相对残差为 **9.923e-31/9.910e-31/9.949e-31**；十组旋转面／本构分支和 16 组参数差分通过，最大相对误差 **7.190e-8**。重复切面加载的面积加权反力选择通过 **18** 组输入方向差分（124.46 s）；加载、混合历史、卸载和强度边界四例的反力差 ≤**2.443e-15 N**。强度边界两入口共 **8** 组差分通过（15.69 s）；三档载荷的面积／载荷方向共 **12** 组差分通过，载荷方向最大相对误差 **2.454e-12**，面积方向最大绝对误差 **1.557e-15**。原型以递减正则项生成初值，接受解仍核对原方程；下一项是其余冗余约束导数、边界接触集合与完整阶段状态。命令前缀同上，入口 `runs/e5_release_audit/regularized_contact_nonmonotone.py`、`regularized_contact_large.py`、`regularized_equilibrium_branches.py`、`regularized_reaction_tests.py`、`regularized_forward_checks.py`、`regularized_boundary_tests.py`、`regularized_contact_compensated.py`；报告／日志在 `runs/grid_update/` 下同名文件。接触与分支报告 dirty=false，反力选择报告 dirty=true。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1611 passed、8 skipped、18 subtests passed**（936.22 s）。日志 `runs/grid_update/geometry_output_full.log`；8 项跳过为 CRESSim 上游构建。

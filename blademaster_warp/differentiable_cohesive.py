@@ -91,37 +91,40 @@ def monolithic_momentum(
 
 
 @wp.kernel
-def kinematics(
+def interface_motion(
     q: wp.array(dtype=wp.vec3),
     free_frame: wp.array(dtype=wp.mat33),
-    reference: wp.array(dtype=wp.vec3),
-    history: wp.array(dtype=float),
-    material: wp.array(dtype=wp.vec3),
     b: wp.array2d(dtype=float),
     gradient: wp.array2d(dtype=wp.vec3),
-    area: wp.array(dtype=float),
-    mass: wp.array(dtype=float),
-    dt: wp.array(dtype=float),
     u: wp.array(dtype=wp.vec3),
+    gap: wp.array(dtype=wp.vec3),
+    frame: wp.array(dtype=wp.mat33),
+):
+    i = wp.tid()
+    gap[i] = gap_at(q, b, u, i)
+    frame[i] = free_frame[i] + frame_rate(gradient, u, i)
+
+
+@wp.kernel
+def kinematics(
+    gap: wp.array(dtype=wp.vec3),
+    frame: wp.array(dtype=wp.mat33),
+    reference: wp.array(dtype=wp.vec3),
+    material: wp.array(dtype=wp.vec3),
+    area: wp.array(dtype=float),
     solved_traction: wp.array(dtype=wp.vec3),
     compliance: float,
     integrated_force: int,
-    gap: wp.array(dtype=wp.vec3),
     trial: wp.array(dtype=wp.vec3),
-    frame: wp.array(dtype=wp.mat33),
     normal: wp.array(dtype=wp.vec3),
     parameters: wp.array(dtype=wp.vec3),
     traction: wp.array(dtype=wp.vec3),
     pressure: wp.array(dtype=float),
 ):
     i = wp.tid()
-    g = gap_at(q, b, u, i)
-    F = free_frame[i] + frame_rate(gradient, u, i)
-    n = surface_normal(F, reference[i])
-    z = g + compliance * solved_traction[i]
-    gap[i] = g
+    n = surface_normal(frame[i], reference[i])
+    z = gap[i] + compliance * solved_traction[i]
     trial[i] = z
-    frame[i] = F
     normal[i] = n
     parameters[i] = wp.vec3(material[i][0], material[i][1], compliance)
     traction[i] = solved_traction[i]
@@ -275,7 +278,9 @@ def reaction_bounds(
         derivative[row, offset] = -float(1.0)
 
 
-def _evaluate(inputs, u, traction, compliance, *, integrated_force=False, inertia=None):
+def _evaluate(
+    inputs, u, traction, compliance, *, integrated_force=False, inertia=None, remainders=None, motion=None
+):
     count = len(inputs[0])
     device = inputs[0].device
 
@@ -284,11 +289,30 @@ def _evaluate(inputs, u, traction, compliance, *, integrated_force=False, inerti
 
     kinds = [wp.vec3d, wp.vec3d, wp.mat33d, wp.vec3d, wp.vec3d, wp.vec3d, wp.float64]
     raw = [wp.zeros(count, dtype=kind, device=device, requires_grad=True) for kind in kinds]
+    if motion is not None:
+        raw[0], raw[2] = motion.gap, motion.frame
+    elif remainders is None:
+        launch_double(
+            interface_motion,
+            count,
+            inputs=[inputs[0], inputs[1], inputs[5], inputs[6], u],
+            outputs=[raw[0], raw[2]],
+            device=device,
+        )
+    else:
+        from .cohesive_geometry import InterfaceGeometry
+
+        gap_low, frame_low, displacement_low = remainders
+        free = InterfaceGeometry(inputs[0], inputs[1], gap_low, frame_low)
+        displacement = CompensatedArray(u, displacement_low)
+        unit = wp.array([1.0], dtype=wp.float64, device=device)
+        advanced = free.advance(inputs[5], inputs[6], displacement, unit)
+        raw[0], raw[2] = advanced.gap, advanced.frame
     launch_double(
         kinematics,
         count,
-        inputs=[*inputs, u, traction, compliance, int(integrated_force)],
-        outputs=raw,
+        inputs=[raw[0], raw[2], inputs[2], inputs[4], inputs[7], traction, compliance, int(integrated_force)],
+        outputs=[raw[1], raw[3], raw[4], raw[5], raw[6]],
         device=device,
     )
     prox = [zeros(count, i < 2) for i in range(5)]
@@ -364,7 +388,7 @@ def _evaluate(inputs, u, traction, compliance, *, integrated_force=False, inerti
     return (result, Ru, Rg)
 
 
-def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t):
+def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t, *, remainders=None):
     """Differentiate the fixed-rank closed constraint and its selected reaction."""
     q, _, _, _, _, b, _, area, mass, dt = values
     coefficient = mass[0] / dt[0] ** 2
@@ -414,7 +438,7 @@ def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u,
         fixed_t = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
         momentum_dual = rhs_u.reshape(u_numpy.shape) + b.T @ adj_q
         with wp.Tape() as local:
-            _, Ru, Rg = _evaluate(clones, fixed_u, fixed_t, compliance)
+            _, Ru, Rg = _evaluate(clones, fixed_u, fixed_t, compliance, remainders=remainders)
         local.backward(
             grads={
                 Ru: wp.array(-momentum_dual, dtype=wp.vec3d, device=device),
@@ -437,6 +461,7 @@ def _implicit_pullback(
     closed=False,
     integrated_force=False,
     inertia=None,
+    remainders=None,
 ):
     if closed and inertia is None and integrated_force and np.all(values[7] > 0.0):
         from ._cohesive_solve import setup
@@ -446,13 +471,27 @@ def _implicit_pullback(
         seed_force = (compliance * rhs_t).reshape(pressure.shape)
         density_compliance = setup(values)[2]
         gradients = _closed_pullback(
-            inputs, values, u_numpy, pressure, density_compliance, rhs_u, (area[:, None] * seed_force).ravel()
+            inputs,
+            values,
+            u_numpy,
+            pressure,
+            density_compliance,
+            rhs_u,
+            (area[:, None] * seed_force).ravel(),
+            remainders=remainders,
         )
         gradients[7] += np.sum(seed_force * pressure, axis=1)
         return gradients
     if closed and inertia is None and not integrated_force:
         return _closed_pullback(
-            inputs, values, u_numpy, traction_numpy, compliance, rhs_u, compliance * rhs_t
+            inputs,
+            values,
+            u_numpy,
+            traction_numpy,
+            compliance,
+            rhs_u,
+            compliance * rhs_t,
+            remainders=remainders,
         )
     device = inputs[0].device
 
@@ -479,7 +518,13 @@ def _implicit_pullback(
     local_inertia = None if inertia is None else inertia.clone()
     with wp.Tape() as local:
         (_, Ru, Rg) = _evaluate(
-            clones, fixed_u, fixed_t, compliance, integrated_force=integrated_force, inertia=local_inertia
+            clones,
+            fixed_u,
+            fixed_t,
+            compliance,
+            integrated_force=integrated_force,
+            inertia=local_inertia,
+            remainders=remainders,
         )
     rows = []
     for column in basis.T:
@@ -722,6 +767,7 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inert
             values, compliance_scale, return_traction=True, inertia=inertia
         )
         displacement_remainder = None
+    remainders = (None, None, displacement_remainder) if integrated_force else None
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     traction = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     sources = inputs + ([] if inertia is None else inertia.parameters)
@@ -740,6 +786,7 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inert
                 closed=info.get("closed_linear_solution", False),
                 integrated_force=integrated_force,
                 inertia=inertia,
+                remainders=remainders,
             )
             for source, gradient in zip(sources, gradients):
                 if source.requires_grad:
@@ -754,7 +801,9 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inert
         info if inertia is None else dict(info, closed_linear_solution=False),
         integrated_force=integrated_force,
     )
-    result, _, _ = _evaluate(inputs, u, selected_traction, compliance, integrated_force=integrated_force)
+    result, _, _ = _evaluate(
+        inputs, u, selected_traction, compliance, integrated_force=integrated_force, remainders=remainders
+    )
     result_type = CohesiveForceStep if integrated_force else CohesiveStep
     return result_type(*result, u, info, displacement_remainder)
 

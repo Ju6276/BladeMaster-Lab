@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 from ._compensated import Expansion
-from .compensated_state import as_compensated, add_gradient as _add_gradient
+from .compensated_state import CompensatedArray, as_compensated, add_gradient as _add_gradient
 from ._cohesive_solve import refine_geometry
 from .differentiable_cohesive import (
     CohesiveStep,
@@ -20,9 +20,6 @@ from .differentiable_cohesive import (
     _validated_inputs,
     _canonical_output,
 )
-
-
-EXTENDED = np.longdouble
 
 
 @dataclass(frozen=True)
@@ -175,7 +172,7 @@ def solve_geometry(
         inertia=inertia,
         integrated_force=integrated_force,
     )
-    precise_u, t_numpy, compliance, info, gap, frame = refine_geometry(
+    precise_u, t_numpy, compliance, info, gap, _ = refine_geometry(
         values,
         geometry.gap_remainder,
         geometry.frame_remainder,
@@ -186,23 +183,37 @@ def solve_geometry(
     )
     u_numpy = precise_u.astype(float)
     displacement_remainder = (precise_u - u_numpy).astype(float)
+    remainders = (geometry.gap_remainder, geometry.frame_remainder, displacement_remainder)
     device = geometry.gap.device
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     traction = wp.array(t_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     outer = wp._src.context.runtime.tape
     wp._src.context.runtime.tape = None
     try:
-        raw, _, _ = _evaluate(inputs, u, traction, compliance, integrated_force=integrated_force)
+        unit = wp.array([1.0], dtype=wp.float64, device=device)
+        motion = geometry.advance(
+            separation_map, frame_map, CompensatedArray(u, displacement_remainder), unit
+        )
+        raw, _, _ = _evaluate(
+            inputs, u, traction, compliance, integrated_force=integrated_force, motion=motion
+        )
         result = [wp.array(a.numpy(), dtype=a.dtype, device=device, requires_grad=True) for a in raw]
     finally:
         wp._src.context.runtime.tape = outer
-    result[0].assign(gap.astype(float))
-    result[5].assign(frame.astype(float))
+    gap_state = Expansion.from_value(gap)
+    if integrated_force:
+        # Zero-area rows retain free kinematics, including gaps smaller than
+        # the extended-precision equilibrium coordinates can represent.
+        empty = values[7] == 0.0
+        gap_state.high[empty] = motion.gap.numpy()[empty]
+        gap_state.low[empty] = motion.gap_remainder[empty]
+    result[0].assign(gap_state.high)
+    result[5].assign(motion.frame.numpy())
     updated = InterfaceGeometry(
         result[0],
         result[5],
-        gap - result[0].numpy().astype(EXTENDED),
-        frame - result[5].numpy().astype(EXTENDED),
+        gap_state.low,
+        motion.frame_remainder,
     )
     sources = inputs + ([] if inertia is None else inertia.parameters)
     if outer is not None:
@@ -224,7 +235,12 @@ def solve_geometry(
                     integrated_force=integrated_force,
                 )
                 output, _, _ = _evaluate(
-                    clones, fixed_u, selected_t, compliance, integrated_force=integrated_force
+                    clones,
+                    fixed_u,
+                    selected_t,
+                    compliance,
+                    integrated_force=integrated_force,
+                    remainders=remainders,
                 )
             local.backward(
                 grads={
@@ -243,6 +259,7 @@ def solve_geometry(
                 closed=info.get("closed_linear_solution", False),
                 inertia=inertia,
                 integrated_force=integrated_force,
+                remainders=remainders,
             )
             explicit.extend(np.zeros_like(a.numpy()) for a in sources[len(inputs) :])
             for source, direct, indirect in zip(sources, explicit, gradients):

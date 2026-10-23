@@ -352,4 +352,6 @@ E5 界面冲量入口 `cohesive_impact` 的 **20** 项检查通过，涵盖同�
 
 两分量正式接口提交为 `7cf9ae9`。局部基底、残差和 Jacobian 的补偿原型已通过十组分支及两阶段六组差分，最大误差 **1.995e-6**；反力与参考差 **1.085e-19 N**。入口 `runs/e5_release_audit/paired_equilibrium_{branches,fd}.py`，阶段速度仍用高精度副本传递。正式化时需让局部位移余量进入 `CompensatedArray` 的阶段更新，移除该副本，并核对重复/零面积约束、塑性与接触组合；当前原型的线性修正使用非奇异 LU 预条件。
 
-局部响应新增 `displacement_state`，把细化位移和余量传给 `CompensatedArray`。全量 **1607 passed、8 skipped、18 subtests passed**（707.95 s），日志 `runs/grid_update/displacement_precision_full.log`。D=I 时的闭合求解同时维持行空间最小范数与约束残差；新增八项检查通过，相关组合 **55 passed**。两分量非线性原型在相关接触约束的浮点间隙不相容时失败，70 位对照已核实接触集合会变化；保留几何余量的三档载荷及六组面积差分通过。70 位的 ±2⁻⁸⁰ m 独立间隙扰动使单点反力跳变 0.002 N，粒子合力差为 1.379e-19 N；报告 `runs/grid_update/contact_boundary_reference.json`。下一项保持几何关系传递，核对冗余反力的参数化导数及接触切换两侧响应，继续接入完整阶段状态；E5 第 6 项继续，第 7–8 项待完成。
+局部响应通过 `displacement_state` 保留位移余量；本构输出和局部伴随共用补偿后的间隙与面形变，零面积行保留自由几何。最新全量 **1611 passed、8 skipped、18 subtests passed**（936.22 s），日志 `runs/grid_update/geometry_output_full.log`，测试工作树 `~/Projects/BladeMaster-Warp-e5-state-20261023`。±2⁻⁸⁰/±2⁻¹⁰⁰ m 的四例输出、解析导数及两档差分通过，相关组合 **31 passed**。
+
+非线性原型的三档接触解与 70 位参考一致，原方程相对残差约 **1e-30**；重复切面反力、强度边界及保留几何关系的接触参数共 **38** 组差分通过。入口为 `runs/e5_release_audit/regularized_{reaction_tests,boundary_tests,contact_compensated}.py`，方法见 METHOD，命令和数字见 RESULTS。下一项完成其余冗余约束导数、接触切换两侧响应及正式非线性求解／阶段状态接入；E5 第 6 项继续，第 7–8 项待完成。

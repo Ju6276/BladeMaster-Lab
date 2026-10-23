@@ -96,3 +96,50 @@ def test_integrated_force_entry_preserves_nonbinary_displacement_and_its_derivat
     tape.backward()
     expected_gradient = 2.0 * (seed[0, 0] + seed[1, 0] - 2.0 * seed[2, 0]) / 6.0
     np.testing.assert_allclose(source[0].grad.numpy()[0, 0], expected_gradient, rtol=1e-13)
+
+
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+@pytest.mark.parametrize("exponent", [80, 100])
+def test_empty_interface_outputs_and_pullback_use_total_gap(sign, exponent):
+    values = closed_pair(4e-6, [2.0**-20, 0.0, 0.0])
+    values = [np.repeat(value, 2, axis=0) if i < 8 else value for i, value in enumerate(values)]
+    values[7][1] = 0.0
+    sources = arrays(values)
+    increment = 2.0**-exponent
+    remainder = np.array([[0.0, 0.0, 0.0], [sign * increment, 0.0, 0.0]])
+
+    def run(low):
+        geometry = InterfaceGeometry(*sources[:2], gap_remainder=low)
+        return solve_geometry(geometry, *sources[2:], integrated_force=True)[0]
+
+    with wp.Tape() as tape:
+        response = run(remainder)
+    np.testing.assert_array_equal(response.gap.numpy(), remainder)
+    np.testing.assert_array_equal(response.normal_gap.numpy(), remainder[:, 0])
+    opening = max(sign, 0.0) * increment
+    np.testing.assert_array_equal(response.history.numpy(), [0.0, opening])
+    expected_energy = 0.5 * values[4][1, 0] * opening
+    np.testing.assert_allclose(response.storage.numpy(), [0.0, expected_energy], rtol=1e-14, atol=0.0)
+    np.testing.assert_allclose(response.fracture.numpy(), [0.0, expected_energy], rtol=1e-14, atol=0.0)
+    tape.backward(
+        grads={
+            response.normal_gap: wp.array([0.0, 1.0], dtype=wp.float64),
+            response.history: wp.array([0.0, 2.0], dtype=wp.float64),
+        }
+    )
+    derivative = 3.0 if sign > 0.0 else 1.0
+    np.testing.assert_allclose(
+        sources[0].grad.numpy(),
+        [[-derivative, 0.0, 0.0], [derivative, 0.0, 0.0]],
+        rtol=1e-12,
+        atol=1e-14,
+    )
+    for fraction in [0.25, 0.5]:
+        delta = fraction * increment
+        sampled = []
+        for direction in [-1.0, 1.0]:
+            perturbed = remainder.copy()
+            perturbed[1, 0] += direction * delta
+            result = run(perturbed)
+            sampled.append(result.normal_gap.numpy()[1] + 2.0 * result.history.numpy()[1])
+        np.testing.assert_allclose((sampled[1] - sampled[0]) / (2.0 * delta), derivative, rtol=1e-12)

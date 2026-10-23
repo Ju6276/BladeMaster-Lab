@@ -145,13 +145,13 @@ class ReferenceInertia:
         """Apply D^-1 with its implicit state, duration and rate pullback."""
         self.transfer._check(value, wp.vec3d, (self.size,))
         bound = self.frozen()
-        advanced = bound.solve(value.numpy())
+        advanced = bound.solve(value.numpy().astype(np.longdouble))
         result = self.transfer.model.array(advanced, wp.vec3, True)
         tape = wp._src.context.runtime.tape
         if tape is not None:
 
             def backward():
-                adjoint = bound.solve(result.grad.numpy())
+                adjoint = bound.solve(result.grad.numpy().astype(np.longdouble))
                 if value.requires_grad:
                     value.grad.assign(value.grad.numpy() + adjoint)
                 power = np.sum(adjoint * bound.generator(advanced))

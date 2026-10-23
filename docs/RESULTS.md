@@ -1694,3 +1694,15 @@ RTX 4090，`f7990be`、dirty=true。`ReferenceInertia` 接入压力/积分总力
 命令前缀同上：`runs/e5_release_audit/native_inertia_stage_tests.py`、`native_inertia_precision.py`、`native_increment_precision.py`、`native_block_adjoint_precision.py`；日志及 JSON 位于 `runs/grid_update/native_*`。高精度参考使用相同的 P/Pᵀ 分解构造 D；弹性增量对照遇到活跃塑性即报错，正式塑性入口保持完整返回映射。
 
 提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1581 passed、8 skipped、18 subtests passed**（653.50 s），日志 `runs/grid_update/inertia_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：几何与惯性反向的求和精度
+
+RTX 4090，`09cf584`、dirty=true。界面运动 VJP 和 D⁻¹ 的参数收缩保留 CPU longdouble 中间量。四个相消余量的解析检查从 **4 failed** 变为通过；时长逆作用导数的解析值 **−0.1875**，旧计算为 **0**。定向检查 **56 passed**（14.80 s）。两阶段 κ=1e-15 m 的时长反力梯度相对高精度参考误差从 **2.1492%** 降为 **0.0019595%**；历史误差 **0.072923%**，小扰动反力差分仍失败。
+
+固定各阶段相同输入的十组局部方向导数最大误差 **8.754e-8**，反力差 ≤**6.234e-15 N**。第一阶段自由间隙舍入差 **3.597e-24 m**；以高精度间隙替换后，参考历史方向导数从 **1.1504991e-5** 恢复到完整公式的 **1.1486097e-5**，单独替换面形变不改变结果。下一项保持惯性逆作用与几何乘积的补偿精度，并核对完整两阶段差分。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_geometry_precision.py tests/test_reference_inertia.py tests/test_cohesive_adjoint_refinement.py tests/test_cohesive_closed_motion.py -q`；`runs/e5_release_audit/native_stage_local.py`、`native_stage_inputs.py`、`chain_precision_rollout.py`。报告/日志为 `runs/grid_update/{native_stage_local,native_stage_inputs,chain_precision_*}`。
+
+55 位惯性逆作用与几何合并计算原型，使两阶段时长/历史反力梯度相对参考误差降为 **1.551e-7/1.640e-7**，最大反力差 **2.590e-14 N**。三档中心差分相对误差：时长 **3.833e-6/3.565e-5/1.164e-4**，历史 **3.356e-6/1.103e-4/4.318e-3**；四个较小扰动仍超过原 rtol=2e-5。入口 `runs/e5_release_audit/precise_fused_rollout.py`，报告 `runs/grid_update/precise_fused_rollout.json`。下一项核对局部平衡解的舍入误差并实现通用补偿作用量。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1585 passed、8 skipped、18 subtests passed**（634.54 s），日志 `runs/grid_update/chain_precision_full.log`；8 项跳过为 CRESSim 上游构建。

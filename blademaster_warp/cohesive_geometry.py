@@ -86,8 +86,9 @@ class InterfaceGeometry:
         if tape is not None:
 
             def backward():
-                g, F, B, G, v, dt = values
-                sg, sF = high_gap.grad.numpy(), high_frame.grad.numpy()
+                g, F, B, G, v, dt = [a.astype(EXTENDED) for a in values]
+                sg = high_gap.grad.numpy().astype(EXTENDED)
+                sF = high_frame.grad.numpy().astype(EXTENDED)
                 _add_gradient(self.gap, sg)
                 _add_gradient(self.frame, sF)
                 _add_gradient(separation_map, dt[0] * (sg @ v.T))

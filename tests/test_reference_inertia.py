@@ -228,3 +228,22 @@ def test_closed_history_derivative_matches_compliance_limit(theta):
     mobility = values[9][0] ** 2 / values[8][0] * (values[5] @ np.linalg.solve(D, values[5].T))[0, 0]
     expected = -values[0][0, 0] / (mobility**2 * values[7][0] * values[4][0, 0])
     np.testing.assert_allclose(source[3].grad.numpy()[0], expected, rtol=2e-10, atol=1e-10)
+
+
+@pytest.mark.parametrize("large", [2.0**54, 2.0**58])
+def test_inverse_parameter_pullback_keeps_cancelling_seed_remainder(large):
+    tr = transfer(3, wp.get_device())
+    m = tr.model
+    tr.grid_map.assign(0.5 * np.eye(3))
+    duration, rate = m.array([1.0], float), m.array([4.0], float)
+    inertia = ReferenceInertia(tr, duration, rate)
+    velocity = m.array([[1.0, 0.0, 0.0]] * 3, wp.vec3)
+    with wp.Tape() as tape:
+        result = inertia.solve_array(velocity)
+    seed = np.zeros((3, 3))
+    seed[:, 0] = [large, 1.0, -large]
+    tape.backward(grads={result: m.array(seed, wp.vec3, False)})
+    np.testing.assert_array_equal(result.numpy(), velocity.numpy() / 4)
+    np.testing.assert_array_equal(velocity.grad.numpy(), seed / 4)
+    np.testing.assert_array_equal(duration.grad.numpy(), [-3.0 / 16])
+    np.testing.assert_array_equal(rate.grad.numpy(), [-3.0 / 64])

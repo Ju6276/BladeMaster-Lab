@@ -1387,3 +1387,11 @@ RTX 4090，`b899437`、dirty=true。`reference_grid.build_trace` 六项测试通
 正式网格映射与 NumPy 原型在 6/4/3/2.4/2 mm 网格上相同（映射 atol=1e-15、梯度 atol=1e-12）。固定 1 mm 刀位、dt=2 μs 的一步旋转与未切场对照，位置 RMS 差 **44.0/42.0/17.3/5.83/5.22e-12 nm**。八个相位 −1/2…3/8 网格间距的 **40** 例均保持零损伤；各网格最大位置 RMS 差 **32.9/42.0/27.3/19.5/13.1 nm**，最大 F 分量 RMS 差 **2.2205e-5/2.8809e-5/2.4950e-5/2.2316e-5/1.1404e-5**。6→4 mm 不单调，后四档位置 RMS 上界下降；完整空间收敛继续核对。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python runs/e5_release_audit/reference_grid_mesh.py` 及同入口 `--phase-scan`，报告 `runs/grid_update/reference_grid_{mesh,phase}.json`。
 
 提交前全量 **1149 passed、8 skipped、18 subtests passed**（335.95 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/reference_grid_full.log`。
+
+## 2026-10-23：有限刀面裁剪与位姿导数
+
+RTX 4090，`fb687af`、dirty=true。`reference_cut.quadrature` 增加逐半平面裁剪，`blade_quadrature` 将刀具位置、四元数和半尺寸接入有限矩形刀面。几何和双侧网格映射共 **34 passed**（62.74 s）。新增解析矩形/三角形面积、二次矩、相切/空交集与仿射不变性核对；6/4 mm 网格、正反法向、两个刀面偏移和十二个刀高共 **96** 个配置符合解析面积及质心。一般裁剪八类输入、刀具/粒子七类输入各两档差分按 rtol=2e-6、atol=1e-8 通过。
+
+命令 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_reference_cut.py tests/test_reference_clip.py tests/test_blade_quadrature.py tests/test_reference_grid.py -q`，工作树 `~/Projects/BladeMaster-Warp-e5-grid-20261023`，日志 `runs/grid_update/reference_blade_unit.log`。
+
+提交前全量 **1163 passed、8 skipped、18 subtests passed**（334.54 s）；8 项跳过为 CRESSim 上游构建。命令 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`，日志 `runs/grid_update/reference_blade_full.log`。

@@ -19,7 +19,6 @@ EDGES = [(i, j) for i in range(8) for j in range(i + 1, 8) if np.count_nonzero(C
 def _intersection_vertices(
     position: wp.array(dtype=wp.vec3d),
     deformation: wp.array(dtype=wp.mat33d),
-    reference: wp.array(dtype=wp.vec3d),
     half_extent: wp.array(dtype=wp.vec3d),
     plane_point: wp.array(dtype=wp.vec3d),
     plane_normal: wp.array(dtype=wp.vec3d),
@@ -36,7 +35,32 @@ def _intersection_vertices(
     ga = wp.dot(plane_normal[0], offset + deformation[p] * a)
     gb = wp.dot(plane_normal[0], offset + deformation[p] * b)
     fraction = ga / (ga - gb)
-    vertices[v] = reference[p] + a + fraction * (b - a)
+    vertices[v] = a + fraction * (b - a)
+
+
+@wp.kernel
+def _clip_vertices(
+    previous: wp.array(dtype=wp.vec3d),
+    edges: wp.array(dtype=wp.vec2i),
+    owners: wp.array(dtype=int),
+    position: wp.array(dtype=wp.vec3d),
+    deformation: wp.array(dtype=wp.mat33d),
+    clip_points: wp.array(dtype=wp.vec3d),
+    clip_normals: wp.array(dtype=wp.vec3d),
+    plane: int,
+    result: wp.array(dtype=wp.vec3d),
+):
+    i = wp.tid()
+    pair = edges[i]
+    value = previous[pair[0]]
+    if pair[0] != pair[1]:
+        p = owners[i]
+        b = previous[pair[1]]
+        offset = position[p] - clip_points[plane]
+        ga = wp.dot(clip_normals[plane], offset + deformation[p] * value)
+        gb = wp.dot(clip_normals[plane], offset + deformation[p] * b)
+        value += ga / (ga - gb) * (b - value)
+    result[i] = value
 
 
 @wp.kernel
@@ -44,6 +68,7 @@ def _triangle_quadrature(
     vertices: wp.array(dtype=wp.vec3d),
     triangles: wp.array(dtype=wp.vec3i),
     owners: wp.array(dtype=int),
+    reference: wp.array(dtype=wp.vec3d),
     deformation: wp.array(dtype=wp.mat33d),
     plane_normal: wp.array(dtype=wp.vec3d),
     points: wp.array(dtype=wp.vec3d),
@@ -56,9 +81,32 @@ def _triangle_quadrature(
     barycentric = wp.vec3d(wp.float64(1.0) / wp.float64(6.0))
     barycentric[local] = wp.float64(2.0) / wp.float64(3.0)
     q = 3 * triangle + local
-    points[q] = barycentric[0] * a + barycentric[1] * b + barycentric[2] * c
+    points[q] = reference[owners[triangle]] + (barycentric[0] * a + barycentric[1] * b + barycentric[2] * c)
     area[q] = wp.length(wp.cross(b - a, c - a)) / wp.float64(6.0)
     normals[q] = wp.normalize(wp.transpose(deformation[owners[triangle]]) * plane_normal[0])
+
+
+@wp.kernel
+def _blade_planes(
+    position: wp.array(dtype=wp.vec3d),
+    rotation: wp.array(dtype=wp.quatd),
+    half_size: wp.array(dtype=wp.vec3d),
+    normal: wp.array(dtype=wp.vec3d),
+    clip_points: wp.array(dtype=wp.vec3d),
+    clip_normals: wp.array(dtype=wp.vec3d),
+):
+    q = wp.normalize(rotation[0])
+    normal[0] = wp.quat_rotate(q, wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0)))
+    for i in range(4):
+        axis = 1 + i // 2
+        local = wp.vec3d(wp.float64(0.0))
+        sign = wp.float64(1.0)
+        if i % 2 == 0:
+            sign = wp.float64(-1.0)
+        local[axis] = sign
+        direction = wp.quat_rotate(q, local)
+        clip_normals[i] = direction
+        clip_points[i] = position[0] + half_size[0][axis] * direction
 
 
 @dataclass(frozen=True)
@@ -69,8 +117,8 @@ class CutQuadrature:
     owners: np.ndarray
 
 
-def _triangulate(position, deformation, half_extent, point, normal, selected):
-    vertex_owners, vertex_edges, triangles, triangle_owners = [], [], [], []
+def _sections(position, deformation, half_extent, point, normal, selected):
+    vertex_owners, vertex_edges, vertex_values, polygons, polygon_owners = [], [], [], [], []
     for p in selected:
         corners = CORNERS.astype(np.longdouble) * half_extent[p]
         current = position[p] - point + corners @ deformation[p].T
@@ -108,18 +156,73 @@ def _triangulate(position, deformation, half_extent, point, normal, selected):
         order = np.roll(order, -int(np.flatnonzero(order == 0)[0]))
         start = len(vertex_edges)
         vertex_edges.extend(edges[i] for i in order)
+        vertex_values.extend(cuts[i] for i in order)
         vertex_owners.extend([p] * len(edges))
-        for i in range(1, len(order) - 1):
-            triangles.append([start, start + i, start + i + 1])
-            triangle_owners.append(p)
-    return vertex_owners, vertex_edges, triangles, triangle_owners
+        polygons.append(list(range(start, start + len(order))))
+        polygon_owners.append(p)
+    return vertex_owners, vertex_edges, vertex_values, polygons, polygon_owners
 
 
-def quadrature(position, deformation, reference, half_extent, plane_point, plane_normal, *, owners=None):
+def _clip_polygons(values, polygons, owners, position, deformation, point, normal):
+    next_values, next_polygons, next_owners, edges, vertex_owners = [], [], [], [], []
+    for polygon, p in zip(polygons, owners):
+        coordinates = np.asarray([values[i] for i in polygon], dtype=np.longdouble)
+        levelset = (position[p] - point + coordinates @ deformation[p].T) @ normal
+        scale = np.abs(position[p]) + np.abs(point) + np.abs(coordinates) @ np.abs(deformation[p].T)
+        epsilon = np.finfo(np.float64).eps
+        roundoff = 16 * epsilon / (1 - 16 * epsilon) * (scale @ np.abs(normal))
+        levelset[np.abs(levelset) <= roundoff] = 0.0
+        descriptors = []
+        locations = []
+
+        def append(pair, value):
+            if not descriptors or pair != descriptors[-1]:
+                descriptors.append(pair)
+                locations.append(value)
+
+        for j, b in enumerate(polygon):
+            a = polygon[j - 1]
+            ga, gb = levelset[j - 1], levelset[j]
+            if (ga <= 0) != (gb <= 0):
+                if ga == 0:
+                    append((a, a), values[a])
+                elif gb == 0:
+                    append((b, b), values[b])
+                else:
+                    append((a, b), values[a] + ga / (ga - gb) * (values[b] - values[a]))
+            if gb <= 0:
+                append((b, b), values[b])
+        if len(descriptors) > 1 and descriptors[0] == descriptors[-1]:
+            descriptors.pop()
+            locations.pop()
+        if len(descriptors) < 3:
+            continue
+        start = len(next_values)
+        next_values.extend(locations)
+        edges.extend(descriptors)
+        vertex_owners.extend([p] * len(locations))
+        next_polygons.append(list(range(start, start + len(locations))))
+        next_owners.append(p)
+    return next_values, next_polygons, next_owners, edges, vertex_owners
+
+
+def quadrature(
+    position,
+    deformation,
+    reference,
+    half_extent,
+    plane_point,
+    plane_normal,
+    *,
+    owners=None,
+    clip_points=None,
+    clip_normals=None,
+):
     """Intersect a current plane with selected affine particle domains.
 
     Integrals use reference area and a degree-two triangle rule. Edge selection
     and triangulation are rebuilt at each call; their indices are fixed in a VJP.
+    Optional current-space half planes retain n·(x-c) <= 0.
     """
     sources = [position, deformation, reference, half_extent, plane_point, plane_normal]
     dtypes = [wp.vec3d, wp.mat33d, wp.vec3d, wp.vec3d, wp.vec3d, wp.vec3d]
@@ -144,7 +247,22 @@ def quadrature(position, deformation, reference, half_extent, plane_point, plane
         or len(np.unique(selected)) != len(selected)
     ):
         raise ValueError("Selected particle IDs must be unique integers within the particle array")
-    vertex_owners, edges, triangles, triangle_owners = _triangulate(
+    if (clip_points is None) != (clip_normals is None):
+        raise ValueError("Clipping requires both plane points and normals")
+    clip_values = []
+    if clip_points is not None:
+        if (
+            any(a.dtype != wp.vec3d or a.device != position.device for a in [clip_points, clip_normals])
+            or clip_points.ndim != 1
+            or clip_points.shape != clip_normals.shape
+        ):
+            raise ValueError("Clipping planes require matching float64 arrays on the particle device")
+        clip_values = [a.numpy().astype(np.longdouble) for a in [clip_points, clip_normals]]
+        if any(not np.isfinite(a).all() for a in clip_values) or np.any(
+            np.linalg.norm(clip_values[1], axis=1) == 0
+        ):
+            raise ValueError("Clipping plane points and nonzero normals must be finite")
+    vertex_owners, edges, vertex_values, polygons, polygon_owners = _sections(
         values[0].astype(np.longdouble),
         values[1].astype(np.longdouble),
         values[3].astype(np.longdouble),
@@ -152,6 +270,21 @@ def quadrature(position, deformation, reference, half_extent, plane_point, plane
         values[5][0].astype(np.longdouble),
         selected,
     )
+    stages = []
+    if clip_values:
+        for point, normal in zip(*clip_values):
+            vertex_values, polygons, polygon_owners, connections, stage_owners = _clip_polygons(
+                vertex_values, polygons, polygon_owners, values[0], values[1], point, normal
+            )
+            stages.append((connections, stage_owners))
+    triangles, triangle_owners = [], []
+    for polygon, p in zip(polygons, polygon_owners):
+        for i in range(1, len(polygon) - 1):
+            ids = [polygon[0], polygon[i], polygon[i + 1]]
+            a, b, c = [vertex_values[j] for j in ids]
+            if np.any(np.cross(b - a, c - a) != 0):
+                triangles.append(ids)
+                triangle_owners.append(p)
     device = position.device
     n = 3 * len(triangles)
     points = wp.empty(n, dtype=wp.vec3d, device=device, requires_grad=True)
@@ -163,7 +296,11 @@ def quadrature(position, deformation, reference, half_extent, plane_point, plane
             _intersection_vertices,
             len(edges),
             inputs=[
-                *sources,
+                position,
+                deformation,
+                half_extent,
+                plane_point,
+                plane_normal,
                 wp.array(vertex_owners, dtype=int, device=device),
                 wp.array(edges, dtype=wp.vec2i, device=device),
                 wp.array(CORNERS, dtype=wp.vec3d, device=device),
@@ -171,6 +308,25 @@ def quadrature(position, deformation, reference, half_extent, plane_point, plane
             outputs=[vertices],
             device=device,
         )
+        for index, (connections, stage_owners) in enumerate(stages):
+            clipped = wp.empty(len(connections), dtype=wp.vec3d, device=device, requires_grad=True)
+            wp.launch(
+                _clip_vertices,
+                len(connections),
+                inputs=[
+                    vertices,
+                    wp.array(connections, dtype=wp.vec2i, device=device),
+                    wp.array(stage_owners, dtype=int, device=device),
+                    position,
+                    deformation,
+                    clip_points,
+                    clip_normals,
+                    index,
+                ],
+                outputs=[clipped],
+                device=device,
+            )
+            vertices = clipped
         wp.launch(
             _triangle_quadrature,
             (len(triangles), 3),
@@ -178,6 +334,7 @@ def quadrature(position, deformation, reference, half_extent, plane_point, plane
                 vertices,
                 wp.array(triangles, dtype=wp.vec3i, device=device),
                 wp.array(triangle_owners, dtype=int, device=device),
+                reference,
                 deformation,
                 plane_normal,
             ],
@@ -185,3 +342,52 @@ def quadrature(position, deformation, reference, half_extent, plane_point, plane
             device=device,
         )
     return CutQuadrature(points, area, normals, np.repeat(triangle_owners, 3).astype(np.int64))
+
+
+def blade_quadrature(
+    position,
+    deformation,
+    reference,
+    half_extent,
+    tool_position,
+    tool_rotation,
+    tool_half_size,
+    *,
+    owners=None,
+):
+    """Intersect particle domains with the blade's current rectangular mid-surface.
+
+    Blade-local x is normal, y spans the edge and z spans the blade height.
+    Pose and half sizes use metres and an xyzw quaternion, normalized here.
+    The result measures the instantaneous footprint; swept-area history is separate.
+    """
+    pose = [tool_position, tool_rotation, tool_half_size]
+    dtypes = [wp.vec3d, wp.quatd, wp.vec3d]
+    if any(
+        a.dtype != dtype or a.device != position.device or a.shape != (1,) for a, dtype in zip(pose, dtypes)
+    ):
+        raise ValueError("Blade pose and half size require single float64 values on the particle device")
+    values = [a.numpy() for a in pose]
+    if (
+        any(not np.isfinite(a).all() for a in values)
+        or not np.linalg.norm(values[1][0]) > 0
+        or np.any(values[2] <= 0)
+    ):
+        raise ValueError("Blade pose must be finite with nonzero rotation and positive half sizes")
+    normal = wp.empty(1, dtype=wp.vec3d, device=position.device, requires_grad=True)
+    clip_points = wp.empty(4, dtype=wp.vec3d, device=position.device, requires_grad=True)
+    clip_normals = wp.empty(4, dtype=wp.vec3d, device=position.device, requires_grad=True)
+    wp.launch(
+        _blade_planes, 1, inputs=pose, outputs=[normal, clip_points, clip_normals], device=position.device
+    )
+    return quadrature(
+        position,
+        deformation,
+        reference,
+        half_extent,
+        tool_position,
+        normal,
+        owners=owners,
+        clip_points=clip_points,
+        clip_normals=clip_normals,
+    )

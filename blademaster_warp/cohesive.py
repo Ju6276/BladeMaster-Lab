@@ -87,6 +87,20 @@ def cohesive_contact_response(
         deformation[i], reference_normal[i], multiplier[i] * gap[i])
 
 
+@wp.func
+def radial_traction(vector: wp.vec3, magnitude: float):
+    """The loading branch supplies a nonzero direction vector."""
+    return magnitude * (vector / wp.length(vector))
+
+
+@wp.func_grad(radial_traction)
+def radial_traction_grad(vector: wp.vec3, magnitude: float, adjoint: wp.vec3):
+    length = wp.length(vector)
+    direction = vector / length
+    wp.adjoint[vector] += (magnitude / length) * wp.cross(direction, wp.cross(adjoint, direction))
+    wp.adjoint[magnitude] += wp.dot(adjoint, direction)
+
+
 @wp.kernel
 def cohesive_proximal_response(
     free_gap: wp.array(dtype=wp.vec3), normals: wp.array(dtype=wp.vec3),
@@ -134,13 +148,13 @@ def cohesive_proximal_response(
         denominator = old + compliance * strength * (1.0 - old / failure)
         energy = 0.5 * strength * (1.0 - old / failure) * old * wp.length_sq(positive) / (denominator * denominator)
     elif high > 0.0 and high < failure:
-        energy = 0.5 * strength * (1.0 - high / failure) / high * r * r
+        energy = 0.5 * strength * (1.0 - high / failure) * r
     t = compression / compliance * n
     if unloading:
         denominator = old + compliance * strength * (1.0 - old / failure)
         t += strength * (1.0 - old / failure) / denominator * positive
     elif high > 0.0 and high < failure:
-        t += strength * (1.0 - high / failure) / high * g
+        t += radial_traction(positive, strength * (1.0 - high / failure))
     gap[i] = g
     traction[i] = t
     maximum[i] = high
@@ -203,8 +217,8 @@ def cohesive_measure_proximal_response(
         energy = 0.5 * strength * (1.0 - old / failure) * old * wp.length_sq(positive) / (denominator * denominator)
         resultant += scaled_strength * (1.0 - old / failure) / denominator * positive
     elif high > 0.0 and high < failure:
-        energy = 0.5 * strength * (1.0 - high / failure) / high * r * r
-        resultant += scaled_strength * (1.0 - high / failure) / high * (r / radius * positive)
+        energy = 0.5 * strength * (1.0 - high / failure) * r
+        resultant += radial_traction(positive, scaled_strength * (1.0 - high / failure))
     gap[i] = g
     force[i] = resultant
     maximum[i] = high

@@ -131,14 +131,25 @@ def kinematics(
 
 @wp.kernel
 def opening_residual(
+    gap: wp.array(dtype=wp.vec3),
+    proximal_gap: wp.array(dtype=wp.vec3),
     proximal_traction: wp.array(dtype=wp.vec3),
     traction: wp.array(dtype=wp.vec3),
+    history: wp.array(dtype=float),
+    area: wp.array(dtype=float),
     shared: wp.array(dtype=int),
     compliance: float,
+    integrated_force: int,
     result: wp.array(dtype=wp.vec3),
 ):
     i = wp.tid()
     result[i] = compliance * (proximal_traction[i] - traction[i])
+    closed = proximal_gap[i][0] == 0.0 and proximal_gap[i][1] == 0.0 and proximal_gap[i][2] == 0.0
+    if history[i] == 0.0 and closed:
+        if integrated_force == 0 or area[i] > 0.0:
+            # The closed multiplier block is exactly zero. Keep the proximal
+            # gap in the expression to retain the one-sided history derivative.
+            result[i] = gap[i] - proximal_gap[i]
     if shared[i] != 0:
         result[i] = compliance * traction[i]
 
@@ -325,7 +336,17 @@ def _evaluate(inputs, u, traction, compliance, *, integrated_force=False):
     launch_double(
         opening_residual,
         count,
-        inputs=[prox[1], traction, shared, compliance],
+        inputs=[
+            raw[0],
+            prox[0],
+            prox[1],
+            traction,
+            inputs[3],
+            inputs[7],
+            shared,
+            compliance,
+            int(integrated_force),
+        ],
         outputs=[Rg],
         device=device,
     )

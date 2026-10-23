@@ -1557,3 +1557,11 @@ RTX 4090，`0b279f6`、dirty=true。相关 **27 passed**（64.68 s），新增�
 实际自然事件生成的 **288** 点、39 网格槽界面完成一次 **2 μs** 材料推进，耗时 **0.1533 s**，最大历史 **0**。**576** 点、47 槽例的非线性线搜索在第九次迭代失败，归一化残差 **2.55145e-14**；直接闭合候选超出原强度界。残差缩放和约束零空间原型均未解决该例，继续核对承载可行性与活跃约束切换。
 
 命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_closed_motion.py tests/test_reference_grid.py -q`；`runs/e5_release_audit/birth_orientation_natural16_fixed.py`；`runs/e5_release_audit/natural_coupling_profile.py --segments 4 --output runs/grid_update/natural_coupling_factored4_final.json`（576 点使用 `--segments 8`）。报告/日志在 `e5-grid-20261023/runs/grid_update/`。提交前全量 `-m pytest tests -q` 为 **1405 passed、8 skipped、18 subtests passed**（507.17 s），日志 `closed_boundary_full.log`；8 项跳过为 CRESSim 上游构建。
+
+## 2026-10-23：闭合残差与近起裂牵引的反向精度
+
+RTX 4090，`9ddcd27`、dirty=true。新增 **20** 项解析检查在旧提交全部失败，当前全部通过：8 项闭合残差的反力导数严格为零、历史单侧导数保留；12 项牵引/总力在起裂距离外 **2⁻²⁰/2⁻³⁵/2⁻⁴⁵** 相对增量处，径向力与储能导数符合解析值，数值分裂尺度覆盖 λAσ/δ_f=**0.17/1e-12**。连同近端和面积响应测试为 **59 passed**（1.78 s）。
+
+576 点固定输入的自适应 ADMM、归一化最小二乘和约束分块原型完成平衡求解，扩展精度残差 **6.77012e-29**，最大开口 **4.73853e-18 m**；材料强度和原求解容差保持原值。界面位移目标的完整伴随检查通过原 **1e-10** 缩放标准。实际材料一步推进的原型通过一次伴随残差细化，将残差从 **0.0130086** 降至 **4.01624e-5**，相对右端尺度为 **3.33e-13**；正向/反向耗时 **10.8963/7.3093 s**，状态及速度梯度有限。自适应非线性求解和材料伴随细化仍在原型中，继续整理通用入口及参数差分。
+
+命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python`：`-m pytest tests/test_cohesive_small_opening.py tests/test_cohesive_closed_residual.py tests/test_cohesive_proximal.py tests/test_cohesive_measure.py -q`；`runs/e5_release_audit/natural_adaptive_admm.py --resume --tolerance 1e-10 --iterations 200000 --name natural_adaptive_precise`；`runs/e5_release_audit/natural_adaptive_newton.py --seed natural_adaptive_precise --scaled --nullspace`；`runs/e5_release_audit/natural_interface_adjoint.py`；`runs/e5_release_audit/natural_material_coupling.py --refine-adjoint`。报告在 `e5-grid-20261023/runs/grid_update/`。提交前全量 `-m pytest tests -q` 为 **1425 passed、8 skipped、18 subtests passed**（505.85 s），日志 `small_opening_full.log`；8 项跳过为 CRESSim 上游构建。

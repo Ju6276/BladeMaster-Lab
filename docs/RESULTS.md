@@ -1786,3 +1786,17 @@ RTX 4090 工作站，`6402282`、dirty=true。约束反力选择和补偿几何�
 八步塑性轨迹的 Young 模量／屈服参数四组差分通过，ε=**1e-4/1e-5**，相对误差分别为 **3.483e-7/4.472e-6**、**2.989e-7/5.032e-6**，沿用 rtol=**2e-5**、atol=**1e-8**。仿射初态的第一组扰动在前向 Newton 求解失败：μ=**1e-14**，80 次后残差 **8.3314e-22**；两组仿射差分及后续能量检查待完成。入口 `compiled_plastic_stages.py`；报告 `runs/grid_update/compiled_plastic_stages.json`，失败输入 `plastic_affine_root_failure.npz`。
 
 停滞输入与独立 90 位参考的残差／Jacobian 最大绝对差为 **1.242e-41/1.858e-32**；Newton／随机方向的两档高精度差分最大相对差为 **6.810e-20/3.225e-32**。入口 `stagnation_jacobian.py`；报告 `runs/grid_update/stagnation_jacobian.json`。下一项核对正则化延续与步长选择，修复后重跑该输入及完整塑性轨迹。
+
+## 2026-10-24：零开口初值的坐标缩放与非光滑步长搜索
+
+RTX 4090 工作站，`daa9edb`。初值开口估计为 **0** 时，自由间隙 **1.8812e-12 m** 与初值位移后的间隙 **3.5346e-23 m** 相差十一量级。使用后者缩放近端坐标，捕获的仿射扰动输入在 **12.61 s** 通过原方程检查，相对残差 **9.445e-33**。Python／编译矩阵乘法的原实现均在同一输入失败，最终残差同为 **8.3314154e-22**。入口 `geometry_scale_affine_probe.py`；报告 `runs/grid_update/geometry_scale_affine_probe.json`。
+
+`daa9edb`、dirty=true。正式 `_cohesive_globalization` 使用 Armijo／弱 Wolfe 条件；坐标尺度乘 **0.1/1/10** 的三例全部通过，90 位独立残差最大 **9.435e-33**，位移差最大 **2.638e-40 m**。解析检查 **11 passed**（0.22 s），覆盖非光滑斜率跳变、**2⁻³⁰⁰/1/2³⁰⁰** 残差缩放、非单调试步及越界试步回退。命令 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests/test_cohesive_line_search.py -q`；日志 `runs/grid_update/cohesive_line_search_unit.log`；三档原型入口 `formal_globalization_probe.py`，报告位于 `runs/grid_update/` 下同名 JSON。
+
+几何尺度与弱 Wolfe 原型的零面积、重复惯性、强度边界及混合界面共 **12 passed**（400.23 s）。入口 `geometry_weak_partition_constraints.py`；日志 `runs/grid_update/geometry_weak_partition_constraints.log`。原型命令前缀 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=.:runs/e5_release_audit:../BladeMaster-Warp-e5-grid-20261023/runs/e5_release_audit .venv/bin/python`，脚本位于 `runs/e5_release_audit/`。
+
+几何缩放后的八步塑性轨迹通过 **5/6** 组差分，仿射 ε=**1e-4** 的相对误差 **3.537e-9**；ε=**1e-5** 的前向输入在非光滑斜率跳变处无法满足强 Wolfe 条件，剩余差分及能量核对未完成。该输入使用弱 Wolfe 搜索，**29.92 s** 后通过原方程检查，相对残差 **6.296e-33**。入口 `geometry_scaled_plastic_stages.py`、`weak_wolfe_failed_root.py`；报告为 `runs/grid_update/` 下同名 JSON，捕获输入 `plastic_strong_wolfe_failure.npz`。六组差分及逐步能量的组合复测入口为 `geometry_weak_explicit_plastic_stages.py`。
+
+显式阶段存储原型与原跨步实现的两步状态、余量和恢复后状态逐位一致；四次推进创建的局部算术上下文在返回后保留 **0** 个。入口 `explicit_stage_probe.py`；报告 `runs/grid_update/explicit_stage_probe.json`。舍入余量存入粒子状态与检查点，阶段中间数组由本次推进持有。两步完整／检查点反向的速度、仿射状态、时长和耗散率梯度最大差均为 **0**，入口 `explicit_stage_backward.py`，报告为同名 JSON。
+
+提交前全量 `OPENBLAS_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1669 passed、8 skipped、18 subtests passed**（849.49 s）。日志 `runs/grid_update/cohesive_line_search_full.log`；8 项跳过为 CRESSim 上游构建。

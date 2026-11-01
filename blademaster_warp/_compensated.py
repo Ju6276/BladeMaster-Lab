@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from ._compensated_kernels import matrix_product
+from ._compensated_kernels import matrix_product, ordered_sum
 
 
 def _two_sum(a, b):
@@ -106,10 +106,12 @@ class Expansion:
             raise ValueError("Reduction axis exceeds the array dimensions")
         axis %= self.ndim
         high, low = np.moveaxis(self.high, axis, 0), np.moveaxis(self.low, axis, 0)
-        result = Expansion(np.zeros(high.shape[1:]))
-        for h, l in zip(high, low):
-            result = result + Expansion(h, l)
-        return result
+        shape = high.shape[1:]
+        flat = (high.shape[0], math.prod(shape))
+        high, low = ordered_sum(
+            np.ascontiguousarray(high.reshape(flat)), np.ascontiguousarray(low.reshape(flat))
+        )
+        return Expansion(high.reshape(shape), low.reshape(shape))
 
     def __matmul__(self, other):
         other = Expansion.from_value(other)

@@ -1,4 +1,4 @@
-"""Scalar expansion arithmetic for ordered CPU matrix products."""
+"""Scalar expansion arithmetic with fixed CPU accumulation order."""
 
 import math
 
@@ -25,6 +25,22 @@ def _two_product(a, b):
     error = ((ah * bh - product) + ah * bl + al * bh) + al * bl
     exponent = ea + eb
     return value, math.ldexp((product - math.ldexp(value, -exponent)) + error, exponent)
+
+
+@njit(cache=True, fastmath=False)
+def ordered_sum(values_high, values_low):
+    rows, columns = values_high.shape
+    high = np.zeros(columns)
+    low = np.zeros(columns)
+    for column in range(columns):
+        h, l = 0.0, 0.0
+        for row in range(rows):
+            ah, al = _two_sum(values_high[row, column], values_low[row, column])
+            nh, nl = _two_sum(h, ah)
+            nl += l + al
+            h, l = _two_sum(nh, nl)
+        high[column], low[column] = h, l
+    return high, low
 
 
 @njit(cache=True, fastmath=False)

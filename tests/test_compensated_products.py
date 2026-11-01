@@ -1,4 +1,4 @@
-"""Decimal matrix-product oracles across cancellation, scales and broadcasting."""
+"""Decimal oracles for products and reductions across cancellation and scales."""
 
 from decimal import Decimal, localcontext
 
@@ -68,3 +68,37 @@ def test_empty_matrix_products(left_shape, right_shape, expected_shape):
 def test_invalid_matrix_product_shapes(left, right):
     with pytest.raises(ValueError):
         Expansion(left) @ Expansion(right)
+
+
+@pytest.mark.parametrize("axis", [None, 0, 1, -1])
+@pytest.mark.parametrize("exponent", [-900, 0, 900])
+def test_reduction_matches_decimal_with_cancellation(axis, exponent):
+    rng = np.random.default_rng(217)
+    high = np.ldexp(rng.normal(size=(7, 6, 5)), exponent)
+    high[1::2] = -high[:-1:2]
+    low = np.ldexp(rng.normal(size=high.shape), exponent - 56)
+    value = Expansion(high, low)
+    # Transposition and slicing exercise reductions over noncontiguous storage.
+    value = Expansion(value.high.transpose(2, 0, 1)[::2], value.low.transpose(2, 0, 1)[::2])
+    result = value.sum(axis)
+    with localcontext() as context:
+        context.prec = 100
+        source = decimal_array(value)
+        expected = np.asarray(source.sum(axis=axis), dtype=object)
+        scale = np.asarray(abs(source).sum(axis=axis), dtype=object)
+        actual = decimal_array(result)
+        assert actual.shape == expected.shape
+        for index in np.ndindex(actual.shape):
+            assert abs(actual[index] - expected[index]) <= Decimal("1e-28") * scale[index]
+
+
+@pytest.mark.parametrize(
+    "shape,axis,expected_shape",
+    [((0,), None, ()), ((0, 3), 0, (3,)), ((3, 0), 1, (3,)), ((0, 3), 1, (0,)), ((), None, ())],
+)
+def test_empty_and_scalar_reductions(shape, axis, expected_shape):
+    value = np.full(shape, 2.0)
+    result = Expansion(value).sum(axis)
+    assert result.shape == expected_shape
+    np.testing.assert_array_equal(result.high, value.sum(axis=axis))
+    np.testing.assert_array_equal(result.low, 0.0)

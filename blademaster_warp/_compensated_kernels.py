@@ -188,12 +188,14 @@ def matrix_residual(ah, al, xh, xl, bh, bl):
     return high, low
 
 
-@guvectorize([(float64, float64, float64[:], float64[:])], "(),()->(),()", nopython=True, cache=True)
+# Numba stores gufunc cores and wrappers separately; mixed cache generations can
+# leave a wrapper calling an unresolved native symbol in a fresh process.
+@guvectorize([(float64, float64, float64[:], float64[:])], "(),()->(),()", nopython=True, cache=False)
 def array_sum(a, b, high, low):
     high[0], low[0] = _two_sum(a, b)
 
 
-@guvectorize([(float64, float64, float64[:], float64[:])], "(),()->(),()", nopython=True, cache=True)
+@guvectorize([(float64, float64, float64[:], float64[:])], "(),()->(),()", nopython=True, cache=False)
 def array_product(a, b, high, low):
     high[0], low[0] = _two_product(a, b)
 
@@ -202,7 +204,7 @@ def array_product(a, b, high, low):
     [(float64, float64, float64, float64, float64[:], float64[:])],
     "(),(),(),()->(),()",
     nopython=True,
-    cache=True,
+    cache=False,
 )
 def array_divide(ah, al, bh, bl, high, low):
     high[0], low[0] = _divide_expansion(ah, al, bh, bl)

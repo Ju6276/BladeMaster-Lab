@@ -4,6 +4,14 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：数组编译缓存的进程启动崩溃
+
+RTX 4090 主机、Numba 0.68.0，batched 候选的 `python runs/probe_compiled_divide.py raw` 与 `wrapper` 均在 `1÷2` 处以 **−11** 退出；隔离缓存串行构建、第二进程复用均以 **0** 退出。缓存主体导出 `array_divide…v5`，包装器引用 `array_divide…v3`；串行缓存两者均为 `v5`。记录 `runs/compiled_cache_20261101/{result,symbol_versions}.json`。Numba 上游有[并发 gufunc 缓存崩溃记录](https://github.com/numba/numba/issues/4807)。
+
+`4447a85` 加修复，dirty=true：三个数组 gufunc 关闭磁盘缓存，保留即时编译及原运算顺序。新测试在七个独立进程中改变编译顺序、并发启动并模拟部分缓存失效，同时用 Decimal 核对加法、乘法和除法。`python -m pytest tests/test_compensated_processes.py tests/test_compensated_linalg.py tests/test_compensated_products.py -q`：**80 passed / 4.49 s**；同一进程测试在 `ae963d3` 上复现 **−11**，**1 failed / 1.24 s**。记录 cache 工作树的 `runs/cache_fix_20261101/`。
+
+相同源码 `python -m pytest tests -q`：**1715 passed、8 skipped、18 subtests passed / 829.67 s**，退出码 0；记录 `runs/cache_fix_20261101/{full.log,full_result.json}`。
+
 ## 2026-11-01：自然事件加速等价与整体能量步长检查
 
 batched 工作树 `ae963d3` 加统一候选，dirty=true。嵌套 `CombinedContacts` 保留叶子接触律，修复刀/板接触再与粒子对组合时的递归调用。`PYTHONPATH=runs/nested_source:tests:. python runs/check_nested.py runs/test_nested_contacts.py -q`：**2 passed / 7.64 s**，平铺/嵌套的力、历史及全部输入反向逐项相同；同入口检查 `tests/test_combined_contacts.py tests/test_mixed_contact_stages.py tests/test_spatial_pair_stages.py tests/test_contact_stage_checkpoint.py`：**16 passed / 646.54 s**。

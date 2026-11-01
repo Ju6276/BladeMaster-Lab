@@ -4,6 +4,14 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：固定主元顺序的线性代数编译
+
+RTX 4090 主机，`c20b3dc` 加 `perf/compensated-linear-20261101` 编译改动。`python runs/check_linear_equivalence.py`：24 组密集/三角矩阵、1/3/8/16 阶、二进制尺度 −400/0/400，LU 主值/余量、置换、解和残差逐项相同。主元顺序、补偿运算和残差停止条件保持不变。
+
+`python runs/check_linear_actual.py`：实际接触矩阵 **1908×1908**，原分解 **109.1455 s**、编译分解 **0.10024 s**；原求解 **0.84195 s**、编译求解 **0.01276 s**。LU、置换和解的主值/余量逐项相同，记录 `runs/linear_compilation_20261101/actual_comparison.json`。
+
+`python -m pytest tests -q`：**1686 passed、8 skipped、18 subtests passed / 813.80 s**。本地与 4090 源码差异逐项一致；日志与退出码位于 `runs/linear_compilation_20261101/`。
+
 ## 2026-11-01：释放力定义与内聚本构核对
 
 干净 `4d5a534`，RTX 4090，工作树 `BladeMaster-Warp-goal-20261101`。命令 `python runs/method_audit_20261101/release_field.py`：三位置 × 释放前后 × 三档差分，AD 与解析最大绝对差 **1.66e-10 N/m**；相邻 `1e-8/1e-9 m` 差分的最大相对差 **5.33e-10**。释放后两项交叉导数分别为 **7838.232679 N/m / 0**（另一个位置为 **5393.126095 N/m / 0**），释放前相等至 **9.10e-13 N/m**。

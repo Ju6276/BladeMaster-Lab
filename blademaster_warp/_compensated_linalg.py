@@ -3,7 +3,8 @@
 import numpy as np
 from scipy.linalg.lapack import dgeequ
 
-from ._compensated import Expansion, _two_sum, _two_product
+from ._compensated import Expansion
+from ._compensated_kernels import lu_factor, lu_substitute, matrix_residual
 
 
 def divide(numerator, denominator):
@@ -37,22 +38,11 @@ def residual(matrix, solution, rhs):
     vector = rhs.ndim == 1
     if vector:
         solution, rhs = solution.reshape(-1, 1), rhs.reshape(-1, 1)
-    parts = np.zeros((4, *rhs.shape))
-
-    def add(value):
-        for i in range(4):
-            parts[i], value = _two_sum(parts[i], value)
-
-    add(rhs.high)
-    add(rhs.low)
-    for k in range(matrix.shape[1]):
-        for left in [matrix.high[:, k, None], matrix.low[:, k, None]]:
-            for right in [solution.high[None, k, :], solution.low[None, k, :]]:
-                high, low = _two_product(left, right)
-                add(-high)
-                add(-low)
-    value = Expansion(parts[0]) + Expansion(parts[1]) + Expansion(parts[2]) + Expansion(parts[3])
-    return value[:, 0] if vector else value
+    high, low = matrix_residual(
+        matrix.high, matrix.low, solution.high, solution.low, rhs.high, rhs.low
+    )
+    result = Expansion(high, low)
+    return result[:, 0] if vector else result
 
 
 class Factorization:
@@ -63,35 +53,17 @@ class Factorization:
         if not np.isfinite(matrix.high).all() or not np.isfinite(matrix.low).all():
             raise ValueError("Finite matrix entries are required")
         self.matrix = Expansion(matrix.high.copy(), matrix.low.copy())
-        self.lu = Expansion(matrix.high.copy(), matrix.low.copy())
-        self.pivots = np.arange(matrix.shape[0])
-        n = len(self.pivots)
-        for k in range(n):
-            pivot = k + np.argmax(abs(self.lu.high[k:, k]))
-            if self.lu.high[pivot, k] == 0.0:
-                raise np.linalg.LinAlgError("Singular compensated matrix")
-            if pivot != k:
-                _assign(self.lu, [k, pivot], self.lu[[pivot, k]])
-                self.pivots[[k, pivot]] = self.pivots[[pivot, k]]
-            if k + 1 < n:
-                column = divide(self.lu[k + 1 :, k], self.lu[k, k])
-                _assign(
-                    self.lu,
-                    (slice(k + 1, None), slice(k + 1, None)),
-                    self.lu[k + 1 :, k + 1 :] - column[:, None] * self.lu[k, None, k + 1 :],
-                )
-                _assign(self.lu, (slice(k + 1, None), k), column)
+        rows = np.arange(matrix.shape[0])
+        high, low, self.pivots, status = lu_factor(matrix.high, matrix.low, rows, 0)
+        if status >= 0:
+            raise np.linalg.LinAlgError("Singular compensated matrix")
+        self.lu = Expansion(high, low)
 
     def _substitute(self, rhs):
-        n = len(self.pivots)
-        value = Expansion(rhs.high[self.pivots].copy(), rhs.low[self.pivots].copy())
-        for k in range(n):
-            if k:
-                _assign(value, k, value[k] - self.lu[k, :k] @ value[:k])
-        for k in range(n - 1, -1, -1):
-            residual = value[k] - self.lu[k, k + 1 :] @ value[k + 1 :]
-            _assign(value, k, divide(residual, self.lu[k, k]))
-        return value
+        high, low = lu_substitute(
+            self.lu.high, self.lu.low, rhs.high[self.pivots], rhs.low[self.pivots]
+        )
+        return Expansion(high, low)
 
     def solve(self, rhs):
         rhs = Expansion.from_value(rhs)

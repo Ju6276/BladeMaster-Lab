@@ -4,6 +4,16 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：自然事件加速等价与整体能量步长检查
+
+batched 工作树 `ae963d3` 加统一候选，dirty=true。嵌套 `CombinedContacts` 保留叶子接触律，修复刀/板接触再与粒子对组合时的递归调用。`PYTHONPATH=runs/nested_source:tests:. python runs/check_nested.py runs/test_nested_contacts.py -q`：**2 passed / 7.64 s**，平铺/嵌套的力、历史及全部输入反向逐项相同；同入口检查 `tests/test_combined_contacts.py tests/test_mixed_contact_stages.py tests/test_spatial_pair_stages.py tests/test_contact_stage_checkpoint.py`：**16 passed / 646.54 s**。
+
+unified 的修复/缓存快照 `843ddd6`、dirty=true，`PYTHONPATH=runs/natural_repaired_source:. python runs/natural_repaired_events.py`，与 batched 的 `PYTHONPATH=. python runs/natural_batched_events.py`：从未切割初态完成 **8 步、12 个自然分侧事件**，末态 **1467** 个积分点；**41** 组检查点数组、切面有理坐标、事件顺序和时刻全部相同。第 8 步单次耗时 **2320.88→1695.56 s**。对照命令与结果见 batched 的 `runs/natural_batched_20261101/{full_state_comparison,events_comparison}.json`。
+
+batched `runs/nested_source`，`PYTHONPATH=runs/nested_source:. python runs/natural_energy_observer.py --dt <步长> --steps <步数> --no-cutting --output <目录>`：64 粒子、12 mm 方块、h=6 mm、E=20 kPa；接触参数固定为 kn=1000 N/m、kt=500 N/m、c=0.2 N·s/m、μs/μd=0.3/0.2。独立记录动能、仿射动能、重力势能、弹性/接触储能、刀功、黏性与滑动耗散；独立接触力重算差 **0 N**，摩擦功分解最大误差 **3.47e−18 W**。
+
+步长 **200/100/50 μs**：静置推进 **0.6 ms** 的能量收支残差为 **−1.334e−11 / −1.890e−12 / −2.417e−13 J**；增加 `--knife-z .01801 --knife-speed -1`，无切割压入 **1 ms** 的残差为 **−1.187e−6 / −3.291e−7 / +1.176e−7 J**，绝对值占输入功 **3.963% / 1.118% / 0.405%**。压入相邻时间步的最大位置差 **1.140→0.409 μm**。记录 `runs/energy_audit_20261101.json`，各运行的 `manifest.json` 保存完整参数和命令。
+
 ## 2026-11-01：保留稀疏精化中仍可解析的低位载荷
 
 `843ddd6` 加停止条件修复，linear 工作树 `python -m pytest tests/test_compensated_linalg.py tests/test_compensated_products.py tests/test_compensated_state.py -q`：**91 passed / 1.04 s**。六个单位矩阵小例保留右端 `2^-80 / 2^-110 / 2^-150` 低位。旧实现首次达到残差界时返回，丢失后两档低位；修复继续到相对后向误差不再下降。

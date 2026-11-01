@@ -35,15 +35,16 @@ GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。
 
 | 位置（4090） | 内容 | 结果目录 |
 |---|---|---|
-| `BladeMaster-Warp-linear-20261101` | `843ddd6` 加稀疏精化停止条件修复；91 项定向检查、1714 项全量通过 | `runs/refinement_stopping_20261101/` |
+| `BladeMaster-Warp-linear-20261101` | 已提交 `ae963d3`；91 项定向检查、1714 项全量通过 | `runs/refinement_stopping_20261101/` |
 | `BladeMaster-Warp-unified-20261101` | `843ddd6` 加核心、接触和自然推进归并；原全量发现 10 项低位/反力失败，已由修复候选替代 | `runs/unified_full_20261101/`、`runs/unified_failures_20261101/` |
-| unified 目录 `runs/repair_source/` | 保留可继续解析的右端低位；原 10 项全部通过，继续定向与全量检查 | `runs/repaired_full_20261101/` |
-| unified 目录 `runs/natural_repaired_source/` | 相同修复加固定方程的重复求值缓存；从未切割初态运行自然事件 | `runs/natural_repaired_20261101/` |
-| `BladeMaster-Warp-core-compiled-20261101` | 核心归并对照，基线 `113b344`；材料阶段多步梯度全量复验中 | `runs/core_metric_full_20261101/` |
+| unified 目录 `runs/integrated_source/` | 统一数值候选，包含低位停止条件及嵌套接触派发修复；全量复验中 | `runs/integrated_full_20261101/` |
+| unified 目录 `runs/natural_repaired_source/` | 修复加固定方程求值缓存；自然轨迹前 8 步完成 | `runs/natural_repaired_20261101/` |
+| `BladeMaster-Warp-batched-20261101` | `ae963d3` 加统一候选、缓存和批量方程求值；前 8 步的状态/历史及事件与原计算相同 | `runs/natural_batched_20261101/` |
+| batched 目录 `runs/nested_source/` | 加速候选加嵌套接触修复；全量、带板下刀及切割能量检查中 | `runs/nested_full_20261101/`、`runs/natural_board_cut_20261101/`、`runs/energy_cut_events_20261101/` |
 
-Mac 对应工作树为 `BladeMaster-Warp-linear-20261101`、`BladeMaster-Warp-unified-20261101` 和 `BladeMaster-Warp-core-20261101`。unified 的根目录保留原失败快照，修复在独立 `runs/repair_source/`，运行结束后归并。
+Mac 对应工作树为 `BladeMaster-Warp-linear-20261101`、`BladeMaster-Warp-unified-20261101`、`BladeMaster-Warp-core-20261101` 和 `BladeMaster-Warp-batched-20261101`。unified 根目录保留原失败快照；batched 根目录尚未包含嵌套接触修复。当前有效全量分别使用上表的 `integrated_source` 和 `nested_source`，运行结束后归并。
 
-已被替代的 performance 与 unified 全量已主动终止，替代原因记录在 `runs/unified_failures_20261101/superseded_*.json`。旧 goal 的 FMA 自然事件运行已终止；稀疏版本第 8 步已完成（12 个分侧事件，2837.79 s），记录在 `BladeMaster-Warp-goal-20261101/runs/natural_sparse_events_20261101/`。当前自然推进使用上表修复快照。
+旧 performance、core-compiled、repair_source 及未修复嵌套接触的全量已终止，由上表两套全量替代。替代记录在 unified 的 `runs/unified_failures_20261101/` 和 batched 的 `runs/nested_contacts_20261101/`。旧 goal 的 FMA 自然事件运行已终止；稀疏版本第 8 步结果保留在 `BladeMaster-Warp-goal-20261101/runs/natural_sparse_events_20261101/`。
 
 | 目录 | 内容 | 现有全量日志状态 |
 |---|---|---|

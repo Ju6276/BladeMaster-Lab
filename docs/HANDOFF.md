@@ -4,7 +4,7 @@
 
 ## 机器与版本
 
-- Mac：`/Users/judong/Desktop/Papers/Code/BladeMaster-Warp`，分支 `sync-20261020`，当前提交 `4624c6a`，主工作区干净。
+- Mac：`/Users/judong/Desktop/Papers/Code/BladeMaster-Warp`，分支 `sync-20261020`，统一核心提交 `20fc706`，主工作区干净。
 - 4090：`dong@tamsgpu9`，工作树位于 `/home/dong/Projects/`；使用项目 `.venv/bin/python`。
 - 跳板 tams61：`dong@100.70.97.92`。登录后执行 `ssh dong@tamsgpu9`；认证信息不写入文件。
 - GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`。
@@ -12,7 +12,7 @@
 
 ## 当前源码与验收
 
-下列工作树在 Mac 和 4090 使用相同名称；候选基线均为 `4624c6a`。
+下列工作树在 Mac 和 4090 使用相同名称。主树与 Mac 的 cache 已归并 `2f4bddf`（数值）和 `20fc706`（性能）；4090 正在运行的工作树源码保持冻结，实验基线仍记录为 `4624c6a`、dirty=true。
 
 | 工作树或相对目录 | 内容 | 验收记录 |
 |---|---|---|
@@ -42,8 +42,8 @@
 ## 下一步与提交
 
 1. 核对三套全量退出码及完整自然轨迹；失败定位、修复和复测。
-2. 数值改动与性能改动分开提交。核心拆分补丁为 cache 的 `runs/current_unified_20261101/performance_split_scaled.patch`；数值全量通过后再提交，任务入口和新增 CUDA 性能改动独立提交。
-3. 将通过的源码归并到主工作树，删除被替代入口；同一干净提交重跑完整任务验收。
+2. 数值改动与性能改动分开提交。核心已分为 `2f4bddf` / `20fc706`；任务入口和新增 CUDA 性能改动各自全量通过后独立提交。
+3. 将通过的任务入口与新增 CUDA 源码归并到主工作树，删除被替代入口；同一干净提交重跑完整任务验收。
 4. 固定任务、五组初始化和墙钟预算，执行 AD / FD / CMA-ES 刀路优化与独立重放。
 
 待归并的早期 review 位于 `BladeMaster-Warp-e5-review-20261101`。历史实验目录在 `runs/`，版本与结果索引在 RESULTS；淘汰代码由 Git 历史保留。显示网格修补不恢复，归档 tag 为 `archive/before-cleanup-20261020`。

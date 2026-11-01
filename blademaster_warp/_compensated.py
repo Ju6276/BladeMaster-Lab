@@ -5,30 +5,12 @@ import math
 
 import numpy as np
 
-from ._compensated_kernels import matrix_product, ordered_sum
-
-
-def _two_sum(a, b):
-    value = a + b
-    shifted = value - a
-    remainder = (a - (value - shifted)) + (b - shifted)
-    return value, remainder
-
-
-def _two_product(a, b):
-    value = a * b
-    ma, ea = np.frexp(a)
-    mb, eb = np.frexp(b)
-    # Split normalized mantissas so the splitter cannot overflow on finite inputs.
-    splitter = 134217729.0
-    ca, cb = splitter * ma, splitter * mb
-    ah, bh = ca - (ca - ma), cb - (cb - mb)
-    al, bl = ma - ah, mb - bh
-    product = ma * mb
-    error = ((ah * bh - product) + ah * bl + al * bh) + al * bl
-    exponent = ea + eb
-    remainder = np.ldexp((product - np.ldexp(value, -exponent)) + error, exponent)
-    return value, remainder
+from ._compensated_kernels import (
+    array_sum as _two_sum,
+    array_product as _two_product,
+    matrix_product,
+    ordered_sum,
+)
 
 
 @dataclass(frozen=True)
@@ -39,8 +21,7 @@ class Expansion:
     low: np.ndarray | float = 0.0
 
     def __post_init__(self):
-        high, low = np.broadcast_arrays(np.asarray(self.high, dtype=float), np.asarray(self.low, dtype=float))
-        high, low = _two_sum(high, low)
+        high, low = _two_sum(np.asarray(self.high, dtype=float), np.asarray(self.low, dtype=float))
         object.__setattr__(self, "high", high)
         object.__setattr__(self, "low", low)
 

@@ -3,7 +3,7 @@
 import math
 
 import numpy as np
-from numba import njit
+from numba import float64, guvectorize, njit
 
 
 @njit(cache=True, fastmath=False, inline="always")
@@ -184,3 +184,13 @@ def matrix_residual(ah, al, xh, xl, bh, bl):
                 h, l = _two_sum(nh, nl)
             high[i, j], low[i, j] = h, l
     return high, low
+
+
+@guvectorize([(float64, float64, float64[:], float64[:])], "(),()->(),()", nopython=True, cache=True)
+def array_sum(a, b, high, low):
+    high[0], low[0] = _two_sum(a, b)
+
+
+@guvectorize([(float64, float64, float64[:], float64[:])], "(),()->(),()", nopython=True, cache=True)
+def array_product(a, b, high, low):
+    high[0], low[0] = _two_product(a, b)

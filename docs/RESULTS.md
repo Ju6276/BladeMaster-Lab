@@ -4,6 +4,14 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：批量两分量算术编译
+
+RTX 4090 主机，`6591d00` 加数组 TwoSum/TwoProduct 编译。单独原型 `python runs/compiled_expansion_probe.py`：100 组标量/数组/广播及二进制尺度对照，主值和余量逐项相同；3 元素乘积中位耗时 **6.577→0.713 μs**，1908² 元素乘积 **101.65→46.63 ms**。
+
+自然入口编译快照 `PYTHONPATH=runs/natural_array_source:. python runs/natural_array_comparison.py`：第 5 步的 **41** 组材料、切面、历史和刀具检查点数组与原运算逐项相同；进程 **28.33 s**，记录 `runs/natural_array_compile_20261101/`。显式核对导入路径的 `python runs/check_natural_array_source.py`：**89 passed / 1.13 s**；基线算术检查 **63 passed / 2.54 s**。
+
+`6591d00` 加上述两文件改动，`python -m pytest tests -q`：**1686 passed、8 skipped、18 subtests passed / 775.24 s**。本地与 4090 的源码差异完全相同；记录 `BladeMaster-Warp-linear-20261101/runs/compiled_expansions_full_20261101/`。
+
 ## 2026-11-01：几何事件终点的浮点分侧
 
 接触归并快照 `c20b3dc`、dirty=true，加编译候选与自然入口。`PYTHONPATH=runs/formal_natural_source:. python runs/root_side_probe.py`：首个根为 **0.00013838755389802664 s**，两个粒子的边界残差同为 **+1.7347235e-18 m**；下一浮点时刻的两残差均为 **−1.7347235e-18 m**。原停止条件接受外侧残差，使第二个粒子再次推进 **1.8797595e-18 s**。

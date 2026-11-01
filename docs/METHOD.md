@@ -43,6 +43,8 @@ PIC/FLIP 速度为 `v_new=PIC_new+α(v_old−PIC_old)`。固定每步 α 的有�
 
 `global_balance_residual_j` 保留完整外功/能量/耗散差；传递与释放冲量的功差分别输出。`damage_work=ΣQΔD` 是独立的方向计功量。原释放律的整体能量失败及闭环功见 RESULTS。
 
+无摩擦、固定损伤的刀刃圆角小例中，记相对位置为 `(x,z)`、`r=√(x²+z²)`、接触距离为 a。释放后的力为 `F_x=k(a/r−1)x`、`F_z=0`，因此 `∂F_x/∂z=−kaxz/r³` 而 `∂F_z/∂x=0`。该分支存在非零闭合路径功；这项来自方向分量删除的力学定义，损伤计功在固定 D 时为零。
+
 ## 自然事件与检查点
 
 `FixedCutContact` 使用记录的侧码、释放标记和接触集合。`NaturalCutContact` 从当前粒子状态重新搜索接触，按稳定粒子 ID 传递历史；`GeometryEventContact` 在实际材料流上定位几何事件并推进事件前后两段。
@@ -55,7 +57,9 @@ PIC/FLIP 速度为 `v_new=PIC_new+α(v_old−PIC_old)`。固定每步 α 的有�
 
 检查点同时保存连续状态、摩擦/损伤历史、侧码、接触 ID、刀次和事件边界；反向重算逐项核对。`checkpoint_device="cpu"` 使用 `warp.clone` 搬移数组，材料与 VJP 公式保持相同。
 
-## 内聚实现与候选边界
+## 内聚实现与统一路线
+
+统一路线保留几何分侧以构造双侧自由度，切面由刀刃实际扫掠在线生成。初始刚性内聚关系在强度内维持连续，达到强度后软化并保存永久最大开口；刀、板及切后重新接触使用独立几何接触。新切面从零损伤出生，旧切面历史保留。当前主树与候选的接入状态见 DIFFERENTIABLE。
 
 本地主树包含双线性单元、初始刚性单元和隐式平衡。双线性单元使用 K（Pa/m）、σ（Pa）、G_c（J/m²）；初始刚性单元使用 σ、G_c，完整断裂开口 `δ_f=2G_c/σ`，永久历史 `κ=max(κ_old,|g|)`。
 
@@ -75,7 +79,7 @@ PIC/FLIP 速度为 `v_new=PIC_new+α(v_old−PIC_old)`。固定每步 α 的有�
 | 事件导数 | 原正向在子步更新标签/阻力 | 在实际离散流上定位事件并求分段导数；参考 [DiffTaichi TOI](https://github.com/taichi-dev/difftaichi/blob/master/examples/mass_spring.py)、[Saltation matrices](https://arxiv.org/abs/2306.06862) |
 | 接触与历史 | 原文方向冲量和切向历史 | 固定物理刚度的步长对照、力与历史联合返回、功共轭速度；依据本构离散功恒等式，本地实现于 `friction.py` 与 `energy.py` |
 | PIC 时间尺度 | 固定每步 PIC/FLIP 混合 | 固定传递残差耗散率用于时间细化；参考 [NairnMPM PIC damping](https://osupdocs.forestry.oregonstate.edu/index.php?title=Damping_Options#PIC_Damping) |
-| 断裂模型 | 方向接触功控制阻力，几何侧码独立分离 | 内聚候选引入 σ、G_c 和永久最大开口，针对原释放律的闭环功问题；[Petrie–Hirmand–Papoulia](https://arxiv.org/html/2202.06359) 使用准静态、小应变 FEM 与单元界面，本地扩展至动态 TLMPM、移动面和在线切面；方法选择见 DIFFERENTIABLE |
+| 断裂模型 | 方向接触功控制阻力，几何侧码独立分离；论文将阻力律定义为经验关系 | 采用初始刚性内聚关系：新增物理强度 σ，G_c 为参考切面单位面积的断裂功，永久最大开口控制卸载/再加载；数值近端柔度用于求解，材料初始柔度为零。[Petrie–Hirmand–Papoulia](https://arxiv.org/html/2202.06359) 使用准静态、小应变 FEM 与单元界面，本地扩展至动态 TLMPM、移动面和在线切面；[Nairn 切割模型](https://www.cof.orst.edu/cof/wse/faculty/Nairn/papers/MPMCutting.pdf) 的内聚面沿给定路径布置，借鉴其牵引功与断裂能的独立核对 |
 | 移动界面功 | 固定或小变形界面的内聚关系 | 本地由平均面法向推导开口力与面转动共轭力，参考 [Reinoso–Paggi](https://arxiv.org/abs/1507.05168) 的大变形虚功 |
 | 隐式伴随 | 收敛方程的导数 | 本地求同一残差/KKT 的转置方程；参考 [OptNet](https://proceedings.mlr.press/v70/amos17a.html)、[DiffPD 反向实现](https://github.com/mit-gfx/diff_pd_public/blob/1594aa07a6983ff9a9c107e9f0d83d07fa99c8d1/cpp/core/src/fem/deformable_newton_backward.cpp)、[Nimble 约束梯度](https://github.com/keenon/nimblephysics/blob/c405b056fc35068027e03e0c384e84e12870b475/dart/neural/ConstrainedGroupGradientMatrices.cpp#L210) 的约束与伪逆导数 |
 | 数值精度 | 原 GPU 正向使用普通浮点状态 | 梯度对照采用 float64；内聚候选含 CPU 两分量算术、残差细化与独立高精度参考，依据 [Ogita–Rump–Oishi](https://www.tuhh.de/ti3/paper/rump/OgRuOi05.pdf)；生产精度/代价在后续方法决策中核对 |

@@ -4,11 +4,43 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：释放力定义与内聚本构核对
+
+干净 `4d5a534`，RTX 4090，工作树 `BladeMaster-Warp-goal-20261101`。命令 `python runs/method_audit_20261101/release_field.py`：三位置 × 释放前后 × 三档差分，AD 与解析最大绝对差 **1.66e-10 N/m**；相邻 `1e-8/1e-9 m` 差分的最大相对差 **5.33e-10**。释放后两项交叉导数分别为 **7838.232679 N/m / 0**（另一个位置为 **5393.126095 N/m / 0**），释放前相等至 **9.10e-13 N/m**。
+
+同脚本闭合路径每边 128/256/512 点：释放前净功 **1.034e-10/2.584e-11/6.460e-12 J**；释放后 **7.785586e-5/7.785585e-5/7.785584e-5 J**。固定损伤、无摩擦、接触分支保持相同，能量失败来自方向力定义。
+
+同提交 `python -m pytest tests/test_cohesive_proximal.py::test_loaded_birth_and_exact_fracture_work tests/test_cohesive_proximal.py::test_kkt_rotation_and_natural_gradients -q`：**5 passed / 0.43 s**；覆盖四档 G_c 的牵引功、永久历史、转动和自然差分。记录在 `runs/method_audit_20261101/`。
+
+`e169578` 源码，`python runs/method_audit_20261101/model_comparison.py`：恢复完整几何法向力后，同一点的力由 **(4.137092, 0) N** 变为 **(4.137092, −2.955066) N**；闭环净功见上文未释放分支。该接触势能修复提供弹性接触，材料断裂另用内聚关系。σ=25/50 kPa × G_c=7/70/700/1400 × 两个开口方向的 **16/16** 加载/卸载/再闭合例通过；每单位面积完整牵引功等于 G_c，最大分段能量误差 **1.137e-13 J/m²**，最大牵引误差 **1.111e-11 Pa**；完全断裂后闭合牵引为零，断裂历史保持。
+
+## 2026-11-01：内聚反向的补偿求和开销
+
+RTX 4090，`4d5a534` 对照 `e169578`。命令 `python runs/method_audit_20261101/cohesive_cost.py` / `cohesive_cost_after.py`；64 粒子、16 个界面积分点、dt=2 μs，预热后三次中位数，计时均在 profiler 关闭时完成。
+
+| 状态 | 正向改前 / 改后 | 反向改前 / 改后 |
+|---|---|---|
+| 闭合 | 17.37 / 16.60 ms | 68.99 / 43.93 ms |
+| 预开口 | 182.06 / 181.59 ms | 2131.81 / 1052.94 ms |
+| 加载 | 181.41 / 181.35 ms | 2130.55 / 1053.54 ms |
+
+编译后的求和保持累加顺序与两分量运算，160 组高/低分量逐位一致。`python -m pytest tests/test_compensated_products.py tests/test_compensated_state.py tests/test_compensated_linalg.py tests/test_cohesive_momentum.py tests/test_cohesive_stages.py -q`：**80 passed / 248.87 s**。阶段分析定位到 `_implicit_pullback` 的逐行反向与 CPU 补偿运算；完整自然切割仍待接入。
+
+相同源码全量：`OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python -m pytest tests -q`：**1686 passed、8 skipped、18 subtests passed / 739.17 s**，退出码 0。测试时为 `4d5a534` + 三文件改动，提交前核对与 `e169578` 三文件内容完全一致；记录 `full_tests.log`、`full_result.json`。
+
+## 2026-11-01：候选异常退出的诊断线程复现
+
+RTX 4090 主机 Python **3.12.15**，`e169578` 源码。`gdb --batch -ex run -ex 'thread apply all bt 16' --args .venv/bin/python runs/method_audit_20261101/watchdog_probe.py timer`：CPU 数组运算小例在定时调用栈输出线程触发 **SIGSEGV**，原生栈为 `dump_frame → dump_traceback → _Py_DumpTracebackThreads → faulthandler_thread`；相同 30000 次运算关闭定时输出正常完成。
+
+impact 候选 `34304b0` 加原工作树改动，`pytest tests/test_cohesive_stages.py::test_default_damping_rate_and_restart -q -o faulthandler_timeout=0.5` 在 GDB 中复现相同诊断线程崩溃；改为默认 `faulthandler_timeout=0`：**1 passed / 203.75 s**，退出码 0。数值代码、断言与输入相同。日志在核对工作树 `runs/method_audit_20261101/{watchdog_timer,watchdog_control,impact_timer_gdb,impact_without_timer}.log`；运行方式见 RUNNING。[CPython 上游问题](https://github.com/python/cpython/issues/158200) 也记录了定时诊断线程访问帧元数据的崩溃。
+
+同候选 `python /home/dong/Projects/BladeMaster-Warp-goal-20261101/runs/method_audit_20261101/candidate_forward_profile.py`：64 粒子、16 积分点、一个预开口推进的 profiler 耗时 **17.69 s**，其中残差细化 **14.92 s**、残差/Jacobian 求值 **136 次**。归并前检查已接近根的初值是否仍需完整正则化延拓；对照保持原方程与原残差判据。
+
 ## 2026-11-01：文档整理的求解器基线检查
 
 求解器为干净 `34304b0`，RTX 4090。命令 `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1669 passed、8 skipped、18 subtests passed**，**841.27 s**，退出码 0。8 项跳过为 CRESSim 上游构建未配置。
 
-日志与退出记录：4090 主仓库 `runs/docs_cleanup_20261101/pytest.log`、`result.json`。文档本地链接、命令参数和模块入口检查通过；本次提交的求解器/测试源码与该基线相同。E5 待验收改动保存在独立 review 工作树，状态如下。
+日志与退出记录：4090 主仓库 `runs/docs_cleanup_20261101/pytest.log`、`result.json`。文档本地链接、命令参数和模块入口检查通过；文档整理提交 `4d5a534` 的求解器/测试源码与该基线相同。E5 待验收改动保存在独立 review 工作树，状态如下。
 
 ## 2026-11-01 复核：E5 候选与闭合回归
 

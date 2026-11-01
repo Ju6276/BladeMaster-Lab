@@ -1,6 +1,6 @@
 # 待办
 
-当前任务是整理仓库和重订计划；原 E4/E5 持续目标已暂停。可微分状态、后续顺序和完成条件统一见 [DIFFERENTIABLE.md](docs/DIFFERENTIABLE.md)，实验数字见 [RESULTS.md](docs/RESULTS.md)。
+当前持续目标依次完成方法与版本统一、完整自然单刀验收、刀路优化。可微分状态、后续顺序和完成条件统一见 [DIFFERENTIABLE.md](docs/DIFFERENTIABLE.md)，实验数字见 [RESULTS.md](docs/RESULTS.md)。
 
 ## 可微分主线
 

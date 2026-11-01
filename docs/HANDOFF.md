@@ -1,6 +1,6 @@
 # 交接说明
 
-2026-11-01：原 E4/E5 持续目标暂停；当前整理文档与后续目标。先读 [AGENTS.md](../AGENTS.md) 和 [DIFFERENTIABLE.md](DIFFERENTIABLE.md)。
+2026-11-01：旧持续目标已删除；新目标执行方法核对、完整自然单刀验收和刀路优化。先读 [AGENTS.md](../AGENTS.md) 和 [DIFFERENTIABLE.md](DIFFERENTIABLE.md)。
 
 ## 机器与访问
 
@@ -19,17 +19,19 @@ ssh -t dong@100.70.97.92 'ssh -t dong@tamsgpu9'
 
 4090 使用项目 `.venv/bin/python`；依赖版本以 `requirements.txt` 为准。开跑前检查 `nvidia-smi` 和现有任务。长批次保存命令、提交、日志与退出码；复查进程和退出码后更新结果。运行中保持该源码快照不变。
 
-本次文档整理的基线全量测试：1669 passed、8 skipped、18 subtests passed，日志在 4090 主仓库 `runs/docs_cleanup_20261101/`。临时测试工作树已移除。
+当前 `e169578` 求解器全量测试：1686 passed、8 skipped、18 subtests passed，739.17 s，日志在核对工作树 `runs/method_audit_20261101/`。文档整理基线的 1669 项结果保留在主仓库 `runs/docs_cleanup_20261101/`。
 
 GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。Mac 推送后，干净的远端工作树再拉取；候选工作树先核对本地差异。`runs/` 不进 Git。
 
 ## 源码与结果位置
 
-2026-11-01 整理：主工作区采用已提交的 `34304b0` 求解器。本地待验收改动移至 `/Users/judong/Desktop/Papers/Code/BladeMaster-Warp-e5-review-20261101`，分支 `review/e5-pending-20261101`，包含 20 项已跟踪源码/测试变更和 13 个未跟踪文件；迁移前后逐文件内容及 Git 差异一致。
+2026-11-01 整理：主工作区在 `34304b0` 求解器基础上提交 `e169578`，编译同顺序补偿求和。本地待验收改动位于 `/Users/judong/Desktop/Papers/Code/BladeMaster-Warp-e5-review-20261101`，分支 `review/e5-pending-20261101`，包含 20 项已跟踪源码/测试变更和 13 个未跟踪文件；迁移前后逐文件内容及 Git 差异一致。
 
 下表 4090 候选也基于 `34304b0`，各自有不同的未提交源码。原 Mac `/tmp/BladeMaster-Warp-e5-*` 工作树已不存在，4090 副本仍在。
 
 4090 根目录：`/home/dong/Projects/`。
+
+当前核对工作树为 `BladeMaster-Warp-goal-20261101`，从 `4d5a534` 建立；方法小例与性能分析保存在 `runs/method_audit_20261101/`。其他候选继续保留，归并前核对各自源码差异。
 
 | 目录 | 内容 | 现有全量日志状态 |
 |---|---|---|
@@ -41,7 +43,7 @@ GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。
 
 日志相对各工作树的位置均为 `runs/grid_update/`。其他 `e5-*` 工作树按 Git 差异检查其内容；源码归并后再删除被替代目录。
 
-闭合回归原因是解析反向入口被迁移流程关闭、零余量表示阻断入口，以及 `(3N,0)` 映射的 reshape 错误。本地 review 工作树包含定向修复。完整版本复验与事件批次异常定位待后续目标处理。
+闭合回归原因是解析反向入口被迁移流程关闭、零余量表示阻断入口，以及 `(3N,0)` 映射的 reshape 错误。本地 review 工作树包含定向修复。impact 原失败节点已定位到 Python 定时诊断线程段错误，关闭定时输出后通过；运行设置见 RUNNING。统一版本的全量和事件批次复验待完成。
 
 审查时没有上述批次在运行。今后的执行状态以进程、退出码和日志末尾为准；本文件不保存运行 PID。
 
@@ -50,7 +52,7 @@ GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。
 | 文件 | 内容 |
 |---|---|
 | `README.md` / `docs/RUNNING.md` | 安装、运行、脚本索引 |
-| `docs/DIFFERENTIABLE.md` | 当前状态、目标草案、验收条件 |
+| `docs/DIFFERENTIABLE.md` | 当前状态、持续目标、验收条件 |
 | `TODO.md` | 主线待办和保留的正向问题 |
 | `docs/METHOD.md` | 公式、方法来源、本地差异 |
 | `docs/PARAMETERS.md` | 参数来源与单位 |

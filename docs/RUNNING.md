@@ -137,6 +137,8 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 
 测试包含 FP64 公式参考、解析力学、自然差分和检查点对照，需要 CUDA。CRESSim 对照测试另需固定版本的上游构建；未配置时相应 8 项跳过。运行环境和候选位置见 [HANDOFF](HANDOFF.md)。
 
+4090 当前 Python 3.12.15 的 `faulthandler.dump_traceback_later` 可在诊断线程触发段错误，GDB 复现见 RESULTS。pytest 保持默认 `faulthandler_timeout=0`；长任务由外部进程检查 PID、日志和退出码，需要原生调用栈时使用 GDB。普通崩溃信号处理保留。
+
 ## 代码结构
 
 - `solver.py`、`material.py`、`contact.py`：材料、网格传输、接触、切割标签。

@@ -1,262 +1,89 @@
-# 实现与论文对照
+# 方法与实现
 
-论文：[BladeMaster, arXiv:2609.27342v2](https://arxiv.org/html/2609.27342v2)。
+论文：[BladeMaster, arXiv:2609.27342v2](https://arxiv.org/html/2609.27342v2)。当前版本和验收范围见 [DIFFERENTIABLE](DIFFERENTIABLE.md)，数值结果见 [RESULTS](RESULTS.md)。
 
-## 公式到代码
+## 正向模型与代码
 
-| 论文 | 内容 | 代码 |
+| 内容 | 入口 |
+|---|---|
+| 参考构型 TLMPM、三线性权重、P2G/MUSL/G2P | `geometry.stencil`、`material.py`、`solver.py` |
+| 共旋弹性与塑性返回 | `material.py`、`plasticity.corotated_return` |
+| 方向接触功与几何分侧 | `contact.rigid_at`、`contact.assign` |
+| 持久三进制侧码与相容场交换 | `Solver._set_cut`、`material.compatible`、`material.couple_at` |
+| 刀/板/粒子对接触与摩擦历史 | `contact.py`、`friction.py` |
+| 刀面网格约束 | `blade_constraint.py` |
+| 外部刚体及 Franka 耦合 | `coupling.ExternalToolPort`、`franka.py` |
+| 显示表面 | `surface.py`、`surface_gpu.py`、`surface_ccd_gpu.py` |
+
+论文的每刀进度 D 由方向接触功更新，阈值为 `Q = G_c V₀^(2/3)(1−ζ)/ζ`。D 达到 1 后释放刃向阻力。几何扫掠独立更新侧码，侧码改变下一步网格耦合；D 不修改材料应力。换刀时重置本刀 D，保留旧侧码与塑性 Fp。
+
+## 材料与反向
+
+弹性变形 `F_e=F Fp⁻¹` 的主伸长为 s、行列式为 J，参考体积能量密度为 `Ψ=μΣ(s_i−1)²+λ(J−1)²/2`。
+
+极分解旋转的 VJP 使用主伸长之和作分母，重复正主伸长处保持有限。`MaterialTrajectory` 保存独立 x/v/F/Fp/应力状态；其余连续算子使用 Warp Tape。
+
+塑性返回求解 `min Σ(t_i−1)²/2+r‖d‖`，约束 `Σd_i=0`，其中 `t=exp(log(s)+d)`、`r=√(2/3)σ_y/(2μ)`。驻点为 `dev(t(t−1))+r d/‖d‖=0`，Fp 按投影后弹性变形更新。反向对同一驻点方程隐式求导。检查项包括塑性体积保持、非负耗散、重复主伸长和屈服边界。
+
+## 接触、耗散与能量
+
+论文罚接触的 `k_n=s_n m_eff/Δt²`、`k_t=γ_k m_eff/Δt²`。固定无量纲系数而改变步长会改变接触刚度。`contact_reference_dt` 将系数定义在参考步长，细化时按步长平方缩放，保持 k 不变。
+
+切向本构使用弹簧/阻尼器与库仑滑动串联：`τv_t=Δh+Δs`，`f_t=−k_t(h₀+θΔh)−c_t Δh/τ`。`friction.tangential_return` 同时返回力与历史；原单步 θ=1，中点阶段 θ=1/2。固定法向时满足：
+
+`−f_t·τv_t = k_t(|h₁|²−|h₀|²)/2 + (c_t/τ)|Δh|² − f_t·Δs + (θ−1/2)k_t|Δh|²`。
+
+四项分别为储能变化、阻尼耗散、滑动耗散和积分耗散。历史转动、脱离清零和接触 ID 丢失的能量变化另计。
+
+PIC/FLIP 速度为 `v_new=PIC_new+α(v_old−PIC_old)`。固定每步 α 的有效耗散率随步长变化；`flip_reference_dt>0` 时取 `η=(1−flip_fraction)/flip_reference_dt`、`α=1−ηΔt`，要求 `0≤ηΔt≤1`。时间细化固定 η；空间细化也显式固定相同参考时间。
+
+`energy.material_energy` 独立计算动能、重力势能和共旋储能。刀具外功由实际冲量与接触点速度配对，含反力矩与角速度；塑性耗散取同一终点 F 在返回映射前后的储能差。`EnergyLedger` 只累计接受的自然事件分段，检查点重算和求根试算不重复计功。
+
+自然中点接触使用功共轭的插值速度。若 W 为插值、M 为网格质量、C 为相容场交换，接触速度为 `u=W M⁻¹ C Wᵀ m v`，接触加速度使用同一映射，核对 `Σm v·a=Σf·u`。
+
+`global_balance_residual_j` 保留完整外功/能量/耗散差；传递与释放冲量的功差分别输出。`damage_work=ΣQΔD` 是独立的方向计功量。原释放律的整体能量失败及闭环功见 RESULTS。
+
+## 自然事件与检查点
+
+`FixedCutContact` 使用记录的侧码、释放标记和接触集合。`NaturalCutContact` 从当前粒子状态重新搜索接触，按稳定粒子 ID 传递历史；`GeometryEventContact` 在实际材料流上定位几何事件并推进事件前后两段。
+
+`GeometryEventContact` 默认采用显式中点 RK2。候选由二次轨迹与切割区域平面求交生成，最终时间在实际流 `g(Φτ(state),knife(t+τ))=0` 上求根。分段时长进入粒子、塑性、接触历史、损伤和刀力求导。空间求根容差为 `32ε×坐标尺度`；一次事件后选择后继模式，侧码进入后续网格交换。
+
+`EventCutContact` 的步内释放按剩余方向功 `R=(1−D)Q` 计算。恒定刃向冲量率与推进速度 u 下，若完整步功 Ju 达到 R，则保留冲量 `R/u`，释放时刻 `τ=Δt R/(Ju)`。该时长及参数参与实际状态推进的导数。
+
+每次自然差分重新生成侧码、接触、释放与屈服分支。横穿事件处检查时刻导数；切触、事件顺序变化等边界记录单侧导数及事件序列。固定分支、事件分段和软代理梯度按各自定义比较。
+
+检查点同时保存连续状态、摩擦/损伤历史、侧码、接触 ID、刀次和事件边界；反向重算逐项核对。`checkpoint_device="cpu"` 使用 `warp.clone` 搬移数组，材料与 VJP 公式保持相同。
+
+## 内聚实现与候选边界
+
+本地主树包含双线性单元、初始刚性单元和隐式平衡。双线性单元使用 K（Pa/m）、σ（Pa）、G_c（J/m²）；初始刚性单元使用 σ、G_c，完整断裂开口 `δ_f=2G_c/σ`，永久历史 `κ=max(κ_old,|g|)`。
+
+`differentiable_cohesive.solve` / `solve_force` 计算界面平衡及其隐式反向；后者以积分总力处理面积。闭合冗余反力按参考面积选择最小范数，反向包含固定秩伪逆的零空间项。解析闭合反向用于正面积、闭合且反力严格位于强度内部的分支；其余分支使用相应残差/KKT 反向。迁移回归的修复保存在本地 review 工作树，包含闭合解析入口恢复和 `(3N,0)` 零维映射构造。
+
+`reference_surface`、`reference_cut`、`reference_grid` 构造扫掠切面、参考积分与双侧映射。`CohesiveHistory` 保存切面出生朝向和永久损伤；`cohesive_stages.advance_affine` 使用独立平移/仿射速度及 ARS 两阶段推进。补偿数组保存同一变量的主值与余量，CPU 求根和线性代数使用两分量运算。
+
+4090 的接触、碰撞、内聚分离和事件分段候选另见 HANDOFF。当前自然轨迹入口仍使用 `GeometryEventContact`，新界面的完整自然切割接入待完成。
+
+## 与论文及参考实现的差异
+
+| 项目 | 原工作 | 本地实现、原因与来源 |
 |---|---|---|
-| 式 1–2 | 参考构型 TLMPM P2G，固定三线性权重 | `geometry.stencil`，`material.p2g` |
-| §III-B | fixed-corotated + von Mises 塑性（等容增量变分返回映射），可选牛顿黏性、Maxwell 黏弹性 | `material.p2g`，`material.plastic_at`，`plasticity.py`，`material.viscous_impulse`，`material.maxwell_at` |
-| 式 3–6 | 切割带、方向接触功、侧标签 | `contact.rigid_at`（D 更新），`contact.assign`（标签） |
-| 式 7 | 三进制切割码 | `Solver._set_cut`，`material.compatible` |
-| 式 8–9 | 逻辑网格反对称交换、网格速度 | `material.couple_and_velocity_at`，`material.couple_at` |
-| §III-B | PIC/FLIP G2P + MUSL 重映射 | `material.g2p_remap`，`material.update_F_plastic` |
-| 式 10–13 | 粒子间接触与切向历史 | `contact.pair_at`，`contact.friction` |
-| 式 14–16 | 刀具接触、有效质量、反力 | `contact.rigid_at` |
-| 网格刀面约束 | 外部刀位保持期间，补足网格传输后的刀面法向冲量 | `blade_constraint.py`，`Solver._material_transfers` |
-| §III-F | linked-volume + 局部 dual contouring 表面 | `surface.py`，`surface_gpu.py`，`surface_ccd_gpu.py` |
-| §III-G | 紧凑活动网格；外部刚体接口，区间平均 wrench | `Solver(grid_storage='compact')`，`coupling.ExternalToolPort` |
-
-## 数值设置
-
-| 量 | 值 | 来源 |
-|---|---|---|
-| 网格间距 Δx | 香蕉默认 6 mm；`--spacing` 可取任意有效值，不必整除香蕉尺寸。3 mm 子步 40 μs，6 mm 为 62.5 μs；物理接触刚度保持相同 | 本地选择 |
-| 粒子 | 每格每轴 2 个；默认规则子单元中心（seed=0，6 mm 下 1452 个）；显式 seed=1 扰动采样为 1439 个 | 本地选择；全幅扰动在粗网格切透时放大侧向弹开，见 RESULTS |
-| 接触半径 | 默认粒子—粒子、粒子—砧板、粒子—刀均用 \(R_p = (V_p^0)^{1/3}/2 = \Delta x/4\)，即 \(s_R = 1\)；刀距可用 `--blade-contact-radius` 单独指定，0 表示使用粒子半径。指定值的下限为 \(\Delta x/4\) − 刀半厚。旧香蕉预设使用固定 0.5 mm，在 6 mm 下被下限提高至 1.0 mm | 论文半径形式；旧固定距离和下限为本地选择 |
-| PIC/FLIP 比例 | 0.95 | DexLab |
-| \(s_n\)，\(\gamma_k\)，\(\gamma_c\) | 0.1，0.05，0.1（在参考步长下） | DexLab |
-| \(b_\text{lead}\)，\(b_\text{back}\)，\(u_\text{min}\) | 2×刀接触距离，\(2\Delta x\)，0 | 本地选择，论文定义符号但未给数值 |
-| \(h_k\) | \(6\Delta x\) | 论文 |
-| 香蕉材料 | E=400 kPa，ν=0.45，ρ=1100，屈服 30 kPa，\(G_c\)=700，ζ=0.9，刀 0.1 kg，μ=0.2 | 论文 §IV-C |
-| 香蕉步长 | 62.5 μs，接触参数以 25 μs 为参考 | 本地选择，见 RESULTS.md 步长扫描 |
-| 机器人耦合间隔 | 1 ms（MuJoCo 步长） | 本地选择 |
-| 表面刀路 | 记录实际材料子步的刀位、切割开关和刀次；保持不动的子步只存首尾。默认每 40 ms 更新，可用 `--observation-interval` 加密；材料节点在观测间线性插值 | 本地选择 |
-| 表面 QEF 边界 | 解约束在参考单元每侧内缩 0.001×表面格距的盒中；多区域单元以 1e-3×Hermite 样本数弱正则到各区域质心。共享裂口前沿满足对应 Hermite 平面约束；平面与单元盒无公共解时保留有界 QEF。两区域单元复制同一个联合 QEF 代表点，保留两侧独立编号；近似平面的切口四边形按所属单元编号统一对角线 | 消除共享前沿偏离切面和两侧参考代表点错位；三区域及以上单元仍分别求解 |
-
-## 接触刚度与步长
-
-论文式 11/15 的法向刚度是 \(k = s_n m_\text{eff}/\Delta t^2\)，切向 \(k_t = \gamma_k m_\text{eff}/\Delta t^2\)。固定 \(s_n\) 时，步长减半，接触就硬 4 倍，所以力曲线不可能随步长收敛。
-
-`Config.contact_reference_dt > 0` 时，`normal_scale` 和 `tangent_stiffness` 视为该参考步长下的值，并按 \((\Delta t/\Delta t_\text{ref})^2\) 缩放，从而保持 \(k\) 不变。缩放后的因子必须 ≤ 1（否则单步过冲），对香蕉（参考 25 μs，\(s_n=0.1\)）这意味着 \(\Delta t \le 79\) μs；默认 62.5 μs 时 \(s_n = 0.625\)。预设默认启用；`franka_run --contact-scaling per-step` 恢复论文的固定 \(s_n\) 写法。
-
-切割功阈值只通过 \(G_c(1-\zeta)/\zeta\) 使用切割能和锋利度。保持这个组合不变的参数对产生相同阈值；力曲线标定时固定其中一个，或用额外测量约束二者。损伤影响刃口接触分量，几何侧标签独立决定网格分离。
-
-## 外部刀位保持时的网格刀面约束
-
-`external_tool=True, tool_substep="hold"` 在原有接触和弹性冲量完成 P2G 后、G2P 推进位置前检查刀身两侧平面。接触响应使用本步节点质量及相容场交换：`W = Bᵀ M⁻¹ C B`，其中 B 将各接触的法向冲量按粒子权重散到逻辑节点，C 是现有的场间动量交换。所有接触同时迭代，避免把单粒子的对角有效质量直接放大后产生过冲。补充冲量的反向合力和力矩返回原有机器人耦合接口。
-
-刀位在这些子步中保持不动，因此补充约束使用实际网格速度和当前刀面；原有罚接触仍使用机器人提供的速度与移动性矩阵。刀身接触保存进入侧，绕过有限边缘后释放侧别。速度约束不附加回弹，粒子位置由约束后的网格速度平流。刃口斜面、损伤功、摩擦、粒子对接触和表面计算保持原实现；自由刀和 `predict` 模式仍走原有接触路径。
-
-GPU 投影梯度按 48 次一批细化，速度残差目标 1 μm/s，最多 384 次；未收敛时耦合接口报错。无约束违反的子步跳过迭代。
-
-## Maxwell 黏弹性
-
-`Config.maxwell_tau` \(\tau\) > 0 且 `maxwell_fraction` \(\beta\) > 0 时启用（广义标准线性固体）。弹性变形 \(f = F F_p^{-1}\) 分两支：平衡支为共旋弹性，\(\mu_\infty = (1-\beta)\mu\)、\(\lambda + \tfrac23\beta\mu\)；Maxwell 支 \(f_m = f F_v^{-1}\)，Kirchhoff 应力 \(2\beta\mu\,\mathrm{dev}\log V_m\)。两支之和的小应变剪切、体积模量与关闭时相同，长期剪切模量为 \((1-\beta)\mu\)，体积部分不松弛。每步在塑性投影之后把 \(f_m\) 的偏 Hencky 应变乘以 \(e^{-\Delta t/\tau}\)（应变保持不变时是精确解，对任意 \(\Delta t/\tau\) 稳定；\(\tau \ll \Delta t\) 时该支每步归零），\(F_v\) 按等容增量更新。每步增量 \((\Delta t/\tau)\,\varepsilon\) 远小于 \(F_v\) 在 float32 下的分辨率，所以 \(F_v - I\) 存为 float64。塑性返回使用瞬时模量对应的共旋应力；小应变、加载慢于 \(\tau\) 时流动应力趋于 \((1-\beta)\sigma_y\)。关闭时调用原来的 kernel。
-
-## 材料能量统计
-
-`energy.material_energy` 用独立 NumPy 计算粒子动能、重力势能和弹性储能。令弹性变形 \(F_e=FF_p^{-1}\) 的奇异值为 \(s_i\)、行列式为 \(J_e\)，参考体积能量密度为 \(\Psi=\mu\sum_i(s_i-1)^2+\frac12\lambda(J_e-1)^2\)。三项分别为 \(\sum_p\frac12m_p|v_p|^2\)、\(-\sum_p m_p g\cdot x_p\)、\(\sum_p V_p^0\Psi_p\)。固定 \(F_p\) 时，储能对 \(F\) 的方向导数与求解器第一 Piola 应力的虚功逐项核对。
-
-自然轨迹报告记录起终点的三项材料能量，以及 `knife_work_j`。每个实际积分段的刀具输入功为 `Σ J_p·(v_tool+ω×r_p)`，其中 J 是施加给粒子的刀接触冲量，r 是同一接触查询的世界坐标力臂；等价于负刀反力/反力矩与平移/转动速度的功率积分。网格刀面约束另加 `J_grid·v_tool+L_grid·ω`，L 是该约束冲量的矩。接触点速度与广义力的配对见 [MuJoCo 接触雅可比](https://mujoco.readthedocs.io/en/stable/computation/index.html#contact)，这里直接用本求解器的冲量计功。
-
-`CutHistory.tool_work` 记录本步输入功（J），正值表示刀向材料系统输入能量。中点积分取终点更新实际使用的中点冲量；事件积分只累计接受的分段，求根试算和半步预测不重复计功。损伤释放后的冲量参与计功，`damage_work` 保持独立统计。
-
-`energy_ledger.EnergyLedger` 记录 `GeometryEventContact` 接受的分段。法向接触储能为 `½kₙ min(gap,0)²`，切向储能为 `½kₜ|h|²`；粒子对使用约化质量对应的刚度。塑性耗散为同一终点 F 在返回映射前后的储能差。摩擦按下文恒等式分为阻尼、滑动和时间积分三项；切平面投影、脱离清零与接触对丢失的储能差单独记录。PIC 项为 `τλΣm v_stage·(v_stage−v_flow)`，其中 `v_flow=Σw v_grid`。
-
-原始收支 `global_balance_residual_j` 为动能、材料及接触储能变化加上述耗散，减去刀与重力外功，包含分侧和换刀造成的离散能量变化。另记录法向/摩擦/释放冲量与 `(v_flow−v_contact)` 的有符号功差、释放前后冲量功差及网格约束功差；这些量用于定位传递误差。`integration_residual_j` 从逐段原始残差中扣除摩擦、释放和网格约束功差，保留时间积分误差。损伤计功按 `QΔD` 独立核对，不重复加入耗散。检查点反向重算关闭账本，求根试算只在接受段落时入账。
-
-M5 中点阶段的 `MaterialTrajectory.flow_velocity` 对当前速度先 P2G，再按侧码耦合，最后插值回接触点。若 W 为粒子插值、M 为网格质量、C 为多场动量耦合，接触速度为 `u=W M⁻¹ C Wᵀ m v`。材料接触加速度使用相同传递，故 `Σm v·a_contact=Σf_contact·u`。刚体与粒子对的相对速度、切向历史增量和损伤推进都使用 u；PIC 阻尼仍作用于存储速度 v。未切开、部分切开和交叉侧码的虚功及转置导数用独立 NumPy 映射核对。
-
-`MaterialTrajectory.step(grid_load=...)` 接收每个逻辑网格槽的附加冲量（N·s），在相容场交换 C 之前与 P2G 冲量相加。网格力 `f_g` 对应粒子加速度 `a=W M⁻¹ C f_g`，与其共轭的网格速度为 `u_g=M⁻¹ C Wᵀ m v`；现有质量加权耦合满足 `Cᵀ M⁻¹=M⁻¹ C`，因此 `Σm v·a=Σf_g·u_g`。界面两侧用相同插值及其转置分别取得速度、散射等反作用力，可直接核对界面功。显式裂纹的双侧运动与牵引组织参考 [CRAMP 的裂纹牵引说明](https://osupdocs.forestry.oregonstate.edu/index.php?title=Traction_Laws)，这里的多场功配对由现有 C 推导。
-
-## 内聚界面元件
-
-`cohesive.cohesive_response` 使用各开裂方向相同的刚度 K（Pa/m）、强度 σ（Pa）和断裂能 G_c（J/m²）。起裂/完全断裂位移为 `δ₀=σ/K`、`δ_f=2G_c/σ`，`CohesiveParameters` 检查 `0<δ₀<δ_f`。开口 g、当前法向 n 的压缩量为 `s=min(g·n,0)`，损伤驱动量为 `a=g−sn`；历史 `κ=max(κ_old,|a|)`，中间段损伤 `D=δ_f(κ−δ₀)/(κ(δ_f−δ₀))`，两端分别为 0、1。参考面积上的储能 `ψ=K[(1−D)|a|²+s²]/2`，累计断裂耗散 `Γ=G_c clamp((κ−δ₀)/(δ_f−δ₀),0,1)`。牵引 `T=K[(1−D)g+Dsn]` 保留断裂后的压缩响应。加载—卸载切换处力连续、切线有折点；测试分别核对两侧解析导数。
-
-界面变形 F_Γ 映射两侧当前面的平均切向量，`n=normalize(cofactor(F_Γ)N)`。元件同时输出固定 D 时的 `P_Γ=∂ψ/∂F_Γ`（N/m），使功率为 `T·ġ+P_Γ:Ḟ_Γ`。双侧参考插值 N_i 与切向梯度 ∇_ΓN_i 对应网格力 `A₀[±N_i T−P_Γ∇_ΓN_i/2]`，相同映射推进面位置与切向量。参考面积 A₀ 保持固定；刚体旋转时两项功相消。
-
-`cohesive_contact_response` 计算单边约束 `g·n≥0` 的共轭力：给定压力乘子 `p≤0`（Pa），输出 `T_c=p n` 和 `P_c=∂(p g·n)/∂F_Γ`（N/m）。`surface_normal_pullback` 对归一化余因子法向求转置导数，与上述弹性界面共用。两侧面位置和平均切向量同时推进；纯刚体转动下 `T_c·(Ωg)+P_c:(ΩF_Γ)=0`。压力乘子由耦合约束求解，局部核不新增材料参数。
-
-`cohesive.cohesive_proximal_response` 求解初始刚性内聚增量：在 `g·n≥0` 下最小化 `|g−q|²/(2λ)+ψ+Γ`，其中 `λ` 的单位为 m/Pa。`δ_f=2G_c/σ`、`κ=max(κ_old,|g|)`；`0<κ<δ_f` 时 `ψ=σ(1−κ/δ_f)|g|²/(2κ)`，其余为 0；`Γ=σ min(κ,δ_f)/2`。闭合界面承载时 `g=0`、牵引 `T=q/λ`，储能和断裂耗散均为 0。`ExtrinsicCohesiveParameters` 检查正参数及 `λσ<δ_f`，后者使局部增量势严格凸。
-
-多界面原型以 ADMM 约束 `g=q+B u`，粒子修正的惯性能为 `uᵀm u/(2Δt²)`，面能按参考面积 A 积分。原始界面迁移矩阵允许秩亏；线性子问题使用 `I+ρΔt² sqrt(A) B m⁻¹ Bᵀ sqrt(A)`，单位阵来自惯性项。局部开口更新调用上述近端核，牵引按 B 的转置回传粒子；原型检查动量—开口一致性至相对误差 `1e-11`。重复积分点时将面积等分，核对相同粒子结果。
-
-`cohesive_measure_proximal_response` 使用积分总力 `P=A T`（N）与柔度 `λ_F`（m/N），局部势为 `|g−q|²/(2λ_F)+A(ψ+Γ)`，正面积上施加 `g·n≥0`。正面积时与 `λ=Aλ_F` 的牵引形式等价，严格凸条件为 `λ_F A σ<δ_f`。A=0 时该积分点不施加接触约束，返回 `g=q、P=0`；张开状态保留面积的单侧导数 `∂P/∂A=T(q)` 与 `∂g/∂A=−λ_F T(q)`。储能和耗散输出仍为 J/m²，由调用方乘面积。负自由法向间隙下，正面积的硬接触反力在 A→0 时仍有限，A=0 则为零；对应的约束出生事件需同时更新状态与活跃集合。
-
-## 可微弹性与固定接触
-
-`differentiable.ElasticTrajectory` 在未切割单场上复用 P2G、网格速度和共转应力；G2P 与 MUSL 写入下一步状态。每一步保存独立数组，分段 VJP 在反向时重算段内状态。E 使用可求导数组；参考采样、密度、ν 与步长保持固定。
-
-令 \(F=U\Sigma V^T\)、\(R=UV^T\)。极分解旋转对传入矩阵伴随 G 的 VJP 为 \(UBV^T\)，其中 \(B_{ii}=0\)，\(B_{ij}=[(U^TGV)_{ij}-(U^TGV)_{ji}]/(\sigma_i+\sigma_j)\)。对正行列式 F，重复正奇异值处这个分母仍非零。`elastic_stress_grad` 用该 VJP 和行列式、逆矩阵导数计算共转应力的伴随；正向仍调用原 `corotated_stress`。
-
-`differentiable_contact.PrescribedContact` 复用刀距离、预测法向罚函数和带历史的库仑摩擦；外部刀的移动性为零，切向历史逐步保存。梯度沿本次执行的接触和粘滑分支传播。切换扫描与轨迹优化的实验安排见 [DIFFERENTIABLE.md](DIFFERENTIABLE.md)。
-
-接触的 `checkpoint_vjp` 在段边界同时保存 x、v、F 和刀/砧板的切向历史。反向重算一段后，把这四类状态的伴随传给上一段；每段累加工具参数与 E 的梯度。逐步反力罚项在所属段求导，末端位置损失在最后一段求导。`tool_at_step` 和 `objective` 回调在正向与重算时执行相同计算。
-
-`scripts.diff_optimize` 将分段刀速作为优化量，并在 Warp kernel 中积分刀位，使位姿与速度同时进入梯度链。目标是指定粒子区域的末端位置，刀速用变量边界约束，反力超限用平方罚项。每条最优刀路都交给原 `Solver` 重放。接触核扫描分别记录接触建立处的导数折点、静动摩擦切换的力跳变；整段轨迹差分同时统计接触/摩擦分支变化。
-
-`differentiable_material.MaterialTrajectory` 逐步保存 Fp 和投影后的应力，与原求解器共用 `plasticity.corotated_return`。设试算弹性主伸长为 s，等容对数增量为 d，更新后伸长为 `t=exp(log(s)+d)`；返回映射求解 `min Σ(t_i−1)²/2+r‖d‖`、`Σd_i=0`，其中 `r=√(2/3)σ_y/(2μ)`。等容约束使体积储能项保持不变。弹性分支条件为 `‖dev(s(s−1))‖≤r`，塑性分支满足 `dev(t(t−1))+r d/‖d‖=0`，并更新 `Fp=inv(U diag(t) Vᵀ)F`。
-
-返回映射以 float64 求解，使用带 Armijo 回溯的修正 Newton 方向；在塑性增量的径向/正交基中求逆，避免增量趋于零时丢失径向曲率。方向中的正定化只用于寻找下降步，最终检查原驻点方程，残差目标为 `2e-13 max(1,‖dev(s(s−1))‖)`，最多 80 次。未收敛时报错。`Ψ_trial−Ψ_new≥√(2/3)σ_y‖d‖` 与 `det(Fp_new)=det(Fp_old)` 分别检查塑性耗散和体积保持。
-
-伴随由驻点方程的隐式导数计算；对称谱项 `(t_i−t_j)/(s_i−s_j)` 用两条驻点方程相减得到的等价式计算，重复伸长处使用对数差商的连续极限。E、屈服应力、F 和 Fp 均进入梯度链。
-
-固定侧码下，式 8 的相容场交换是常系数线性映射。`FixedTopology` 根据参考质量与相容关系生成稀疏行，动量、冲量和 MUSL 重映射共用该映射；反向通过同一系数的转置传播。参考采样、粒子质量及侧码在一段求导中保持固定。
-
-`differentiable_cutting.FixedCutContact` 读取原求解器逐步产生的侧码、损伤释放标记和接触粒子对。粒子对按稳定 ID 对应前一步的切向历史；刀、板和粒子对的状态分别写入新数组。刀位、刀速、粒子状态和摩擦系数参与求导。固定接触标记时，两侧差分评估相同的法向闭合、粘滑和屈服分支公式；`--natural-branches` 改为每次重新判断这些局部分支。刀刃最近特征、切割计功带的几何判断继续随位姿计算。
-
-`FixedCutContact.checkpoint_vjp` 保存 x、v、F、Fp、应力及刀/板/粒子对的摩擦历史和损伤。网格约束逐次保存投影迭代，保持原求解器的迭代公式与批次；进入侧和求解批数作为离散状态。启用 `timings` 时，逐项核对重算的连续状态、切割侧码、接触对、刀面进入侧、接触模式、网格求解批数及几何事件边界状态。
-
-`differentiable_natural.NaturalCutContact` 每步从当前 x/v 和三进制侧码生成接触对，调用原 `contact.assign` 在步末更新侧码。候选对用 CPU 空间树查找，半径 `2R + 2Δt max|v|` 覆盖预测接触；原求解器与可微流程在 GPU 上共用 `contact.pair_activity` 筛选。切向历史按 `p*n+q` 继承，脱离后重新接触从零开始。每次扰动重新计算侧码、接触集合、接触模式和屈服分支；Warp 对本次执行的连续运算求导。
-
-`CutHistory` 保存侧码、排序后的粒子对 ID 和刀次；检查点重算同时核对连续状态及这些离散状态。同刀暂停保留 D，新刀按原求解器规则清零 D 并保留历史侧码。`release="boundary"` 使用原步末释放；`release="integrated"` 使用下节的步内刃向冲量积分。`scripts.diff_natural_validate` 从首次分侧附近的同一状态开始，逐步对照原求解器、比较不同检查点长度，分别记录差分误差及侧码/接触/释放的变化数。
-
-`checkpoint_device="cpu"` 将检查点的全部粒子、接触及事件状态复制到主机，每段反向前恢复到计算设备；完成该段后释放已处理的检查点。保存到 CPU、反向时取回的存储策略可参照 [PyTorch save_on_cpu](https://docs.pytorch.org/docs/stable/autograd.html#torch.autograd.graph.save_on_cpu)，这里使用 `warp.clone` 搬移数组。时间步、事件求根与 VJP 公式共用同一实现，CPU/GPU 检查点均与完整 Tape 核对。
-
-## 几何分侧的步内积分
-
-`GeometryEventContact` 使用分侧区域各平面的有符号距离 g。RK2 二次位置延拓与三个时刻的 g 给出进入候选，随后在实际 TLMPM 推进 `Φτ(state)` 上用带括区间的割线迭代求解 `g(Φτ(state), knife(t+τ))=0`。根处检查完整区域的所有不等式，再写入该粒子的侧码并重新生成多场交换，推进余下时间。求根、事件前后两段状态、接触历史和时长加权刀力均由同一正向计算进入 Warp Tape。
-
-默认中点积分的均匀自由落体单步为 `v_new=v+τg`、`x_new=x+τv+½τ²g`；`integration="symplectic"` 的位置项为 `τ²g`。解析事件测试分别核对两种离散流的根，跨时间步的状态与导数另做收敛检查。
-
-刀位在完整步内按给定线速度、角速度推进，中点积分的接触计算使用各阶段的实际刀姿。求根空间容差是 `32×机器精度×坐标尺度`，最多 48 次迭代；括区间丢失、根落在区域外或事件排序失败时直接报错并要求减小完整步长。`CutHistory.geometry_events` 保存本步粒子 ID 与可求导的发生时间，扰动实验同时比较左右差分、事件集合和顺序。
-
-刀刃平面穿越后的第一个积分段使用事件后的计功分支：`CutHistory.edge_departed` 保存刚发生穿越的粒子，停止刃前计功和刃前保持；接触几何、粒子位置及法向罚力继续使用实际状态。一次正时长推进后清除此标记，恰好发生在步末的标记进入下一步及检查点。这是混合系统在事件边界选择后继模式的处理，避免求根残差的舍入符号重新选择事件前模式。
-
-运行 `scripts.diff_natural_validate --geometry event` 使用该积分；`--geometry boundary` 使用原步末分侧。两者共用材料、接触和损伤公式，完整步长及接触/PIC 参考时间分别记录在配置中。
-
-`Solver(precision="float64")` 与 `MaterialTrajectory(precision="float64")` 分别运行原正向流程和可微流程。`precision.py` 将同一份 Warp 函数的浮点类型及常量提升到双精度；分支和公式保持相同。原求解器继续使用动态多场注册与场交换，可微流程使用固定分支的稀疏映射；同精度对照检验两套推进结果。
-
-`MaterialTrajectory.correct_displacement` 接受全局约束求解得到的网格诱导位移增量 `u=Δt·Δv`，完成同一一阶 MUSL 步：`x=x_free+u`、`v=v_free+u/Δt`，F 增量由 u 的粒子到网格重映射与相容场交换计算，塑性返回从段初 Fp 更新。它与先散射约束冲量再执行 `step(grid_load=...)` 代数等价，直接使用求解位移可避免从约束反力重构位移时的抵消；13 项状态和导数对照覆盖未切开、部分切开、交叉侧码、弹性/塑性和两档 PIC/FLIP。该入口使用一阶 MUSL 的位置与 F 更新，中点 RK2 仍由原阶段入口推进。
-
-## 事件分段的中点积分
-
-`GeometryEventContact` 默认采用 `integration="midpoint"`：对参考网格上的半离散动力学执行显式中点 RK2。第一阶段推进半段，第二阶段用中点的速度、应力、刀位和接触力推进整段。粒子位置率为插值网格速度，变形率为参考梯度作用于当前速度，速度率包含材料/接触加速度及固定单位时间的 PIC 残差阻尼。塑性 Fp 在预测点和终点分别从段初 Fp 返回映射。各阶段、分段时长及返回映射均进入同一 Warp Tape。
-
-接触阶段使用该时刻的间隙计算法向罚力；切向力和历史增量共同满足下节的 Kelvin–Voigt–滑动元件方程。终点将历史投影到新的切平面，接触脱离时清零。粒子对使用相对速度及两粒子的有效质量。刀力积分采用中点力乘实际分段时长。`integration="symplectic"` 调用原 MUSL 步进；M4 固定分支和原 `Solver` 使用此步进。
-
-切向历史只在阶段实际接触时更新；未接触或脱离时清零。中点实际接触对重新搜索，与初始候选集合合并，按粒子 ID 映射段初历史。第二阶段使用段初弹性历史和中点相对速度求整个分段的增量，避免重复累计预测半步。粒子位置由网格插值速度推进，因此初始粒子速度的预测查询可能漏掉中点接触。
-
-中点阶段的刀位连续推进，网格刀面约束使用 `v_grid − v_tool − ω×r` 的法向分量；原 `hold` 子步仍使用固定刀位约束。相对接触速度的构造与 [MuJoCo 接触雅可比](https://mujoco.readthedocs.io/en/stable/computation/index.html#contact) 一致，投影求解仍复用本仓库的相容场算子。
-
-阶段网格的约束候选速度为 `v_base_grid + τ a_stage`，投影增量加回同一阶段的力增量；段末速度由段初速度加这些增量得到。这样中点预测阶段已施加的投影不会使终点漏掉法向冲量。反力累计使用终点实际增加的冲量除以分段时长。
-
-中点 RK2 的系数对照 [PETSc TSRK2B](https://petsc.org/release/manualpages/TS/TSRK2B/)，切向接触采用下节的本构积分。MPM 的传递与时间积分误差分析见 [Berzins 2021](https://www.scipedia.com/wd/images/e/e1/Draft_Content_867464886p1127.pdf)。这里在 Warp 中实现这些阶段和返回映射。
-
-`diff_natural_refine --phases 0 .25 .5` 固定同一初态和结束时刻，改变第一步长度，从而比较时间网格起点对状态及梯度的影响。检查点保存每步时长并按相同区间重算。
-
-几何候选保留二次轨迹与各切割区域平面的交点，同时检查交点之间是否位于整个区域内；旋转查询按角跨度 ≤π/2 分段，使用各段开始、中点和结束的实际姿态。该划分只用于搜索括区。入区后又离开的轨迹即使两端均在区域外也参与求根。候选的插值时刻用于选择括区，最终事件时刻和状态由实际材料推进计算。
-
-## 应力与塑性伴随核对
-
-应力使用本仓库的解析 VJP，塑性返回映射使用驻点方程的隐式 VJP，其余连续算子由 Warp Tape 生成反向。旋转导数的分母取正奇异值之和；塑性谱导数通过稳定对数差商处理重复主伸长。`tests/test_constitutive_adjoint.py` 独立用 NumPy SVD、SciPy 增量能量最小化和第一 Piola 应力检查 24 组旋转、重复/近重复伸长及非对称 Fp，并以两档差分核对 F、Fp、μ、λ、屈服半径的 VJP（rtol=2e-6、atol=1e-7）。`tests/test_plasticity.py` 另检查 400 组随机体积/偏形变的驻点、耗散与塑性体积，以及屈服边界和强压缩的矩阵方向导数。
-
-初始塑性增量为零时，线搜索中的线性项用恒等式 `g·s+r|s|=(r−|g|)|s|+½|g||s||g/|g|+s/|s||²` 计算，避免近屈服时弹性功与塑性功抵消。屈服条件和驻点容差保持原值；1792 个距离屈服边界不超过四个相邻浮点间距的状态检查返回收敛、塑性体积和应力。
-
-时间展开参考 DiffTaichi，塑性组织参考 PlasticineLab，分段反向参考 Warp 的 checkpoint 示例；对应链接见 DIFFERENTIABLE 的方法来源。TLMPM 传递、专用伴随和切割事件积分均在本仓库实现；双精度验证使用相同公式生成的内核。
-
-## 摩擦弹性历史与滑移耗散
-
-切向接触由 Kelvin–Voigt 元件（弹簧和阻尼器并联）串联库仑滑动元件组成。记段初切平面上的弹性位移为 h₀，阶段相对切向速度为 vₜ，分段时长为 τ，弹性增量为 Δh，滑移为 Δs，则 `τvₜ=Δh+Δs`，`fₜ=−kₜ(h₀+θΔh)−cₜΔh/τ`。阻尼器作用于弹性位移率；滑动时总相对速度还包含滑移率。
-
-`friction.tangential_return` 先计算 `f_trial=−kₜ(h₀+θτvₜ)−cₜvₜ`。若 `|f_trial|≤μ_s f_n`，取 `Δs=0`；滑动时取 `fₜ=μ_d f_n f_trial/|f_trial|`、`Δs=τ(fₜ−f_trial)/(cₜ+θτkₜ)`，两者均返回 `h₁=h₀+τvₜ−Δs`。零库仑半径取 `fₜ=0`。静动摩擦系数相等时，两条分支的力与历史连续；静摩擦系数较大时保留力跳变。
-
-原 `Solver`、M3/M4 和自然单步默认 `friction_update="implicit"`，θ=1；M5 中点积分使用 `friction_update="midpoint"`，θ=1/2。θ 只选择本构时间积分，刚度、阻尼和摩擦系数由同一配置确定。终点切平面投影与脱离清零会减少储能，完整轨迹账本分别记录历史传输/重置耗散。
-
-固定法向下，切向输入功满足下面的离散恒等式：
-
-`−fₜ·τvₜ = ½kₜ(|h₁|²−|h₀|²) + (cₜ/τ)|Δh|² − fₜ·Δs + (θ−½)kₜ|Δh|²`。
-
-右侧依次为弹簧储能变化、阻尼耗散、滑动耗散和积分耗散；自然粘滑分支、`0≤μ_d≤μ_s`、`θ≥1/2` 时后三项非负。`energy.contact_storage` 和 `energy.friction_increment_energy` 用 NumPy 独立核对这些量。自动测试覆盖旋转法向、零/非零阻尼、零摩擦、边界连续性、状态与参数 VJP、解析滑动松弛、砧板振子的二阶状态/梯度收敛及检查点。
-
-## 损伤释放的步内积分
-
-`EventCutContact` 使用每粒子阈值 Q = G_c V₀^(2/3) (1−ζ)/ζ（J）。将本步接触核算出的刃向冲量记为 J，正向相对推进速度记为 u，当前损伤为 D；步内恒定力和 u 下，完整步损伤增量为 Ju/Q，剩余断裂功为 R=(1−D)Q。若 Ju≥R，释放时刻 τ=Δt R/(Ju)，保留刃向冲量 R/u，并移除余下的 J−R/u；该步损伤功取 R，损伤变为 1。已释放粒子继续撤除原计功带内的刃向推力。其余方向的冲量和摩擦历史使用现有公式，粒子通过原一阶 MPM 步更新。
-
-同一个 `cut_index` 内，D 累积并保留到后续子步，暂停或退刀不清零；`Solver._set_cut` 切换切割编号时重置各刀的 D 和释放标记。历史三进制侧码及塑性形变 Fp 保留，分别记忆旧切口和塑性变形。D 表示当前这一刀的断裂功进度；`EventCutContact` 将它作为逐步状态和检查点状态传递。
-
-τ 的导数通过冲量进入刀力和粒子状态，自动微分与有限差分评估同一正向公式。`CutHistory.damage_work` 记录各粒子的损伤计功，核对 ΣW = QΣΔD；整体系的输入功、储能、塑性及摩擦耗散另行统计。侧码及粒子对集合由调用者给定；`cut_hold=False` 使释放前后的刃口接触法向规则保持一致。
-
-事件积分思路参考 [DiffTaichi 的 TOI 实现](https://github.com/taichi-dev/difftaichi/blob/master/examples/mass_spring.py)。[Saltation matrices](https://arxiv.org/abs/2306.06862) 给出跨事件的状态灵敏度更新；当前实现对上述一阶离散积分直接求导。事件时间、终态与梯度的步长对照使用 `scripts.diff_release_validate`。
-
-## PIC 传递耗散的时间尺度
-
-PIC/FLIP 的混合速度为 `v_new = PIC_new + α (v_old − PIC_old)`。固定每步 α 时，粒子速度残差的有效耗散率为 `(1−α)/Δt`，步长减半会使该速率加倍。[NairnMPM 的 PIC damping 推导](https://osupdocs.forestry.oregonstate.edu/index.php?title=Damping_Options#PIC_Damping) 将这一混合解释为对传递残差的数值阻尼。
-
-`Config.flip_reference_dt > 0` 时，本实现固定 `λ=(1−flip_fraction)/flip_reference_dt`，每步取 `α=1−λΔt`。这是残差阻尼的显式积分，要求 `0≤λΔt≤1`；粒子位置仍使用插值网格速度推进。原求解器、弹性和塑性可微求解器共用该系数。`flip_reference_dt=0` 保持每步固定混合比例，`flip_fraction=1` 为纯 FLIP。
-
-`MaterialTrajectory.step` 和 `FixedCutContact.step` 接受可求导的单元素 `duration` 数组（秒）。分段时长 τ 同时进入重力/应力冲量、P2G/G2P/MUSL、塑性、摩擦历史、损伤计功、网格约束及反力换算。接触系数以完整步的值乘 `(τ/config.dt)²`，包括砧板系数，保持物理刚度；PIC 参考时间取显式 `flip_reference_dt`，未设置时取完整步长。分段时长取 `0<τ≤config.dt`。
-
-`board_normal_scale` 是每步无量纲罚因子。固定刚度的步长实验将显式砧板系数同步乘 `(新步长/基准步长)²`；其默认值 0 继续使用由 `contact_reference_dt` 换算的刀具法向系数。
-
-`scripts.diff_release_validate --transfers fixed-mix fixed-rate flip` 从同一初态对照三种传递设置；`fixed-rate` 用该网格的基准步长作为参考，6/4 mm 分别得到 λ=3200/3800 s⁻¹。网格间固定同一 λ 的对照需要显式使用同一参考步长。
-
-## 与论文的差异
-
-| 项 | 论文 | 这里 |
-|---|---|---|
-| 粒子位置更新 | 未写明 | 用插值网格速度推进（de Vaucorbeil 2020 TLMPM 式 13），速度用 PIC/FLIP |
-| 传递耗散 | PIC/FLIP 混合 | 默认每步固定比例；步长对照可用 `flip_reference_dt` 固定单位时间的残差阻尼，避免细化步长时同时改变耗散率 |
-| 刀身穿透处理 | 粒子罚接触 | 外部 `hold` 模式补充固定刀面的网格法向约束；M5 中点阶段按相对运动刀面速度约束，见上节 |
-| 事件间时间积分 | MUSL 单步推进、预测步末接触间隙 | M5 `GeometryEventContact` 默认使用中点材料阶段与 θ=1/2 切向本构积分，在阶段实际间隙上取法向罚力，终点运输/重置历史，以改善事件分段的状态和梯度收敛 |
-| 接触运动学速度 | 接触律使用粒子速度 | M5 中点阶段使用位置推进对应的插值网格速度，原 `Solver`、M4 和一阶模式保留存储粒子速度。参考 [Kakouris 等的 MPM 接触虚功与力映射，式 17、29、36](https://arxiv.org/html/2403.13534v1)，本地推导现有多场耦合算子的功配对；原因是两种速度混用产生不随步长消失的摩擦功差 |
-| 接触刚度 | 每步常数 \(s_n\) | 默认按参考步长固定物理刚度，见上节 |
-| 塑性返回映射 | 共旋弹性与 von Mises 型投影，具体返回映射未给出 | 保留共旋储能，使用与其功共轭应力一致的等容增量变分返回；参考 [Miehe、Apel、Lambrecht 的增量最小化框架](https://doi.org/10.1016/S0045-7825(02)00438-3)，本地推导共旋势的驻点、Newton 求解和隐式 VJP。原因是对数应变径向返回在强压缩下会增加共旋储能，数字见 RESULTS |
-| 共旋应力数值计算 | 固定共旋本构 | 保持 `2μ(f−R)+λ(J−1)J f⁻ᵀ`。参考 [Shakeri 等稳定有限应变计算](https://arxiv.org/html/2401.13196v2)及其 [Julia 作者代码，Zenodo 11113499](https://doi.org/10.5281/zenodo.11113499)：以 H=f−I 计算 `2E=H+Hᵀ+HᵀH` 和 J−1 的三维行列式展开。本地推导共旋项的等价式 `f−R=R(2E)(S+I)⁻¹`，S=Rᵀf；SVD 旋转保留一次 [Higham 正交细化](https://eprints.maths.manchester.ac.uk/694/1/high86p.pdf)。原求解器、可微材料及材料参数反向使用相同项；作者论文给出 Neo-Hookean/Mooney–Rivlin/Ogden，本仓库保留共旋材料。F 状态的存储精度相同 |
-| 极旋转反向数值计算 | 正向 SVD | 按 [Gawlik–Leok，式 66](https://arxiv.org/pdf/1608.04491)的 Sylvester 方程 `SΩ+ΩS=RᵀA−AᵀR` 计算极旋转 VJP。本地实现将三维反对称矩阵转为轴向量，解 `(tr(S)I−S)ω=vee(RᵀA−AᵀR)`，返回 RΩ；R 从 f 与稳定计算的 f−R 恢复，避免近单位形变时 SVD 基变换产生的弱导数舍入。特征值仍为 σᵢ+σⱼ，重复正伸长处保持正则 |
-| 摩擦历史积分 | 用当前历史计算试力，粘住时累加位移，滑动时回算历史 | 采用弹簧/阻尼器并联后串联滑动元件的接触网络，见 [Computational Analysis for Industrial Brush，图 2](https://journals.utm.my/aej/article/download/15382/6897)。本地推导 θ 时间积分和离散能量恒等式；原求解器 θ=1，M5 中点 θ=1/2。原因是按总相对速度回算阻尼历史在零输入功时可生成弹簧储能，数字见 RESULTS |
-| 黏弹性 | 无 | 可选 Maxwell 分支，默认关闭，见上节 |
-| 可微求解 | 正向 TLMPM 切割与工具双向耦合 | 增加粒子、材料、接触历史、切割事件和刀路的自动微分与伴随；当前可微刀路由外部给定 |
-| 损伤释放积分 | 方向接触功的经验阈值；达到阈值后移除刃向冲量，材料应力保持原更新 | 原 `Solver` 和 M4 在子步边界切换；M5 `EventCutContact` 根据剩余断裂功积分释放步的刃向冲量，使释放时刻进入状态导数，见上节 |
-| E5 内聚元件 | 方向接触功损伤，几何侧码独立分离网格 | 已实现独立双线性内聚元件，形式参考 [Camanho–Dávila/MOOSE](https://mooseframework.inl.gov/releases/moose/2022-06-10/source/materials/cohesive_zone_model/BiLinearMixedModeTraction.html)，大变形虚功参考 [Reinoso–Paggi](https://arxiv.org/abs/1507.05168)。本地推导平均面法向、共轭表面应力与现有多场的力映射；K、σ、G_c 为独立材料量。原因是已释放刃向投影力的闭合路径功非零。元件与 TLMPM 耦合算例已核对，自然切口入口的面积生成、插入牵引平衡和历史接入待完成；动态插入的牵引初始化参考 [Sierra/SM](https://www.sandia.gov/files/sierra/SM_Users_5_20/main/materials/cohesive.html) |
-| E5 受载插入原型 | 几何事件直接更新侧码 | 初始刚性内聚局部核为 `cohesive_proximal_response`，移动面压力核为 `cohesive_contact_response`；全局平衡与隐式反向已整理为 `differentiable_cohesive.solve`，CPU 非线性方程位于 `_cohesive_solve.py`；粒子推进原型在 `runs/e5_release_audit/extrinsic_*.py`。依据 [Petrie–Hirmand–Papoulia](https://arxiv.org/html/2202.06359) 的初始刚性、卸载至原点、单边接触及 ADMM 形式；本地推导 3D 径向闭式核、TLMPM 功配对、惯性子问题与 `p g·n` 的面转动共轭力。论文使用小应变 FEM/固定界面，原型使用有限应变 TLMPM/预置参考面和一阶半隐式推进。移动面联合约束用固定法向 ADMM 初值、CPU SciPy 最小二乘与 NumPy 半光滑驻点细化，Warp 在 GPU 上推进材料和计算局部响应；按 [OptNet](https://proceedings.mlr.press/v70/amos17a.html) 的 KKT 隐式求导思路实现 VJP。统一原型使用 `g=prox(g+λT)` 与粒子动量平衡连接 κ=0 承载和 κ>0 卸载，CPU 解半光滑方程，隐式反向直接对 Warp 实际残差构建 Jacobian 并解伴随方程，使零压力边界的分支与前向一致。 求解位移投影到 B 和切面梯度 G 的共同作用空间；其正交动量块为单位阵，反向保留该块的完整右端项，并核对原空间的伴随残差。CPU 组装局部 9×9 约束 Hessian，再映射至约化空间。该代数消元保持原方程、面积权重与容差。固定法向 ADMM 为所有历史状态提供初值，牵引直接取近端核的双变量表达，避免 λ 很小时相减后再除 λ；零开口且牵引未达强度时解线性约束。λ 是数值分裂尺度。令 s=max(σ²/(2G_c))、μ 为面积加权开口迁移矩阵的最大特征值，μ>0 时取 λ=α/(1/μ+2s)，μ=0 时取 λ=α/(2s)，均检查 λs<1。零自由度的位移块为空时，只解剩余反力块。开口残差按恒等式 `g−prox(g+λT)=λ(T_prox−T)` 计算；CPU 同时直接求 λT_prox 及其导数，避免有限开口相减和 `1−gain` 的抵消。局部差分对 `F=F_free+G u` 同时保存原始相减与基态/增量分别相减的结果，避免弱导数被单位基态的舍入覆盖；公式和阈值相同。连续粒子轨迹、自然切口与永久历史继续接入 |
-| E5 隐式梯度核对 | 正向求解 | 对照 [DiffPD 的收敛状态伴随矩阵与反向残差](https://github.com/mit-gfx/diff_pd_public/blob/1594aa07a6983ff9a9c107e9f0d83d07fa99c8d1/cpp/core/src/fem/deformable_newton_backward.cpp)、[Nimble 的最小范数反力与完整伪逆导数](https://github.com/keenon/nimblephysics/blob/c405b056fc35068027e03e0c384e84e12870b475/dart/neural/ConstrainedGroupGradientMatrices.cpp#L210)及 [Petrie 等按面积归一化的原始/对偶压力残差，式 21–26](https://arxiv.org/html/2202.06359)。实际 Warp 残差的逐步秩检查位于 `extrinsic_rank_probe.py`；`extrinsic_canonical_reaction.py` 在同一动量平衡和非拉伸压力约束下，以参考面积加权选择最小范数反力，本地实现用于检查冗余反力对隐式梯度的影响。等价反力选择已整理到 `_cohesive_solve.canonical_reaction`。闭合位移为 `r=(BBᵀ)⁺q`、`u=−Bᵀr`。牵引在相同动量平衡下最小化 `Σ A_q |T_q|²`：令 `C=Bᵀ sqrt(A)`、`w=C⁺(−u)`，则 `T=(m/Δt²)w/sqrt(A)`；同位置积分点按任意正面积比例拆分时牵引相同。先对面积加权反力求 VJP，再传至位移约束；两处固定秩伪逆均保留上述 Nimble 的两个零空间项，避免通用伴随在小面积下将大项相减。位移对 A 的导数为零，压力的 A 导数保留；κ=0 向正历史的单侧导数仍通过实际近端残差计算。当一行满足 q=0、B=0、κ=0 时，开口约束恒为零；其最小范数牵引为 T=0，CPU 与 Warp 均以 `λT=0` 固定这一冗余乘子，保留该点的几何、面积和历史。侧码分支内共享场的 B=0 是恒等式，每次求解按当前 q/B/κ 重建此集合。线性闭合细化成功后使用闭合分支，转入半光滑求解时使用对应反向。几何精度和轨迹差分结果见 RESULTS |
-| E5 界面几何精度 | 双精度状态与运算 | 参考 [Ogita–Rump–Oishi 的求和与点积误差补偿](https://www.tuhh.de/ti3/paper/rump/OgRuOi05.pdf)。`_compensated.Expansion` 在 CPU 用 TwoSum/TwoProduct 的两分量 float64 表示计算求和、乘积及矩阵作用量；乘积先分解归一化尾数，避免 splitter 的中间溢出。矩阵作用量用 Numba 编译有序循环，关闭 fastmath，保留相同归一化与累加顺序；编译前后的主值、余量及完整平衡迭代逐位核对。`cohesive_geometry.InterfaceGeometry` 用这些作用量累加开口与面形变；`CompensatedArray` 为广义状态保存高位和余量，支持线性增量、快照和恢复。高位和余量表示同一物理变量，VJP 对总值求导；几何运动和状态增量的收缩保留两分量再写回 float64 伴随。`solve_geometry` 的局部平衡细化仍用 CPU longdouble，要求尾数位数大于 float64；材料与局部平衡伴随使用 float64。响应通过 `displacement_state` 返回局部位移及其舍入余量，伴随仍由位移高位数组承载。 `solve_geometry` 和积分总力入口的本构输出与局部伴随使用补偿后的 q+B u、F+G u；法向间隙、历史及能量共用该几何。零面积行直接保留两分量自由间隙，面形变余量也直接进入下一阶段。联合算子 D=I 时的线性闭合解用扩展精度重建约束行空间，依据 [Giraud–Langou–Rozložník 的再正交化分析](https://cerfacs.fr/algor/reports/2002/TR_PA_02_33.pdf)作两次 Gram–Schmidt，再解约化最小二乘；同时保持最小范数条件与约束残差，秩判据沿用原 float64 SVD。初始零历史、零开口且牵引未达强度时，按线性闭合约束细化，响应与未激活的断裂参数无关。物理方程和差分阈值相同 |
-| E5 积分总力局部核 | 几何分侧后的刃向力 | 参考 [Petrie–Hirmand–Papoulia 式 10、12、17](https://arxiv.org/html/2202.06359) 的面积加权势能和力乘子，本地 `cohesive_measure_proximal_response` 直接计算积分总力，避免零面积处除以面积。论文使用固定 FEM 界面，这里增加动态参考切面的零测度响应和单侧面积导数；全局力形式已接入首阶材料推进，自然出生事件继续接入 |
-| E5 总力全局平衡与反力选择 | 刃向冲量与释放标志 | `solve_force` 和 `solve_geometry(..., integrated_force=True)` 使用 `P=A T`、`g=prox_A(g+λ_F P)`，动量项直接累加积分力及积分面力矩；A=0 的局部映射为恒等，闭合候选只约束正面积行。依据上述 Petrie 面积势和 Nimble 固定秩反力选择，在闭合行使用三维反力、在已张开的接触行使用法向乘子；矩阵 D 的列为 `sqrt(A)` 乘对应运动约束的转置，最小化 `‖z‖²/2`，保持 `D z=D z_old`，并满足压缩乘子非正和闭合牵引的强度球约束。约束最小化采用归一化变量、解析约束梯度及 SLSQP；输出的反力选择先用完整伪逆导数或活跃约束 KKT 拉回，再求物理平衡伴随。普通与补偿存储共用该链；总力接口用现有扩展精度残差细化保留小正历史的响应。`cohesive_grid_update.advance_material` 使用总力接口；初态及 MUSL 重映射的闭合速度投影均只选择 A>0、κ=0 的行，A=0 保留自由运动、几何状态与面积导数。`CohesiveMaterialStep.interface` 返回 `CohesiveForceStep`，force 为 N、surface_moment 为 N m，storage/fracture 仍为单位参考面积能量。退化片的几何构造和自然事件装配继续接入 |
-| E5 分阶段材料推进 | 显式 MUSL 时间推进 | `cohesive_stages.advance_affine` 采用 [Ascher–Ruuth–Spiteri 的 ARS(2,2,2)](https://steveruuth.org/wp-content/uploads/2020/10/ars.pdf)，系数与 [Irksome 实现](https://www.firedrakeproject.org/Irksome/_modules/irksome/tableaux/ars_dirk_imex_tableaux.html)一致：γ=1−1/√2、δ=1−1/(2γ)。显式处理体材料力，隐式处理运动和内聚力；位置、体形变和界面速度使用参考仿射映射，力用同一映射的转置。`AffineState` 分开保存粒子平移速度与参考速度梯度；外力回调接收实际位置率及阶段时刻，恒定冲量按分段时长转换为力。阶段和终点的塑性返回均以段初 Fp 为基准，终点返回为永久塑性状态。界面阶段外推保留舍入余量，损伤最大值按两阶段依次更新；快照和分段反向包含速度梯度、应力及界面状态。事件查询中点采用端点 Hermite 值 `x_mid=(x0+x1)/2+Δt(v_flow0−v_flow1)/8`，分段时长进入全部运算及反向。能量快照另计 `m‖A L‖²/2`；固定率传递耗散按下行接入，接触历史、闭合碰撞与在线切面出生继续联合接入。 |
-| E5 界面碰撞冲量 | 粒子对罚接触 | 参考 [Collins-Craft–Bourrier–Acary 2022 的作者实现](https://github.com/nickcollins-craft/On-the-formulation-and-implementation-of-extrinsic-cohesive-zone-models-with-contact/blob/5d5de7e9a1f477585bc177677ffeef8881b20473/Python/spring_czm-dynamic_with_impacts.py)中恢复系数 e=0 的速度互补条件。本地 `cohesive_impact.project_velocity` 解质量内积最小速度跳变，满足 C v⁺≥0、λ≥0、λ·C v⁺=0；NNLS 选择活跃行，SVD 保留该行空间，反向解同一 KKT 系统。约束按质量范数归一化以保持行缩放不变；动能损失为 ‖v⁺−v⁻‖²_M/2。`normal_velocity_map` 使用 C v=d(g·n(F))/dt，同时包含开口和法向转动。该入口作用于已闭合界面，事件定位由调用方提供；完整自然材料事件连接继续实现。 |
-| E5 永久界面历史 | 每刀方向功损伤 | 参考 [OOFEM XFEM 对界面积分点及几何更新后状态映射的管理](https://petergrassl.com/oofem/developerGuide/xfem.html)。本地 `cohesive_history.CohesiveHistory` 保留旧参考片及其积分点，只对扣除已覆盖部分的新片生成积分；旧点的位置、面积、材料、开口、面形变和 κ 按原顺序进入下一状态。新点的开口/κ 为零，面形变取参考扫掠所属粒子的当前仿射形变。旧点不重网格化，因此直接保留历史；零测度片仍保留几何导数。创建编号及出生正法向侧码随点保存，追加编号不重置旧 κ 或朝向。拼接和所属粒子取值通过 Warp 求导；快照含累计几何、积分数据、连续状态及舍入余量，分段反向传递这些数组的伴随。`advance` 使用出生侧码和有限切面可见性接入积分总力：PlasticState 使用首阶 MUSL，AffineState 使用 ARS 分阶段推进；也接受解析例子的显式双侧码。零面积行不参与闭合速度投影，在线自然事件继续接入 |
-| E5 闭合界面数值求解 | 分侧场的闭合约束 | 采用 [LAPACK SVD 最小范数求解](https://www.netlib.org/lapack/explore-html/db/d6a/dgelsd_8f_source.html)及 [Golub–Pereyra 的固定秩伪逆导数](https://epubs.siam.org/doi/10.1137/0710036)。本地直接分解矩形 B，避免以 B Bᵀ 判秩丢失弱独立约束。零开口且未损伤的材料推进保留节点增量 d=Δt M¹ᐟ²Δv，以 B(d+u)=0 的行空间投影求 u；这是 q=Bd 的同一闭合方程的因式表示，减少先形成点开口时的相消。q 与 Bd 按坐标变换的浮点误差界核对，反力仍按参考面积最小压力范数选取并检查节点动量平衡及原强度界；强度界不满足时进入原非线性求解。几何开口与映射沿原求导链传递，含历史的单侧导数；零面积行不施加闭合约束。原始矩形系统和反向均保留机器精度的秩判定 |
-| E5 近起裂状态的数值表达 | 刃向力与损伤计功 | 沿用 Petrie 内聚律，在加载支路 κ=r 中先约去牵引和储能中的 r/r：T=σ(1−r/δ_f)d、ψ=σ(1−r/δ_f)r/2，d=z⁺/‖z⁺‖；总力乘 A。`radial_traction` 的本地解析 VJP 用 `d×(a×d)` 计算切向投影，再乘牵引大小/‖z⁺‖，标量幅值的伴随为 a·d。它与 `(I−ddᵀ)a` 相同，避免先放大再相减；通过 [Warp 自定义梯度接口](https://nvidia.github.io/warp/v1.17/api_reference/_generated/warp.func_grad.html) 实现。正面积、零历史、近端开口逐分量为零时，残差使用 `g−prox(g+λP)`，精确保留零反力导数块，同时通过 prox 保留历史的单侧导数；卸载支路在 ‖g‖∞≤‖λT‖∞ 时也使用开口差形式；其余情况使用牵引差形式。该选择比较同一残差两种表达的相减操作数大小；加载支路保持牵引差，保留近起裂处很小的径向导数。CPU 的反力 Jacobian 块直接取 −Dprox，避免以 (I−Dprox)−I 丢失非零弱导数。两种表达使用同一势能、强度和求解容差 |
-| E5 隐式伴随残差细化 | 正向粒子求解 | 采用 [Higham 的线性系统迭代细化](https://www.netlib.org/lapack/lawnspdf/lawn104.pdf)：对已有伴随重新计算原方程残差，以同一转置矩阵求修正量并相加。本地 `_implicit_pullback` 用 Warp VJP 计算完整动量和近端残差，分别修正约束行空间内的伴随与正交补上的恒等动量块，最多细化 12 次；沿用相对右端尺度 `1e-10` 的核对标准，非有限值或超标均报错。压力与积分总力、普通与补偿几何共用此入口，材料势、强度和正向求解公式保持原值 |
-| E5 半光滑线搜索 | 原释放公式的显式推进 | 参考 [Oztoprak–Byrd–Nocedal 的松弛 Armijo 思路](https://optimization-online.org/wp-content/uploads/2021/10/8621.pdf)。本地在残差二范数的步长判据中加入现有舍入尺度 `64ε max(‖y‖∞,‖q‖∞/δ_f)`，避免近相关接触约束处的舍入波动阻止跨分支推进；最终非线性残差仍使用原标准。步长逐次减半，直到接受或候选与当前状态逐位相同；后者及非有限方向直接报错。该修改只选择迭代步长，材料势、强度、损伤律及隐式反向方程保持原值 |
-| E5 非线性初值与分块求解 | 原释放公式的显式推进 | `_cohesive_initial.fixed_normal_initial` 依据 [Wohlberg 的相对残差平衡](https://arxiv.org/html/1704.06209) 调整 ADMM 分裂尺度：每 10 次检查，原始/对偶残差之比超过 10 时以因子 2 调整；上界保留近端子问题的原凸性条件。用加权矩形映射的 SVD 应用动量消元，计算保留扩展精度；初值残差目标 `1e-10`、迭代上限 500000。初值固定法向，最终方程使用移动法向、原强度和能量。最小二乘按初始残差及 Jacobian 列缩放，已满足原收敛标准的初值直接进入核对。`_cohesive_linear.solve_blocks` 依据 [Benzi–Golub–Liesen 的 Schur 消元与零空间法](https://page.math.tu-berlin.de/~liesen/Publicat/BenGolLie05.pdf) 分解每点 3×3 反力块，消去非零奇异方向，并将零空间作为完整运动约束求解；以扩展精度残差最多细化八次，保留弱独立约束。压力和积分总力共用该过程，补偿几何沿用实际选择的分裂尺度；最终仍按原 `64ε` 相对状态尺度检查非线性平衡 |
-| E5 材料表面重建 | 粒子几何侧码 | `reference_interface.reconstruct` 依据 [Crook–Homel，式 18](https://www.osti.gov/servlets/purl/3003988) 的位置与形变补偿构造双侧表面。作者使用每粒子的固定表面偏移；本地实现使用每个积分点 Q 的偏移 Q−X_p，重建 x_p−X_p+(F_p−I)(Q−X_p)，按双侧参考基函数归一化。面形变为同一插值对 Q 的导数，包含基函数梯度和归一化梯度；输入通过 Warp 求导。统一仿射形变的两侧位移相同，张开由双侧不同运动产生 |
-| E5 切面参考积分 | 粒子接触面积 | `reference_cut.quadrature` 采用 [ngsxfem 的线性边求交、切面三角剖分与标准积分规则](https://github.com/ngsxfem/ngsxfem/blob/7a836f05e0193823556f22f197658584421563f5/cutint/straightcutrule.cpp#L41) 的通用构造。本地实现对仿射粒子域 x_p+F_p(X−X_p) 与当前平面 n·(x−c)=0 求交；参考法向为 normalize(F_pᵀn)，三角形使用二次精确的三点规则。有限范围采用 [Sutherland–Hodgman 逐半平面裁剪及 Howland 的三维实现说明](https://www.cs.trinity.edu/~jhowland/cs3353/pclip/pclip/)；CPU 每次重建相交边、保留顶点和三角形，Warp 在逐级独立数组上对交点、参考面积和法向求导。每个差分扰动重新生成几何。顶点保存粒子局部参考偏移，最后加 X_p，减少绝对坐标相减的舍入。共享面归正侧粒子域；符号判断使用浮点运算前向误差界 γ₁₆(abs(x_p)+abs(c)+abs(F_p)h)·abs(n)，交点仍由原平面计算。`blade_quadrature` 将归一化的 xyzw 四元数、位置和半尺寸转换为刀具局部 x=0、y/z 有限矩形，返回当前刀面与粒子域的交集。半尺寸以米计，面积以 m² 计；累计扫掠切面和永久历史在自然事件接入时处理 |
-| E5 参考坐标与精确裁剪 | 双精度几何 | 参考 [CGAL 的精确判定与构造原则](https://www.cgal.org/exact.html)；本地用 Python `Fraction` 保存采样坐标及裁剪交点，半平面符号和有向面积在有理数中计算，Warp 保存 float64 结果并执行解析 VJP。`ReferenceCoordinates.sampled` 从同一采样索引、扰动和底板反射生成 X_exact，原粒子位置与网格权重保持原值。令 δX=X_exact−X_head，参考偏移为 `u=F⁻¹(c+R e−x)−δX`，积分位置为 `X_head+δX+u`；归一化四元数旋转通过 q 的模平方表示。粒子状态、刀位/旋转/尺寸及后续交点均对同一公式求导；边界零面积保留单侧面积导数。`ReferenceSurface` 保存精确顶点及 float64 头部，直接编辑头部时同步其增量；快照保留精确构造和参考余量。初始扫掠退化与旧面共面筛选沿用条件数及浮点误差界，重复半平面裁剪使用精确符号。材料侧调用 `swept_edge(..., reference_coordinates=model.reference_coordinates)` |
-| E5 刀刃扫掠面 | 粒子侧码 | 相邻刀刃端点连成三角片参考 [DiSECt 的刀刃轨迹构面代码](https://github.com/NVlabs/DiSECt/blob/ff901650/cutting/cutting_sim.py#L289)。作者预先扫描整条刀路；`reference_surface.swept_edge` 在每个接受分段用两端各自的粒子状态按上一行公式计算参考偏移 `F_p⁻¹(c+R e−x_p)−δX_p`，裁剪到粒子参考域。刀刃空间细分数由刀具宽度和参考粒子域宽度确定，形变过程中保持固定；显式 `edge_segments` 用于独立空间/时间收敛。`ReferenceSurface.subtract` 用同一粒子域内共面的多边形差集扣除已有面积，非共面交线面积为零；旧面坐标保持原值。裁剪边界保留零面积片的有向面积表达式，使用原三角片法向定向；粒子盒下界闭合、上界开放，差集的保留侧含边界、移除侧不含边界，使移动边界导数只计一次。退化判定由 float64 舍入尺度、F⁻¹ 的条件数及边长计算。CPU 重建几何分支，Warp 对两端粒子状态、刀具位姿、尺寸和已有前沿求导；永久损伤状态已保留参考积分点，自然事件推进继续接入 |
-| E5 偏移切面网格迹 | 按参考粒子位置建立多场网格 | `reference_grid.build_trace` 参考 [Badia–Neiva–Verdugo 的离散延拓，式 7](https://arxiv.org/html/2201.06632v2#S4.SS1)及 [GridapEmbedded 81c26463 的根单元形函数与线性约束](https://github.com/gridap/GridapEmbedded.jl/blob/81c26463d3e4f8f4e4bd6527a283d686fea96e69/src/AgFEM/AgFEMSpaces.jl#L32)。原方法按切域聚合、选择内部根单元；本地实现对缺失的侧码节点选最近的有相容侧粒子支撑单元，距离相同按单元字典序选择，以三线性形函数在缺失节点处的值作延拓系数。部分分侧的场选择参考 [CRAMP 的 GetFieldForSurfaceParticle 与面运动插值，554c5c67](https://github.com/nairnj/nairn-mpm-fea/blob/554c5c67c87318e8e36f155c62cf7b879517fbec/NairnMPM/src/Nodes/NodalPointMPM.cpp#L1109)：CRAMP 按面点到节点连线跨越裂纹的情况选场，再用质量加权取值；这里沿用 BladeMaster 三进制侧码的相容关系，在每个物理节点最小化 `Σ相容场 m_s‖u−v_s‖²/2`，得到同节点相容场的质量加权均值。参考质量及侧码固定时，这是常系数映射；随后进行三线性插值，保留多项式重现。系数合并后由 Warp 计算积分点双侧值和空间梯度；分离映射为两侧差，面形变映射为两侧梯度均值的参考切向投影，力使用同一映射的转置。选边/选根为离散操作，每次前向和差分重新建立。随机采样粒子的有限体积域可伸出名义参考网格；这些积分点在最近边界单元的多项式上取值，保留实际参考坐标及其导数。体积分沿用 TLMPM 粒子求积；闭合分侧场与未切场的离散误差随网格和切面相位核对，数字见 RESULTS |
-| E5 参考仿射速度传递 | 粒子常值速度的 PIC/FLIP 传递 | `reference_affine.build_transfer` 采用 [APIC 的局部仿射表示及动量传递，式 79–84](https://arxiv.org/html/1603.06188#S5.SS5)。论文在当前构形更新速度矩并重映射；这里固定 TLMPM 参考坐标，令 Dₚ=ΣᵢNᵢₚrᵢₚrᵢₚᵀ=LₚLₚᵀ，以 zₚ=[vₚ, columns(AₚLₚ)] 保存速度，Aₚ=dv/dX，动能为 mₚ‖zₚ‖²/2。P 将 z 质量加权传到网格并执行原相容场交换；位置、体形变和界面速度分别使用 WP、∇NP、B_grid P/G_grid P，力使用对应映射的转置以配对虚功。相容动量先求和再除总质量，不相容场保留自身速度，代数等价于式 8。完全相容的同节点场共享同一映射行；`reference_trace(..., equivalent_slots=transfer.equivalent_slots)` 合并这些场的可见质量再归一化，结构上保持相同双侧迹的差为零。映射和 Cholesky 分解由 NumPy 构建，切面映射组合、速度编码及 VJP 由 Warp 执行；参考粒子和整数侧码分支固定时 P 为常量。分阶段推进以广义速度作为惯性自由度，塑性返回和固定率传递耗散已接入；刀/板接触与自然事件联合推进继续完成 |
-| E5 固定率传递耗散 | 按参考时间换算 PIC/FLIP 混合率 | 在 APIC 质量内积中，本地定义 `L=I−PᵀM_grid P/m`、`η=(1−α)/Δt_ref`，按 `z(t)=exp(−ηtL)z(0)` 推进数值耗散；仿射重现子空间保持不变，耗散计为两端完整动能之差。此连续率构造沿用当前每单位时间的 PIC 混合率，指数更新为本地推导。作用量使用 [SciPy expm_multiply](https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.expm_multiply.html) 对 P/Pᵀ 的矩阵乘法计算；状态 VJP 用相同的自伴随指数算子，时长/速率 VJP 用 `−ηLz` / `−tLz`。与材料的组合采用 [Strang 对称半步](https://epubs.siam.org/doi/10.1137/0705041)：半步耗散、完整材料/内聚步、半步耗散。`reference_damping.decay` 返回速度矩及带符号粒子动能差，`cohesive_stages.advance_affine` 返回两半步之和 `damping_energy`；两半步时长保留完整反向链。零时长或零速率的前向为恒等，参数导数仍按同一指数求导。默认参考时长取 `flip_reference_dt`，为零时取配置步长，事件分段不改变该参考值。相容参考映射在当前拓扑分支内固定；对非均匀闭合运动，耗散与闭合速度约束不交换，当前分裂在步末留下 O(Δt) 速度残差。第 6 项联合处理闭合约束与耗散，并连接接触及自然事件。 |
-| E5 闭合约束耗散原型 | 原 PIC/FLIP 混合 | 对固定秩闭合速度映射 B，本地用 Π=I−B⁺B 将上述生成算子换为 ΠLΠ；保持闭合速度子空间与非负二次耗散。指数映射的约束导数使用 Fréchet 积分及固定秩投影导数，数值对照 [Al-Mohy–Higham / SciPy expm_frechet](https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.expm_frechet.html)。原型 `damping_constrained_probe.py` 验证正向能量，`constrained_damping_adjoint.py` 用 4/8 点 Gauss 积分计算指数作用量的伴随并检查独立/重复约束。该固定闭合投影在 κ→0⁺ 的连续性检查失败，后续核对耗散与内聚反力的联合隐式方程。 |
-| E5 联合推进精度对照 | 原 PIC/FLIP 混合与显式界面推进 | 在 ARS 阶段中，本地将固定率耗散并入惯性算子 `D=I+τηL`，在原广义速度坐标求内聚与压缩约束。`precision_stage.py` / `precision_rollout.py` 用 [mpmath 高精度线性求解](https://www.mpmath.org/doc/current/matrices.html)构造 35/55 位参考解；惯性方程采用双精度分解与高精度残差细化，接触 KKT 系统直接高精度求解。方向导数由驻点方程 `J dy=−dR` 及极旋转 Sylvester 方程计算。两阶段参考覆盖弹性卸载，沿当前活跃集合求解并逐次检查压缩乘子、非活跃间隙和卸载不等式。另以 55 位重算通用近端分支的残差及 Jacobian，在独立约束算例核对闭合、加载、混合历史、卸载和完全断裂；局部前向结果连接现有 Warp 隐式反向；基底构造、残差与 Jacobian 的两分量版本已覆盖这些独立约束对照，线性修正使用非奇异 LU 预条件。阶段传递精度对照为原广义速度的线性更新保留 55 位副本，材料使用 H=F−I 的弹性增量表达式；遇活跃塑性报错。原型源码与报告存于 runs。矩阵作用量对照采用 Ogita–Rump–Oishi 的 TwoSum/TwoProduct，线性修正参考 [Carson–Higham 的多精度 GMRES 迭代细化](https://eprints.maths.manchester.ac.uk/2629/1/cahi18.pdf)；P/Pᵀ 补偿作用量配合双精度 CG 求惯性逆，约化 Jacobian 用双精度 LU 预条件和补偿残差。冗余约束原型参考 [Lu–Gu–Wang 的非单调正则化半光滑 Newton 思路](https://www.global-sci.com/nmtma/article/view/13990)：以逐次递减的反力正则项形成初值，最终按原未正则化残差及 64ε² 状态尺度核对，线性修正采用 70 位求解。面积加权最小范数反力按当前近端分支投影，投影后复核原平衡及强度／压缩条件。材料势、强度、损伤历史与接触条件均保留；通用数值接口、完整塑性及自然事件接入继续完成。 |
-| E5 近端坐标平衡原型 | 原显式释放更新 | [Petrie–Hirmand–Papoulia](https://arxiv.org/html/2202.06359) 将 ADMM 分裂尺度作为数值求解参数；本地两分量原型依据初值位移后的实际间隙与永久历史缩放近端坐标，并相应变换反力坐标和动量方程；开口估计为零时，仍保留该几何间隙的尺度。ADMM 初值使用二次子问题的位移迭代；缩放解转回原坐标后继续 Newton 修正，仍按原方程的 64ε² 状态尺度验收。前向本构输出与隐式反向共用缩放后的近端参数。非单调试步参考 [Ipopt watchdog 的接受／回退结构](https://github.com/coin-or/Ipopt/blob/master/doc/options.dox)，本地最多试 8 次。`_cohesive_globalization` 的残差平方和搜索采用 Armijo 与弱 Wolfe 条件，参考 [Lewis–Overton 的非光滑线搜索分析](https://cs.nyu.edu/overton/papers/pdffiles/nsoquasi.pdf)，用两分量区间坐标处理分支切换处的斜率跳变；正则化子问题的内层精度按被正则化的反力块取尺度。线性修正使用两分量 LU 和补偿残差；70/80 位解用于独立对照。`differentiable_cohesive._implicit_pullback` 用 [LAPACK DGEEQU](https://netlib.org/lapack/explore-html/d5/d8a/group__geequ_ga7238812c5c26fc2fbe8bbbc22b6ee885.html) 的行列缩放，保留伴随变量余量，分开累加动量／开口残差的 VJP；`_cohesive_momentum.momentum_residual` 在 CPU 对界面力、面应力及转置映射做补偿收缩；`_compensated_linalg` 保留两分量 LU、四分量残差细化和幂次缩放，线性误差界含最小次正规数项。重复约束采用参考 [LAPACK 完全正交分解](https://netlib.org/lapack/explore-html/dc/d8b/group__gelsy_ga6d1d46ead18df76e993cd4eda6dc1bbb.html) 的两分量最小范数求解，本地用带列主元的双次重正交化构造左右基底；最终仍核对原完整伴随残差。此原型保持材料势、强度、损伤历史和压缩约束，正在接入完整塑性与接触阶段。 |
-| E5 联合惯性接口 | 原 PIC/FLIP 混合与显式界面推进 | `reference_inertia.ReferenceInertia` 将上述 D 接入 `solve`、`solve_force` 和 `solve_geometry`；P 在当前参考拓扑分支内固定。CPU 通过 P/Pᵀ 作用量及 [SciPy 共轭梯度](https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.cg.html)求 D⁻¹，用两分量残差最多细化四次，不构造完整 D；最终残差按 64ε² 的右端尺度核对，ε 为 float64 机器精度。约化位移空间为 D⁻¹ 作用于 B/G 的行空间，动量块为 QᵀDQ；闭合反力满足 D u 与积分力平衡。反向对同一动量残差求导，包含时长和耗散率，并用 D⁻¹ 修正约化空间外的伴随。`solve_array` 的 VJP 为 db=D⁻¹a、dτ=−ηaᵀD⁻¹Lz、dη=−τaᵀD⁻¹Lz，z=D⁻¹b；`solve_state` 保留两分量状态，`solve_array` 返回其 float64 高位；正向、伴随逆作用及参数收缩共用补偿作用量。零时长/零速率保留这些参数导数。局部内聚律、原始映射及最终非线性/伴随残差标准沿用原值；两阶段联合推进继续接入。 |
-| E5 多刀界面场选择 | 粒子三进制侧码 | 参考 [CRAMP 的有限裂纹可见性选场，554c5c67](https://github.com/nairnj/nairn-mpm-fea/blob/554c5c67c87318e8e36f155c62cf7b879517fbec/NairnMPM/src/Nodes/NodalPointMPM.cpp#L1165)。作者检查面点到节点的连线并选择裂纹速度场；本地保留 BladeMaster 的粒子侧码，在 `ReferenceVisibility` 中检查积分点到参考粒子的线段是否穿过其他切口的实际三角片，再以可见支撑质量 `m_qns=Σ_p visible(q,p) compatible(p,s) m_p N_pn` 归一化同节点场值。自身切口用出生时的正法向侧码 1/2；零侧码保留相容关系。可见性只改变界面迹的权重，粒子质量及动力学网格质量保持原值；缺失节点沿用兼容支撑单元的多项式延拓，内力仍通过同一迹的转置分配。线段开区间严格穿面才阻断，三角片边界包含，端点触面/共面连线相容；精确参考顶点和有理数判定保留窄片。每次前向或差分重建几何分支。`CohesiveHistory.append(..., tool_rotation=...)` 在出生分段末端以 `s=n_ref·F_end⁻¹R_end e_x` 保存正法向侧码：s>0 为 2，s<0 为 1；F_end 同时定义新点的出生面形变，R_end 的局部 x 轴是刀的正侧。符号用有理数运算核对，s=0 时该扫掠面没有区分刀的两侧，返回错误。该坐标传输为本地实现；参考法向及几何仍参与连续求导，侧码在每次前向重新生成。`reference_trace` 和 `advance` 默认读取永久朝向，快照同时保存它；未给刀姿态的解析构造仍需显式侧码，自然事件物理入口继续接入 |
-| E5 可见性判定调度 | 逐对精确算术 | 参考 [CGAL 的区间筛选精确判定](https://doc.cgal.org/Manual/3.5/doc_html/cgal_manual/Kernel_23_ref/Class_Filtered_kernel.html)。本地 `_interval_predicates` 用 `nextafter` 对每次加减乘向外扩张区间，批量核对线段两端和平面、三条三角边的有向体积符号。区间能够证明相交或不相交时直接采用该结果；含零、退化及溢出项由原有 Fraction 判定求解。输入区间包含精确构造余量。相交定义、材料权重和 VJP 保持同一公式 |
-| E5 闭合网格约束 | 兼容侧码按式 8 混合网格动量 | 本地约束消元：B=√A Q、S=B M⁻¹Bᵀ，动量投影 P=I−BᵀS⁺B M⁻¹。`grid_constraints.project_velocity` 用 Q M⁻¹ᐟ² 的 SVD 实现同一质量内积投影，反向解固定秩 KKT 系统；冗余约束使用最小范数反力。闭合原型同时投影旧动量、力增量和 MUSL 重映射，复现平面完整闭合时的未切场。`cohesive_grid_update.advance_material` 的首阶 MUSL 推进只对零损伤历史的旧速度及步末场施加完整约束，实际力增量由内聚平衡处理，位移按 √M 白化；牵引取实际力增量的反力，初始闭合速度满足 Qv=0。自然切口、永久历史和 RK2 的接入继续进行 |
-| E5 参考面与积分原型 | 几何侧码与粒子接触面积 | 自然参考面映射参考 [Crook–Homel，式 18–22](https://www.osti.gov/servlets/purl/3003988)及作者 [GEOS `czUpdate` 分支 e068c207 的参考状态保存、位移与力映射](https://github.com/GEOS-DEV/GEOS/blob/e068c20772fe157428b5509c363146f0efd2e8ac/src/coreComponents/physicsSolvers/solidMechanics/SolidMechanicsMPM.cpp#L10404)。作者使用 CPDI 和预设内聚界面，本仓库计划在自然切割事件插入 TLMPM 参考面。积分对照参考 [Schellekens–de Borst 的线性界面节点面积积分](https://doi.org/10.1002/nme.1620360104)：`extrinsic_nodal_surface.py` 从现有迹基函数 N 计算 Aₙ=Σq A_q N_qn，开口使用节点迹，面梯度使用面积加权平均，力使用同一映射的转置。面梯度平均为本地推导；16 个 Gauss 点与 9 个节点代表两种离散，分别检查能量、旋转和差分。主线切割尚使用原释放公式 |
-| 接触事件导数对照 | 步末处理接触 | [Zhong 等 TOI-Velocity](https://proceedings.mlr.press/v211/zhong23a.html) 在刚体碰撞时刻重算法向和碰前速度，同时修正碰后位置；已核对作者 [PyTorch 实现](https://github.com/DesmondZhong/diff_sim_improve_grads/blob/31a78e2e2c94bb7607057caef966825c725ee946/single_collision/single_torch.py#L18)。本仓库 E1 对自然几何事件分段并传播时长导数；E5 内聚原型的界面闭合仍用步末联合约束。接入主线时按同一事件时刻核对界面法向、材料状态、接触历史及速度更新 |
-| 几何分侧积分 | 子步更新侧码 | `GeometryEventContact` 用 RK2 二次位置延拓和三个时刻的几何间隙生成入区候选；旋转查询按角跨度 ≤π/2 分段，在实际材料推进上验证括区、求根并切分，按事件时间求导；使用连续的刀后 `2Δx` 区域，原步末查询的 `max(相对推进速度×Δt,0)` 回看扩展由步内穿越查询替代 |
-| 耦合区间内的刀具 | 位姿与速度保持不变 | 默认相同；`tool_substep='predict'` 用 6×6 移动性矩阵逐子步更新刀速并推进位姿 |
-| 接触检测 | 未写明 | 默认用设备端条件重建邻居表；`hash` 每子步重建 Warp HashGrid，`all` 全对检测（每粒子 64 线程），按完整搜索核对接触集合 |
-| 切割次数 | 不限 | int64 三进制码，上限由 \(3^{k+1}\cdot\)节点数 \(< 2^{63}\) 决定（香蕉 6 mm 网格 33 刀，3 mm 31 刀，2 mm 30 刀） |
-| E5 反力约束选择原型 | 刃向冲量与释放标志 | 参考 [Ali–Wong–Kolter 的半光滑投影方程方法](https://proceedings.mlr.press/v70/ali17a.html)。本地原型对面积加权最小压力问题的对偶方程 `D projection_K(Dᵀλ)=D z_old` 做半光滑 Newton，K 使用现有压缩与强度约束；解析投影的 Jacobian 配合 Armijo 搜索，等式与强度残差按现有两分量运算的 64ε² 尺度核对。前向求解保存本次近端约束分支，输出 VJP 读取该分支及补偿后的几何；参数扰动重新求解。输入几何的普通浮点值和保留余量的值分别与高精度参考核对，相关间隙在舍入后可选择不同接触集合。原型源码与报告存于 runs，联合接口继续验收 |
-| 香蕉几何 | 实物扫描 | DexLab 合成 120 mm 香蕉 |
-| 刀具 | 未公开 | 80×40×1 mm 楔形，5 mm 刃口斜面 |
-| 地面 | 刚性支撑 | 粒子：砧板顶面矩形内的罚函数接触。刀：Franka 由 MuJoCo 实体盒碰撞；其余刀（导向、位姿伺服、自由落体）共用 `tool.step` 的同一个刀顶点—砧板接触（速度约束 + 库仑摩擦），三者使用同一砧板矩形 |
-| 控制器与机器人接口 | 外部刚体系统接收反力/力矩，展示 Franka 任务；控制器和刚体引擎未给出 | 自由刀与位姿伺服使用本地刚体积分；Franka 使用 MuJoCo，控制器采用 libfranka 笛卡尔阻抗示例公式或 SERL++ 公式的本地移植（MuJoCo 四元数替代 scipy；测试对照固定版本源码） |
-| 连续切割任务 | 论文演示多刀切割 | `CutSequence` 指定切点、速度和推开距离；按实测刀位到达底部触发推开，切割事件由下刀阶段启用 |
-| Franka 中片抬升 | Fig. 4 两次径向切割后抬起中片 | 复用 Fig. 4 圆柱与材料；机器人耦合步长 1 ms，接触刚度以场景原来的 2 ms 为参考。100×80×1 mm、0.1 kg 刀具通过 115 mm 偏置支架安装，旋转刚度 80 Nm/rad，保留刀—板碰撞。刀面转平后沿对角方向托住扇形块，目标抬高 40 mm；实测位姿到达后才进入下一阶段 |
-| 刃前带宽 \(b_\text{lead}\) | 定义于式 4，未给数值 | 2×刀接触距离 `blade_offset`：默认 3 mm 香蕉为 1.5 mm，6 mm 香蕉为 3.0 mm；显式刀距可单独改变 |
-| 刃压到砧板时的底层侧标签 | 只按切割带（式 6） | `contact.assign` 另外给刃高度 ≤ \(R_p\) 时刃两侧、中心在刃上方 \(R_p\) 以内且在砧板矩形内的底层粒子打侧标签：刀倾斜时这些粒子在刃平面以下，切割带永远不包含它们，块切不透（Fig. 3） |
-| 砧板罚因子 | 与刀共用 \(s_n\) | 单独的 `board_normal_scale`；Fig. 3/4/7/8 在论文步长下刀与砧板都取 \(s_n\) = 1（0.1 时每步穿透约 \(N g\Delta t^2/s_n\)，底层沉入砧板），香蕉仍为 0.1 |
-| 扰动采样 | 未写明 | 每轴 ±Δx/4 均匀扰动后，把低于 \(R_p\) = Δx/4 的粒子按 \(z \to R_p + |z - R_p|\) 反射到砧板以上（`geometry.points`）；否则初始穿透的恢复冲量把整块抬起（修正前 6 mm 香蕉最低粒子弹起 8.4 mm，3 mm 1.2 mm） |
-| 场景设置 | Franka 操作 | Fig. 4/7/8 用规定刀路（`scenarios.py`，非 Franka）；Fig. 8 每刀后把切片推倒；Fig. 3 刀绕刀厚轴倾斜（论文只给角度）；Fig. 4/7/8 的 \(G_c\) = 10 J/m² 为本地取值；导向刀驱动 1000 N/m、20 N·s/m（论文材料预设，DexLab 250 N/m）；摩擦默认 0.3 / 0.2（DexLab），论文香蕉 0.2 / 0.2。详见 RESULTS |
-| Fig. 5 独立对照 | 两刀三块、0.5 mm 刀厚、相同采样与弹性参数；内部四面体估计中块体积 | 默认 60×30×30 mm 方块、E=6 kPa、ν=0.4、ρ=1100、5 mm 网格、0.25 ms 步长；退刀后实际左块速度 −30 mm/s，其余速度保持。每刀完全插入时冻结材料成员，第二刀细分余块，并核对机械连通块。切口指标为粒子列开口增量；主要体积指标为内部四面体及其覆盖率，另用同块 26 邻居重建 Jacobian 积分完整材料单元，秩亏、跨切口和翻转时输出无效。最新共同实验将步长改为 0.125 ms、刀半长改为 60 mm，见 RESULTS |
-| CRESSim-MPM 对照实现 | 论文使用 CRESSim-MPM | 编译原版 `09aa5009` 的 `CpuMlsMpmSolver`。共旋分支缺少 `break`；`--fix-corotated-dispatch` 在独立头文件副本中补此行，保留原版模式。质量单位换算固定网格阈值 1e-4，计算域余量可配置；每子步检查完整二次 B 样条支撑，粒子中心安全区为原点 +2.5h 至原点 +(N−3.5)h。当前刀面恰落网格节点时，侧别和结果对网格原点敏感 |
-| TopoCut 基线损伤 | 按体积比阈值 | 先在重力下静置（默认 1 s）再开启损伤，\(J\) 相对静置后的构形计（`MlsSolver.start_damage`）：软材料（10 kPa）自重压缩本身会越过阈值，静置算作损伤时 Fig. 4 有 23% 粒子在刀动之前就损伤 |
-| 已与论文核对 | — | ① 自接触：论文 §III-E"For self-contact, nearby reference neighbors are excluded … Pairs with conflicting cut-side codes are exempt"，没有给距离。代码对切割码兼容且参考距离 \(< 2\Delta x\) 的粒子对不算接触（`contact.pair_at`）：三线性权重下两粒子共享网格节点的条件是每轴参考距离 \(< 2\Delta x\)，这里用欧氏距离，对角方向共享节点的少数粒子对仍是接触候选。② 式 5：\(d_k\) 是"front–back direction … obtained by transforming their fixed tool-frame counterparts using the current tool pose"，即刀坐标系里固定的方向，代码取刀的 −z 轴（`resist_cut`、`assign`），与论文一致；\(u_{c,p}\) 默认用相对速度（`cut_work="relative"`），也与论文一致。论文的 \(u_\text{min}\) 没有给值，代码取 0（`advance > 0`） |
+| 自动微分 | BladeMaster 提供正向 TLMPM 与刚体耦合 | Warp 时间展开、专用材料 VJP 与检查点；参考 [DiffTaichi](https://github.com/taichi-dev/difftaichi/blob/master/examples/diffmpm.py)、[Warp checkpoint](https://github.com/NVIDIA/warp/blob/main/warp/examples/optim/example_fluid_checkpoint.py)；TLMPM 与事件链在本仓库实现 |
+| 塑性 | BladeMaster 给出共旋弹性与 von Mises 型塑性 | 共旋储能一致的等容变分返回与隐式 VJP；替代应力/能量不一致的返回，解析与独立最小化核对在 `test_constitutive_adjoint.py`、`test_plasticity.py` |
+| 时间积分 | BladeMaster 显式 MUSL | 自然事件使用中点 RK2；内聚候选使用显式材料/隐式界面 ARS 阶段，分别处理事件时间与刚性约束；[RK2](https://petsc.org/release/manualpages/TS/TSRK2B/)、[IMEX RK](https://doi.org/10.1016/S0168-9274(97)00056-1) |
+| 事件导数 | 原正向在子步更新标签/阻力 | 在实际离散流上定位事件并求分段导数；参考 [DiffTaichi TOI](https://github.com/taichi-dev/difftaichi/blob/master/examples/mass_spring.py)、[Saltation matrices](https://arxiv.org/abs/2306.06862) |
+| 接触与历史 | 原文方向冲量和切向历史 | 固定物理刚度的步长对照、力与历史联合返回、功共轭速度；依据本构离散功恒等式，本地实现于 `friction.py` 与 `energy.py` |
+| PIC 时间尺度 | 固定每步 PIC/FLIP 混合 | 固定传递残差耗散率用于时间细化；参考 [NairnMPM PIC damping](https://osupdocs.forestry.oregonstate.edu/index.php?title=Damping_Options#PIC_Damping) |
+| 断裂模型 | 方向接触功控制阻力，几何侧码独立分离 | 内聚候选引入 σ、G_c 和永久最大开口，针对原释放律的闭环功问题；[Petrie–Hirmand–Papoulia](https://arxiv.org/html/2202.06359) 使用准静态、小应变 FEM 与单元界面，本地扩展至动态 TLMPM、移动面和在线切面；方法选择见 DIFFERENTIABLE |
+| 移动界面功 | 固定或小变形界面的内聚关系 | 本地由平均面法向推导开口力与面转动共轭力，参考 [Reinoso–Paggi](https://arxiv.org/abs/1507.05168) 的大变形虚功 |
+| 隐式伴随 | 收敛方程的导数 | 本地求同一残差/KKT 的转置方程；参考 [OptNet](https://proceedings.mlr.press/v70/amos17a.html)、[DiffPD 反向实现](https://github.com/mit-gfx/diff_pd_public/blob/1594aa07a6983ff9a9c107e9f0d83d07fa99c8d1/cpp/core/src/fem/deformable_newton_backward.cpp)、[Nimble 约束梯度](https://github.com/keenon/nimblephysics/blob/c405b056fc35068027e03e0c384e84e12870b475/dart/neural/ConstrainedGroupGradientMatrices.cpp#L210) 的约束与伪逆导数 |
+| 数值精度 | 原 GPU 正向使用普通浮点状态 | 梯度对照采用 float64；内聚候选含 CPU 两分量算术、残差细化与独立高精度参考，依据 [Ogita–Rump–Oishi](https://www.tuhh.de/ti3/paper/rump/OgRuOi05.pdf)；生产精度/代价在后续方法决策中核对 |
+| 非线性求根与冗余约束 | 内聚 ADMM 初值及约束平衡 | 本地残差求根、坐标缩放和最小范数反力；依据 [Lewis–Overton 弱 Wolfe 搜索](https://cs.nyu.edu/overton/papers/pdffiles/nsoquasi.pdf)、[LAPACK DGEEQUB](https://www.netlib.org/lapack/explore-html/df/d0a/group__geequb_gaef3a3015d58122ab3d4d018422b93b90.html)、[KINSOL](https://sundials.readthedocs.io/en/v7.7.0/kinsol/Mathematics_link.html)、[Golub–Pereyra 固定秩伪逆导数](https://epubs.siam.org/doi/10.1137/0710036)；候选最终检查原方程和相同活跃约束 |
+| 内聚与重新接触 | BladeMaster 按侧码选择粒子对接触 | 远端候选分开内聚牵引与普通法向接触，避免重复承载；参考 [GEOS 接触分支](https://github.com/GEOS-DEV/GEOS/blob/e068c20772fe157428b5509c363146f0efd2e8ac/src/coreComponents/physicsSolvers/solidMechanics/SolidMechanicsMPM.cpp#L13812)、[MOOSE](https://mooseframework.inl.gov/source/userobjects/BilinearMixedModeCohesiveZoneModel.html)、[Collins-Craft–Acary 作者代码](https://zenodo.org/records/16911870)；历史重排与事件分段为本地实现 |
+| 刀具查询 | 本地箱形/楔形解析几何 | 远端联合求解保留有限刀具几何链式导数；参考 [Newton 碰撞几何](https://github.com/newton-physics/newton/blob/f121272e7af8795d94994b3b7478f990ffd02c27/newton/_src/geometry/collision_primitive.py) |
+| 连续损伤与软梯度对照 | [DiSECt](https://diff-cutting-sim.github.io/) 沿预先给定切面软化；[DiffMJX/CFD](https://arxiv.org/html/2506.14186v2) 使用接触代理梯度 | 作为方法比较来源；正式刀路任务仍每次生成自然切口，导数定义分别记录 |
+| 网格刀面约束 | BladeMaster 使用粒子接触冲量 | `hold` 刀位下增加相容网格速度约束，防止传递后穿刀；将反力/矩返回刚体接口 |
+| 切割标签与采样 | 论文给出切割带及几何分侧 | `contact.assign` 增加触板底层标签；扰动采样将初始粒子反射至砧板上方；用于处理底层残连及初始穿透，网格/刀路核对见 TODO |
+| 场景与控制 | 论文扫描物体与机器人任务 | 香蕉沿用 DexLab 合成几何；规定刀路、自由刀与本地伺服，Franka 使用 MuJoCo 和 libfranka/SERL 形式控制器；尺寸和参数见 PARAMETERS |
+| 黏弹性 | BladeMaster 有可选牛顿黏性 | Maxwell 为本地可选扩展、默认关闭；正向内部状态 `Fv`，参数为 `maxwell_tau` 与 `maxwell_fraction` |

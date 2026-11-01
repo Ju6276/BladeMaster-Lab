@@ -116,7 +116,7 @@ Fig. 4 形式的 Franka 中片抬升：两次径向切割，转平刀具，插�
 | `blademaster_warp.paper_impact` | 论文 Fig. 6 三把自由刀（`Config.tool_count`），默认按项目页视频平放、刀尖朝前射入端面（`--launch end`，20 g），块先在重力下求静平衡：刀被减速停住，初速越大越深；`--launch side` 从前侧面射入，`--launch top` 竖直射入 |
 | `blademaster_warp.scenarios` | 论文 Fig. 4/7/8 的切割历史场景（规定刀路）；`fig4`（`--single-field` 为单场对照）、`fig7-shallow`/`fig7-deep`、`fig8` |
 | `blademaster_warp.convergence` | 步长、耦合间隔、分辨率扫描 |
-| `blademaster_warp.run`，`blademaster_warp.teleop` | 不带机械臂的导向刀与刀遥操作；刀—砧板接触与 Franka 路径相同，由 `tool.step` 处理 |
+| `blademaster_warp.run`，`blademaster_warp.teleop` | 不带机械臂的导向刀与刀遥操作；独立刀由 `tool.step` 处理刀—板接触，Franka 使用 MuJoCo 刀—板碰撞 |
 | `scripts/probe_substep.py` | 单子步耗时测量 |
 | `scripts/check_cut_release.py` | Franka 以 60 mm/s 输入切到底、保持、退刀，比较实际片块平移、反力和动能；如 `python -m scripts.check_cut_release --surface --output runs/release-6mm`；`--seed 1 --blade-contact-radius .0005` 重现旧设置 |
 | `scripts/topocut_compare.py` | 同一刀路下 BladeMaster 与 TopoCut 式单场 MLS-MPM（`mlsmpm.py` + `topocut_topology.py`）对比，谱奖励评价；`scripts/render_compare.py` 把结果渲染成三栏对比视频 |
@@ -135,7 +135,7 @@ Fig. 4 形式的 Franka 中片抬升：两次径向切割，转平刀具，插�
 PYTHONPATH=. .venv/bin/python -m pytest tests -q
 ```
 
-测试只依赖本仓库：网格交换、刀距离、摩擦、粒子传输按论文公式写出 FP64 参考，再加动量守恒和刚体平移等解析检查。需要 CUDA。
+测试包含 FP64 公式参考、解析力学、自然差分和检查点对照，需要 CUDA。CRESSim 对照测试另需固定版本的上游构建；未配置时相应 8 项跳过。运行环境和候选位置见 [HANDOFF](HANDOFF.md)。
 
 ## 代码结构
 
@@ -155,3 +155,55 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 输出 `surface_closeup.png`，依赖 VTK 和 Pillow（同离线渲染）。
 
 第三方来源与许可见 [NOTICE.md](../NOTICE.md)。贡献规范见 [AGENTS.md](../AGENTS.md)。
+
+## 可微分命令
+
+当前模型与阶段状态见 [DIFFERENTIABLE](DIFFERENTIABLE.md)。以下为现有入口；历史验收使用 RESULTS 指定的提交和参数。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_validate --output runs/diff_validate
+PYTHONPATH=. .venv/bin/python -m scripts.diff_horizon --output runs/diff_horizon
+PYTHONPATH=. .venv/bin/python -m scripts.diff_contact_scan --output runs/diff_contact_scan
+PYTHONPATH=. .venv/bin/python -m scripts.diff_contact_horizon --output runs/diff_contact_horizon
+PYTHONPATH=. .venv/bin/python -m scripts.diff_optimize --output runs/diff_optimize
+```
+
+推压优化的默认任务为 6 mm、288 粒子、128 步、四段 x 向刀速，控制范围 0–0.2 m/s。目标由控制量 `[0.7,0.5,0.8,0.4]` 的正向生成；损失为位置 RMSE（以 1 mm 归一化）的平方，加 10 倍平均超限刀力平方。成功条件为位置 RMSE ≤0.05 mm、峰值刀力 ≤2 N。AD/FD/CMA-ES 使用相同五组初始化，每组 20 s；编译预热、目标生成与重放在预算外。`--segment-steps 32` 使用分段反向；`--controls 16 --steps 512 --spacing .004` 扩展控制量与时域。
+
+固定分支切割：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_validate --spacings .006 .004 \
+  --materials banana soft plastic --grid-constraint --ordered-transfers --precision float64 \
+  --reference-precision float64 --output runs/diff_cut_windows
+PYTHONPATH=. .venv/bin/python -m scripts.diff_cut_trajectory --duration 1.05 --backward --segment-steps 32 \
+  --ordered-transfers --precision float64 --reference-precision float64 --output runs/diff_cut_trajectory
+```
+
+完整刀路依次为下刀、退刀、移位、横推和再次退刀；控制量为初始 x、下刀行程和横推行程。`--comparison-video` 生成同相机原/可微求解器并排视频，`--render-only --playback-speed 1` 重绘正常速度。该入口重放记录的切割分支。
+
+自然切割与时间细化：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_validate --output runs/natural_cut --geometry event \
+  --from-initial --trajectory cut-withdraw-push --duration .24 --spacings .006 --adjoint checkpoint \
+  --segment-steps 16 32 128 --epsilons 1e-6 1e-7 --state-parameters initial_z_mm young_scale fracture_scale
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_refine --output runs/natural_refine --from-initial \
+  --trajectory cut-withdraw-push --duration .24 --spacings .006 .004 --dt-divisors 1 2 4 --adjoint checkpoint \
+  --segment-steps 32 --epsilons 1e-7
+PYTHONPATH=. .venv/bin/python -m scripts.diff_multicut_validate --output runs/natural_multicut \
+  --cases three-cuts-push --spacings .006 --dt .000015625 --flip-reference-dt .000015625 \
+  --segment-steps 32 127 --checkpoint-device cpu --epsilons 1e-6 1e-7
+```
+
+`--duration 1.05` 延长单刀任务至横推后退刀；`--cutting-energy 7` 或 `70` 激活释放。自然差分每次重建切口与接触，检查点保留连续及离散历史。与旧结果比较时，显式固定 dt、接触和 PIC 参考时间。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_energy_validate --output runs/energy_cut --shape banana \
+  --material banana --scenes rest press cut --duration .05 --dt-divisors 1 2 4 \
+  --cutting-energies 7 70 700 1400
+```
+
+该能量入口使用 `GeometryEventContact`。新内聚系统的模块调用和远端候选位置见 METHOD 与 HANDOFF。
+
+补充诊断与渲染入口：`scripts.surface_accuracy` 检查表面精度，`scripts.scene_surfaces` 导出论文场景表面，`scripts.fig3_freefall` 与 `scripts.fig4_compare` 生成场景对照，`scripts.render_compare` 渲染多方法对比。输出保存到 `runs/` 或用户指定目录。

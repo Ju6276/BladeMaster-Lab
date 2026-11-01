@@ -1,11 +1,8 @@
 # BladeMaster-Lab
 
-[BladeMaster](https://arxiv.org/html/2609.27342v2) 的 Warp/CUDA 实现：拓扑感知 TLMPM 切割、MuJoCo Franka 双向耦合、表面重建和 SpaceMouse 遥操作。
+[BladeMaster](https://arxiv.org/html/2609.27342v2) 的 Warp/CUDA 实现，包含 TLMPM 切割、持久侧标签、切面重新接触、MuJoCo Franka 耦合、表面显示和遥操作。
 
-- 香蕉三刀得到四块；6 mm 网格下含机器人、表面和录制为 **0.59× 实时**（RTX 4060，提交 `8fad2c5`）。
-- Fig. 4 中片抬升：多场 **37.7 mm**，单场最高 **4.3 mm**。
-- Fig. 3 静平衡起步：锋利刀到板后仍有角部连接；钝刀停在离板 **14.7 mm**。
-- 切割力尚有网格依赖：2.5 / 2 / 1.5 mm 网格的稳态力为 **0.818 / 0.625 / 0.453 N**。
+可微分主线已有材料、接触、固定分支和旧模型自然多刀的梯度结果；新内聚模型的完整自然切割接入、整体能量和优化验收待完成。当前整理仓库与计划，原持续目标暂停。状态与后续目标统一见 [可微分计划](docs/DIFFERENTIABLE.md)。
 
 ## 安装与测试
 
@@ -17,63 +14,32 @@ python3 -m venv .venv
 PYTHONPATH=. .venv/bin/python -m pytest tests -q
 ```
 
-## 在线运行
+## 运行
 
 ```bash
-.venv/bin/python -m blademaster_warp.franka_run --live \
-  --motion feedback --controller serl --material paper-banana --duration 12 \
-  --surface --surface-embedding cuda --surface-ccd cuda
+.venv/bin/python -m blademaster_warp.franka_run --live --motion feedback --controller serl \
+  --material paper-banana --duration 12 --surface --surface-embedding cuda --surface-ccd cuda
 ```
 
-打开 <http://127.0.0.1:8765>，点击“开始”。远程机器通过 SSH 转发端口：
+打开 <http://127.0.0.1:8765>。SpaceMouse、远程转发、论文场景和录制命令见 [运行指南](docs/RUNNING.md)。离线运行去掉 `--live`，加 `--output runs/<名称>`；`runs/` 不进 Git。
 
-```bash
-ssh -N -L 18765:127.0.0.1:8765 dong@100.70.97.92
-```
+## 可复用工具
 
-转发后打开 <http://127.0.0.1:18765>。SpaceMouse、材料选择、夹持方式和全部运行参数见 [运行指南](docs/RUNNING.md)。香蕉默认规则采样，6 mm 材料网格、62.5 μs 子步。
-
-## 记录与诊断
-
-离线运行去掉 `--live`，加 `--output runs/<名称>`；再加 `--record` 保存逐帧数据，使用 `python -m blademaster_warp.render_franka runs/<名称>` 渲染。
-
-| 入口 | 用途 |
+| 模块组 | 用途与入口 |
 |---|---|
-| `paper_freefall`、`paper_impact`、`scenarios` | 重力刀、多刀冲击、Fig. 4/7/8 刀路；模块前缀为 `blademaster_warp` |
-| `scripts.force_convergence`、`scripts.indentation`、`scripts.cut_force` | 网格与采样扫描、压入与松弛、切割力曲线 |
-| `scripts.fig5_compare`、`scripts.topocut_compare` | CRESSim-MPM 与 TopoCut 式基线对照 |
-| `scripts.diff_validate` | 可微弹性、检查点和刀/砧板接触的正向与梯度核对 |
-| `scripts.diff_horizon`、`scripts.diff_contact_horizon` | 弹性/含摩擦轨迹的完整保存与分段重算：梯度、耗时、显存 |
-| `scripts.diff_contact_scan`、`scripts.diff_optimize` | 接触切换导数、AD/FD/CMA-ES 推压刀路优化 |
-| `scripts.diff_contact_convergence` | 刀/板/粒子对弹性碰撞：解析状态和梯度、自然差分、步长与时间网格相位对照 |
-| `scripts.diff_cut_validate` | 香蕉切割窗口的塑性、多场及接触梯度；可选双精度原求解器正向对照 |
-| `scripts.diff_cut_trajectory` | 完整下刀、退刀、推块的分段反向；`--comparison-video` 同镜头比较原/可微求解器，`--playback-speed 1` 按真实时间播放 |
-| `scripts.diff_cut_events` | 自然切割分支的刀位、下刀深度和断裂能扫描；记录分侧、释放时刻、刀力和功 |
-| `scripts.diff_release_validate` | 香蕉释放窗口：自然梯度、分段反向、损伤功、步长与 PIC/FLIP 耗散对照 |
-| `scripts.diff_natural_validate` | 自然分侧、梯度、检查点和起终点材料能量；`--from-initial --trajectory cut-withdraw-push --duration 1.05` 从完整初态验证切割、退刀和推块 |
-| `scripts.diff_natural_refine` | 同初态、固定接触刚度与 PIC 耗散率的步长对照；`--adjoint checkpoint` 分段反向，避免保存完整 Tape；`--phases 0 .25 .5` 比较时间网格起点 |
-| `scripts.diff_multicut_validate` | 暂停续切、第二刀、交叉切口及三刀后推块；第一刀控制量到后续目标的自然差分与跨刀检查点核对 |
-| `scripts.diff_energy_validate` | 静置、压入和自然切割的逐段能量账本、G_c 扫描及固定物理参数的步长对照 |
-| `scripts.probe_substep`、`scripts.live_latency` | 材料子步分阶段计时、输入到 HTTP 状态帧延迟 |
-| `scripts.stress_teleop`、`scripts.stress_multi_tool`、`scripts.check_cut_release` | 会话与多刀压力测试、切透退刀检查 |
-| `scripts.surface_accuracy`、`scripts.surface_deformed`、`scripts.surface_observations` | 表面精度、自交与观测间隔检查 |
-| `scripts.scene_surfaces`、`scripts.surface_closeup`、`scripts.fig3_freefall`、`scripts.fig4_compare`、`scripts.render_compare` | 论文场景表面、录制近景及对比图/视频 |
-
-`report.json` 记录材料、机器人、表面与发布耗时；`runs/` 不进 Git。数值扫描使用干净提交，配置或版本变化时换输出目录。
-
-`blademaster_warp.differentiable_cohesive.solve` 提供移动内聚界面的全局平衡与隐式反向，`solve_force` 使用积分总力并支持零面积；`cohesive_geometry.InterfaceGeometry` 保存几何舍入余量和检查点，`reference_interface.reconstruct` 重建参考表面。`reference_cut.quadrature` 计算切面参考积分；自然扫掠使用 `reference_surface.swept_edge(..., reference_coordinates=model.reference_coordinates)` 保留参考坐标与裁剪精度。`reference_grid.build_trace` 构造任意切面位置的双侧网格映射。`grid_constraints.project_velocity` 提供闭合网格约束，`cohesive_grid_update.advance_material` 用积分总力连接首阶 MUSL 与内聚损伤，`cohesive_history.CohesiveHistory` 在追加切面时保留旧积分点、损伤和检查点状态。运行 `PYTHONPATH=. .venv/bin/python -m pytest tests/test_differentiable_cohesive.py tests/test_cohesive_force.py tests/test_reference_interface.py tests/test_reference_coordinates.py tests/test_reference_surface.py tests/test_reference_cut.py tests/test_reference_grid.py tests/test_grid_constraints.py tests/test_cohesive_grid_update.py tests/test_cohesive_history.py -q` 核对几何、内力、能量、运动、输入导数及检查点。自然切口接入进度见可微分计划。
-
-`CohesiveHistory.append(..., tool_rotation=...)` 保存切面出生朝向；`reference_trace` 用它和有限切面可见性选择多刀界面的双侧网格场，`advance(...)` 用于材料推进。对应检查为 `tests/test_reference_visibility.py` 和 `tests/test_cohesive_orientation.py`。
-
-`compensated_state.CompensatedArray` 保存状态舍入余量、线性增量和快照；界面响应的 `displacement_state` 将求解位移及其余量传给后续状态更新。`reference_inertia.ReferenceInertia.solve_state` 将余量传给惯性求解与界面运动。`reference_affine.build_transfer` 提供仿射速度及功配对映射；`cohesive_stages.AffineState` 分别保存平移速度和参考速度梯度，`CohesiveHistory.advance` 对该状态执行 ARS 分阶段推进。能量使用 `energy_snapshot(..., affine_transfer=transfer)` 计入仿射矩。`advance_affine` 按固定率组合传递耗散，`damping_energy` 返回其带符号逐粒子能量变化（J）。检查入口为 `tests/test_reference_affine.py`、`tests/test_reference_damping.py`、`tests/test_cohesive_stages.py`。
-
-`cohesive_impact.project_velocity` 处理闭合界面的无摩擦非弹性速度冲量；`normal_velocity_map` 包含面法向转动。解析碰撞、动量/耗散和输入导数检查为 `tests/test_cohesive_impact.py`。
+| 正向实验 | `blademaster_warp.paper_freefall`、`blademaster_warp.paper_impact`、`blademaster_warp.scenarios` |
+| 力与物理核对 | `scripts.force_convergence`、`scripts.indentation`、`scripts.cut_force` |
+| 材料/接触梯度 | `scripts.diff_validate`、`scripts.diff_horizon`、`scripts.diff_contact_scan`、`scripts.diff_contact_horizon`、`scripts.diff_contact_convergence` |
+| 推压优化 | `scripts.diff_optimize`：AD/FD/CMA-ES 对照 |
+| 固定分支切割 | `scripts.diff_cut_validate`、`scripts.diff_cut_trajectory`；后者支持同刀路并排视频 |
+| 自然事件切割 | `scripts.diff_cut_events`、`scripts.diff_release_validate`、`scripts.diff_natural_validate`、`scripts.diff_natural_refine`、`scripts.diff_multicut_validate` |
+| 自然轨迹能量 | `scripts.diff_energy_validate`：静置、压入、切割与阈值扫描 |
+| 对照/诊断/显示 | `scripts.fig5_compare`、`scripts.topocut_compare`、`scripts.probe_substep` 等，完整索引见运行指南 |
 
 ## 文档
 
-- [运行指南](docs/RUNNING.md)：遥操作、论文场景、录制与分析命令。
-- [实验结果](docs/RESULTS.md)、[剩余工作](TODO.md)：数字、提交与下一步。
-- [方法对照](docs/METHOD.md)、[参数来源](docs/PARAMETERS.md)：公式、参数和实现差异。
-- [可微分计划](docs/DIFFERENTIABLE.md)：当前主线、M1–M5 验收与轨迹优化对照。
-- [交接说明](docs/HANDOFF.md)、[研究计划](docs/PAPER_PLAN.md)：机器访问与研究方向。
-- [第三方来源](NOTICE.md)、[贡献规范](AGENTS.md)。
+- [当前计划](docs/DIFFERENTIABLE.md)、[待办](TODO.md)：目标、阶段和验收范围。
+- [实验结果](docs/RESULTS.md)：版本、命令、关键数字与失败项。
+- [方法](docs/METHOD.md)、[参数](docs/PARAMETERS.md)：实现、公式与来源。
+- [交接](docs/HANDOFF.md)：机器访问、候选源码和记录位置。
+- [第三方来源](NOTICE.md)、[工作规范](AGENTS.md)。

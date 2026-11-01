@@ -39,6 +39,15 @@ def test_event_time_and_state_derivatives(angle, omega, parameter, spacing, shap
                                          friction_update, integration, monkeypatch):
     monkeypatch.setattr(wp.config, 'verify_autograd_array_access', True)
     m, c, initial, history, tool = fixture(angle, omega, spacing, shape, young, seed, friction_update, integration)
+    original_locate = c.locate
+
+    def locate_inside(*args, **kwargs):
+        result = original_locate(*args, **kwargs)
+        residual = float(c.guard(result[1], result[4], args[8], args[9], args[10]).numpy()[0])
+        assert -result[5] <= residual <= 0.0
+        return result
+
+    monkeypatch.setattr(c, 'locate', locate_inside)
 
     def evaluate():
         state, h, force = c.step(initial, history, tool)

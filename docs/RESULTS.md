@@ -4,6 +4,14 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：几何事件终点的浮点分侧
+
+接触归并快照 `c20b3dc`、dirty=true，加编译候选与自然入口。`PYTHONPATH=runs/formal_natural_source:. python runs/root_side_probe.py`：首个根为 **0.00013838755389802664 s**，两个粒子的边界残差同为 **+1.7347235e-18 m**；下一浮点时刻的两残差均为 **−1.7347235e-18 m**。原停止条件接受外侧残差，使第二个粒子再次推进 **1.8797595e-18 s**。
+
+保持原位置容差并要求根位于进入侧。`PYTHONPATH=runs/root_inside_source:. python runs/root_inside_tests.py`：已有几何事件、自然差分及检查点 **86 passed / 61.58 s**，**1574** 次根均满足 `−tolerance <= residual <= 0`。相同进入侧断言在原实现的旋转刀具速度差分用例失败，残差 **+2.1684043e-18 m**；输入和梯度判据保持不变。
+
+`998c18b` 加进入侧修复，`python -m pytest tests -q`：**1686 passed、8 skipped、18 subtests passed / 793.59 s**。本地与 4090 源码/测试差异相同；记录 `runs/entered_root_full_20261101/`。
+
 ## 2026-11-01：固定主元顺序的线性代数编译
 
 RTX 4090 主机，`c20b3dc` 加 `perf/compensated-linear-20261101` 编译改动。`python runs/check_linear_equivalence.py`：24 组密集/三角矩阵、1/3/8/16 阶、二进制尺度 −400/0/400，LU 主值/余量、置换、解和残差逐项相同。主元顺序、补偿运算和残差停止条件保持不变。

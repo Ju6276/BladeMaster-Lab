@@ -16,11 +16,6 @@ def divide(numerator, denominator):
     return result
 
 
-def _assign(target, index, value):
-    value = Expansion.from_value(value)
-    target.high[index], target.low[index] = value.high, value.low
-
-
 def _norm(value):
     squared = (value * value).sum()
     result = Expansion(np.sqrt(squared.high))

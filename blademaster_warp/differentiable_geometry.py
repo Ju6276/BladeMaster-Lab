@@ -415,7 +415,8 @@ class GeometryEventContact(NaturalCutContact):
             at_event = self.pose(tool, time)
             value = self.guard(before, at_event, particle, kind, plane)
             residual = float(value.numpy()[0])
-            if abs(residual) <= tolerance:
+            # The returned state must satisfy the entered region inequalities.
+            if -tolerance <= residual <= 0.0:
                 region = m.zeros(1, float, False)
                 cfg = m.config
                 m.launch(region_residual, 1,

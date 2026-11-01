@@ -59,10 +59,18 @@ def blade_query(local: wp.vec3, half: wp.vec3, bevel: float):
                 axis = 1
             if margin[2] < margin[axis]:
                 axis = 2
-            normal[axis] = 1.0
+            sign = float(1.0)
             if local[axis] < 0.0:
-                normal[axis] = -1.0
-            closest[axis] = normal[axis] * half[axis]
+                sign = -1.0
+            if axis == 0:
+                normal = wp.vec3(sign, 0.0, 0.0)
+                closest = wp.vec3(sign * half[0], closest[1], closest[2])
+            elif axis == 1:
+                normal = wp.vec3(0.0, sign, 0.0)
+                closest = wp.vec3(closest[0], sign * half[1], closest[2])
+            else:
+                normal = wp.vec3(0.0, 0.0, sign)
+                closest = wp.vec3(closest[0], closest[1], sign * half[2])
             distance = -margin[axis]
     else:
         # Reflect into the positive x half: only bevel, side and top can be nearest.
@@ -100,14 +108,12 @@ def blade_query(local: wp.vec3, half: wp.vec3, bevel: float):
                 sign = float(1.0)
                 if local[1] < 0.0:
                     sign = -1.0
-                closest = local
-                closest[1] = sign * half[1]
+                closest = wp.vec3(local[0], sign * half[1], local[2])
                 normal = wp.vec3(0.0, sign, 0.0)
                 distance = -(half[1] - wp.abs(local[1]))
         else:
             if inside:
-                closest[0] = local[0]
-                closest[2] = local[2]
+                closest = wp.vec3(local[0], closest[1], local[2])
             delta = local - closest
             distance = wp.length(delta)
             normal = wp.vec3(out[0], 0.0, out[1])

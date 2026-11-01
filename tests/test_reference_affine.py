@@ -123,7 +123,7 @@ def test_cut_geometry_and_affine_velocity_gradients(spacing):
         trace = build_trace(m, grid, surface.points, surface.normals, np.tile([1, 2], (len(surface.area), 1)))
         B, G = transfer.compose_trace(trace)
         z = transfer.pack(velocity, gradient)
-        return surface.area, B, G, z
+        return surface.area, B.high, G.high, z
 
     def objective(outputs):
         area, B, G, z = [a.numpy() for a in outputs]
@@ -164,7 +164,7 @@ def test_empty_trace_and_shape_validation():
         separation_map=m.zeros((0, grid.count), float), frame_map=m.zeros((0, grid.count), wp.vec3)
     )
     B, G = transfer.compose_trace(trace)
-    assert B.shape == G.shape == (0, 4 * m.n)
+    assert B.high.shape == G.high.shape == (0, 4 * m.n)
     with pytest.raises(ValueError, match="matching float64"):
         transfer.pack(m.zeros(4 * m.n, wp.vec3), m.zeros(m.n, wp.mat33))
 
@@ -188,9 +188,10 @@ def test_shared_fields_have_exactly_zero_separation_and_cut_location_derivative(
             equivalent_slots=transfer.equivalent_slots,
         )
         separation, _ = transfer.compose_trace(trace)
-    np.testing.assert_array_equal(separation.numpy(), 0.0)
-    seed = m.array(np.random.default_rng(832).normal(size=separation.shape), float, False)
-    tape.backward(grads={separation: seed})
+    np.testing.assert_array_equal(separation.high.numpy(), 0.0)
+    np.testing.assert_array_equal(separation.low, 0.0)
+    seed = m.array(np.random.default_rng(832).normal(size=separation.high.shape), float, False)
+    tape.backward(grads={separation.high: seed})
     np.testing.assert_array_equal(points.grad.numpy(), 0.0)
     np.testing.assert_array_equal(normal.grad.numpy(), 0.0)
 

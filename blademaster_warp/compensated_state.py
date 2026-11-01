@@ -9,7 +9,7 @@ from ._compensated import Expansion
 
 
 def add_gradient(source, value):
-    if source.requires_grad:
+    if source.requires_grad and source.size:
         result = Expansion(source.grad.numpy()) + value
         source.grad.assign(result.numpy())
 
@@ -60,7 +60,7 @@ class CompensatedArray:
         base, speed, time = self.cpu(), rate.cpu(), duration.cpu()[0]
         result = self.from_cpu(base + factor * time * speed, dtype=self.high.dtype, device=self.high.device)
         tape = wp._src.context.runtime.tape
-        if tape is not None:
+        if tape is not None and result.high.size:
 
             def backward():
                 seed = Expansion(result.high.grad.numpy())

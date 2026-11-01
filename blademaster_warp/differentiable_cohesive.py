@@ -20,8 +20,8 @@ from .precision import launch_double
 from ._compensated import Expansion
 from ._compensated_linalg import divide, equilibrated_solve
 from ._cohesive_momentum import momentum_residual
-from .compensated_state import CompensatedArray
-from ._cohesive_solve import geometry, shared_intact_rows, solve_primal, refine_geometry
+from .compensated_state import CompensatedArray, as_compensated
+from ._cohesive_solve import geometry, shared_intact_rows, refine_geometry
 
 
 @wp.func
@@ -229,7 +229,17 @@ def reaction_bounds(
 
 
 def _evaluate(
-    inputs, u, traction, compliance, *, integrated_force=False, inertia=None, remainders=None, motion=None
+    inputs,
+    u,
+    traction,
+    compliance,
+    *,
+    integrated_force=False,
+    inertia=None,
+    remainders=None,
+    motion=None,
+    map_remainders=None,
+    constrain_normal=True,
 ):
     count = len(inputs[0])
     device = inputs[0].device
@@ -241,7 +251,7 @@ def _evaluate(
     raw = [wp.zeros(count, dtype=kind, device=device, requires_grad=True) for kind in kinds]
     if motion is not None:
         raw[0], raw[2] = motion.gap, motion.frame
-    elif remainders is None:
+    elif remainders is None and map_remainders is None:
         launch_double(
             interface_motion,
             count,
@@ -252,11 +262,14 @@ def _evaluate(
     else:
         from .cohesive_geometry import InterfaceGeometry
 
-        gap_low, frame_low, displacement_low = remainders
+        gap_low, frame_low, displacement_low = (None, None, None) if remainders is None else remainders
         free = InterfaceGeometry(inputs[0], inputs[1], gap_low, frame_low)
         displacement = CompensatedArray(u, displacement_low)
         unit = wp.array([1.0], dtype=wp.float64, device=device)
-        advanced = free.advance(inputs[5], inputs[6], displacement, unit)
+        low_b, low_g = (None, None) if map_remainders is None else map_remainders
+        advanced = free.advance(
+            CompensatedArray(inputs[5], low_b), CompensatedArray(inputs[6], low_g), displacement, unit
+        )
         raw[0], raw[2] = advanced.gap, advanced.frame
     launch_double(
         kinematics,
@@ -270,6 +283,12 @@ def _evaluate(
     proximal_inputs = [raw[1], raw[3], inputs[3], raw[4]]
     if integrated_force:
         proximal_inputs.append(inputs[7])
+    if not constrain_normal:
+        from .cohesive_adhesion import adhesive_proximal_response
+
+        proximal_kernel = adhesive_proximal_response
+        if not integrated_force:
+            proximal_inputs.append(wp.ones(count, dtype=wp.float64, device=device))
     launch_double(
         proximal_kernel,
         count,
@@ -280,21 +299,42 @@ def _evaluate(
     pressure_traction = zeros(count, True)
     stress = wp.zeros(count, dtype=wp.mat33d, device=device, requires_grad=True)
     constraint = zeros(count)
-    launch_double(
-        cohesive_contact_response,
-        count,
-        inputs=[prox[0], raw[2], inputs[2], raw[6]],
-        outputs=[pressure_traction, stress],
-        device=device,
-    )
+    if constrain_normal:
+        launch_double(
+            cohesive_contact_response,
+            count,
+            inputs=[prox[0], raw[2], inputs[2], raw[6]],
+            outputs=[pressure_traction, stress],
+            device=device,
+        )
+    else:
+        from .cohesive_adhesion import adhesive_surface_response
+
+        launch_double(
+            adhesive_surface_response,
+            count,
+            inputs=[prox[0], raw[2], inputs[2], raw[5]],
+            outputs=[stress],
+            device=device,
+        )
     launch_double(normal_gap, count, inputs=[prox[0], raw[3]], outputs=[constraint], device=device)
     Ru = momentum_residual(
-        inputs[5], inputs[6], inputs[7], raw[5], stress, inputs[8], inputs[9], u, integrated_force
+        inputs[5],
+        inputs[6],
+        inputs[7],
+        raw[5],
+        stress,
+        inputs[8],
+        inputs[9],
+        u,
+        integrated_force,
+        map_remainders,
     )
     Rg = zeros(count, True)
     if inertia is not None:
         Ru = inertia.add_momentum(Ru, u)
-    shared_rows = shared_intact_rows(raw[0].numpy(), inputs[3].numpy(), inputs[5].numpy())
+    mapping = Expansion(inputs[5].numpy(), 0.0 if map_remainders is None else map_remainders[0])
+    shared_rows = shared_intact_rows(raw[0].numpy(), inputs[3].numpy(), mapping.high)
     if integrated_force:
         shared_rows &= inputs[7].numpy() > 0.0
     shared = wp.array(
@@ -324,46 +364,76 @@ def _evaluate(
     return (result, Ru, Rg)
 
 
-def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t, *, remainders=None):
+def _closed_pullback(
+    inputs, values, u_numpy, traction_numpy, compliance, rhs_u, rhs_t, *,
+    remainders=None, map_remainders=None, inertia=None, constrain_normal=True,
+):
     """Differentiate the fixed-rank closed constraint and its selected reaction."""
-    q, _, _, _, _, b, _, area, mass, dt = values
-    coefficient = mass[0] / dt[0] ** 2
-    inverse = np.linalg.pinv(b, rcond=max(b.shape) * np.finfo(float).eps)
-    seed_u = rhs_u.reshape(u_numpy.shape)
-    seed_t = rhs_t.reshape(traction_numpy.shape)
+    from ._compensated_linalg import column_basis, minimum_norm, solve as linear_solve
+    from ._cohesive_expansion import root
 
-    # First pull back the area-weighted minimum-pressure reaction. Then the
-    # displacement constraint has no area dependence, even for tiny patches.
-    root_area = np.sqrt(area)
+    q, _, _, _, _, b, _, area, mass, dt = values
+    b = Expansion(b, 0.0 if map_remainders is None else map_remainders[0])
+    qlow = 0.0 if remainders is None or remainders[0] is None else remainders[0]
+    ulow = 0.0 if remainders is None or remainders[2] is None else remainders[2]
+    q, displacement = Expansion(q, qlow), Expansion(u_numpy, ulow)
+    coefficient = divide(Expansion(mass[0]), Expansion(dt[0]) * dt[0])
+    inverse = minimum_norm(b, Expansion(np.eye(b.shape[0]))) if inertia is None else None
+    seed_u = Expansion(rhs_u.reshape(u_numpy.shape))
+    seed_t = Expansion(rhs_t.reshape(traction_numpy.shape))
+
+    # Use the same retained constraint modes and minimum-pressure reaction as the forward solve.
+    root_area = root(Expansion(area))
     weighted = b.T * root_area[None, :]
-    weighted_inverse = np.linalg.pinv(weighted, rcond=max(weighted.shape) * np.finfo(float).eps)
-    pressure = root_area[:, None] * traction_numpy / coefficient
-    seed_pressure = coefficient * seed_t / root_area[:, None]
+    weighted_inverse = minimum_norm(weighted, Expansion(np.eye(weighted.shape[0])))
+    pressure = divide(root_area[:, None] * traction_numpy, coefficient)
+    seed_pressure = divide(coefficient * seed_t, root_area[:, None])
     force_dual = weighted_inverse.T @ seed_pressure
-    force_null = -u_numpy - weighted @ pressure
+    momentum = displacement if inertia is None else inertia.apply(displacement)
+    force_null = -momentum - weighted @ pressure
     pressure_null = seed_pressure - weighted_inverse @ (weighted @ seed_pressure)
     adj_weighted = -force_dual @ pressure.T
-    adj_weighted += force_null @ (weighted_inverse @ (weighted_inverse.T @ seed_pressure)).T
-    adj_weighted += (weighted_inverse.T @ pressure) @ pressure_null.T
-    seed_u = seed_u - force_dual
+    adj_weighted = adj_weighted + force_null @ (weighted_inverse @ (weighted_inverse.T @ seed_pressure)).T
+    adj_weighted = adj_weighted + (weighted_inverse.T @ pressure) @ pressure_null.T
+    seed_u = seed_u - (force_dual if inertia is None else inertia.apply(force_dual))
 
-    adj_q = -inverse.T @ seed_u
-    residual = q + b @ u_numpy
-    null_seed = seed_u - inverse @ (b @ seed_u)
     gradients = [np.zeros_like(value) for value in values]
-    gradients[0] = adj_q
-    gradients[5] = adj_q @ u_numpy.T
-    gradients[5] -= residual @ (inverse @ (inverse.T @ seed_u)).T
-    gradients[5] += (inverse.T @ u_numpy) @ null_seed.T
-    gradients[5] += (adj_weighted * root_area[None, :]).T
-    gradients[7] = np.sum(adj_weighted * b.T, axis=0) / (2 * root_area)
-    gradients[7] -= np.sum(seed_t * traction_numpy, axis=1) / (2 * area)
-    adj_coefficient = np.sum(seed_t * traction_numpy) / coefficient
-    gradients[8][0] = adj_coefficient / dt[0] ** 2
-    gradients[9][0] = -2 * adj_coefficient * coefficient / dt[0]
+    if inertia is None:
+        adj_q = -inverse.T @ seed_u
+        residual = q + b @ displacement
+        null_seed = seed_u - inverse @ (b @ seed_u)
+        adj_b = adj_q @ displacement.T
+        adj_b = adj_b - residual @ (inverse @ (inverse.T @ seed_u)).T
+        adj_b = adj_b + (inverse.T @ displacement) @ null_seed.T
+    else:
+        basis = column_basis(b.T)
+        free_adjoint = inertia.solve_compensated(seed_u)
+        if basis.shape[1]:
+            modes = inertia.solve_compensated(basis)
+            adjoint = free_adjoint - modes @ linear_solve(
+                basis.T @ modes, basis.T @ free_adjoint
+            )
+        else:
+            adjoint = free_adjoint
+        adj_q = -minimum_norm(b.T, seed_u - inertia.apply(adjoint))
+        multiplier = minimum_norm(b.T, -momentum)
+        adj_b = adj_q @ displacement.T - multiplier @ adjoint.T
+        power = -((adjoint + force_dual) * inertia.generator(displacement)).sum()
+        gradients.extend(
+            (derivative * power).reshape(1).numpy()
+            for derivative in [inertia.values[1], inertia.values[0]]
+        )
+    gradients[0] = adj_q.numpy()
+    adj_b = adj_b + (adj_weighted * root_area[None, :]).T
+    gradients[5] = adj_b.numpy()
+    adj_area = divide((adj_weighted * b.T).sum(axis=0), 2 * root_area)
+    adj_area = adj_area - divide((seed_t * traction_numpy).sum(axis=1), 2 * Expansion(area))
+    gradients[7] = adj_area.numpy()
+    adj_coefficient = divide((seed_t * traction_numpy).sum(), coefficient)
+    gradients[8][0] = divide(adj_coefficient, Expansion(dt[0]) * dt[0]).numpy()
+    gradients[9][0] = divide(-2 * adj_coefficient * coefficient, Expansion(dt[0])).numpy()
 
-    # Positive prior damage can open a currently closed interface. Retain that
-    # one-sided history derivative from the same proximal residual as the solve.
+    # Positive prior damage can open a currently closed interface.
     if inputs[3].requires_grad:
         device = inputs[0].device
         clones = [
@@ -372,13 +442,19 @@ def _closed_pullback(inputs, values, u_numpy, traction_numpy, compliance, rhs_u,
         ]
         fixed_u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
         fixed_t = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
-        momentum_dual = rhs_u.reshape(u_numpy.shape) + b.T @ adj_q
+        momentum_dual = Expansion(rhs_u.reshape(u_numpy.shape)) + b.T @ adj_q
+        if inertia is not None:
+            momentum_dual = inertia.solve_compensated(momentum_dual)
+        local_inertia = None if inertia is None else inertia.clone()
         with wp.Tape() as local:
-            _, Ru, Rg = _evaluate(clones, fixed_u, fixed_t, compliance, remainders=remainders)
+            _, Ru, Rg = _evaluate(
+                clones, fixed_u, fixed_t, compliance, remainders=remainders,
+                map_remainders=map_remainders, inertia=local_inertia, constrain_normal=constrain_normal,
+            )
         local.backward(
             grads={
-                Ru: wp.array(-momentum_dual, dtype=wp.vec3d, device=device),
-                Rg: wp.array(adj_q, dtype=wp.vec3d, device=device),
+                Ru: wp.array(-momentum_dual.numpy(), dtype=wp.vec3d, device=device),
+                Rg: wp.array(adj_q.numpy(), dtype=wp.vec3d, device=device),
             }
         )
         gradients[3] = clones[3].grad.numpy().copy()
@@ -398,14 +474,28 @@ def _implicit_pullback(
     integrated_force=False,
     inertia=None,
     remainders=None,
+    map_remainders=None,
+    contacts=None,
+    constrain_normal=True,
 ):
-    if closed and inertia is None and integrated_force and np.all(values[7] > 0.0):
+    if map_remainders is not None and all(not np.any(value) for value in map_remainders):
+        map_remainders = None
+    if (
+        contacts is None
+        and closed
+        and integrated_force
+        and np.all(values[7] > 0.0)
+    ):
         from ._cohesive_solve import setup
 
         area = values[7]
         pressure = traction_numpy / area[:, None]
         seed_force = (compliance * rhs_t).reshape(pressure.shape)
-        density_compliance = setup(values)[2]
+        complete = list(values)
+        if map_remainders is not None:
+            complete[5] = Expansion(values[5], map_remainders[0]).numpy()
+            complete[6] = Expansion(values[6], map_remainders[1]).numpy()
+        density_compliance = setup(complete, inertia=inertia)[2]
         gradients = _closed_pullback(
             inputs,
             values,
@@ -415,10 +505,17 @@ def _implicit_pullback(
             rhs_u,
             (area[:, None] * seed_force).ravel(),
             remainders=remainders,
+            map_remainders=map_remainders,
+            inertia=inertia,
+            constrain_normal=constrain_normal,
         )
         gradients[7] += np.sum(seed_force * pressure, axis=1)
         return gradients
-    if closed and inertia is None and not integrated_force:
+    if (
+        contacts is None
+        and closed
+        and not integrated_force
+    ):
         return _closed_pullback(
             inputs,
             values,
@@ -428,7 +525,19 @@ def _implicit_pullback(
             rhs_u,
             compliance * rhs_t,
             remainders=remainders,
+            map_remainders=map_remainders,
+            inertia=inertia,
+            constrain_normal=constrain_normal,
         )
+    rhs_scale = max(float(np.max(abs(rhs_u), initial=0.0)), float(np.max(abs(rhs_t), initial=0.0)))
+    if rhs_scale == 0.0:
+        result = [np.zeros_like(value) for value in values]
+        if contacts is not None:
+            result.extend(np.zeros_like(a.numpy()) for a in contacts.arrays)
+        if inertia is not None:
+            result.extend(np.zeros_like(a.numpy()) for a in inertia.parameters)
+        return result
+    rhs_u, rhs_t = rhs_u / rhs_scale, rhs_t / rhs_scale
     device = inputs[0].device
 
     def array(value, vector=False, grad=False):
@@ -436,13 +545,22 @@ def _implicit_pullback(
             np.asarray(value), dtype=wp.vec3d if vector else wp.float64, device=device, requires_grad=grad
         )
 
-    (_, _, weights) = geometry(values[0], values[1], values[2], values[5], values[6])
-    matrix = weights.transpose(1, 0, 2).reshape(-1, values[5].shape[1])
-    (_, singular, Vt) = np.linalg.svd(matrix, full_matrices=False)
-    rank = np.count_nonzero(singular > singular[0] * max(matrix.shape) * np.finfo(float).eps)
-    modes = Vt[:rank].T
+    from ._compensated_linalg import column_basis, _orthonormal_columns
+    from ._cohesive_equilibrium import constraint_geometry
+
+    low_b, low_g = (0.0, 0.0) if map_remainders is None else map_remainders
+    _, weights = constraint_geometry(
+        values[2], Expansion(values[5], low_b), Expansion(values[6], low_g)
+    )
+    if contacts is not None:
+        weights.append(contacts.mapping.cpu())
+    matrix = Expansion(
+        np.concatenate([w.high for w in weights]), np.concatenate([w.low for w in weights])
+    )
+    paired_modes = column_basis(matrix.T)
     if inertia is not None:
-        modes = np.linalg.qr(inertia.solve(modes), mode="reduced")[0]
+        paired_modes = _orthonormal_columns(inertia.solve_compensated(paired_modes))
+    modes = paired_modes.high
     basis = np.kron(modes, np.eye(3))
     size = basis.shape[1]
     clones = [
@@ -451,6 +569,7 @@ def _implicit_pullback(
     fixed_u = array(u_numpy, True, True)
     fixed_t = array(traction_numpy, True, True)
     local_inertia = None if inertia is None else inertia.clone()
+    local_contacts = None if contacts is None else contacts.clone()
     with wp.Tape() as local:
         (_, Ru, Rg) = _evaluate(
             clones,
@@ -460,21 +579,32 @@ def _implicit_pullback(
             integrated_force=integrated_force,
             inertia=local_inertia,
             remainders=remainders,
+            map_remainders=map_remainders,
+            constrain_normal=constrain_normal,
         )
+        if local_contacts is not None:
+            low = None if remainders is None else remainders[2]
+            Ru = local_contacts.add_momentum(Ru, fixed_u, low, clones[8], clones[9])
+
+    def gradient(source):
+        return source.grad.numpy() if source.size else np.zeros(source.numpy().shape)
+
     rows = []
     for column in basis.T:
         local.zero()
         local.backward(grads={Ru: array(column.reshape(-1, 3), True)})
-        rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), fixed_t.grad.numpy().ravel() / compliance])
+        rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), gradient(fixed_t).ravel() / compliance])
     shape = Rg.numpy().shape
     for index in range(np.prod(shape)):
         local.zero()
         unit = np.zeros(shape)
         unit.ravel()[index] = 1.0
         local.backward(grads={Rg: array(unit, True)})
-        rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), fixed_t.grad.numpy().ravel() / compliance])
-    J = np.array(rows)
+        rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), gradient(fixed_t).ravel() / compliance])
+    J = np.array(rows).reshape(len(rows), size + 3 * len(inputs[0]))
     full_sources = [fixed_u, fixed_t, *clones]
+    if local_contacts is not None:
+        full_sources.extend(local_contacts.arrays)
     if local_inertia is not None:
         full_sources.extend(local_inertia.parameters)
 
@@ -486,17 +616,17 @@ def _implicit_pullback(
                     continue
                 local.zero()
                 local.backward(grads={output: array(part, True)})
-                totals = [value + source.grad.numpy() for value, source in zip(totals, full_sources)]
+                totals = [value + gradient(source) for value, source in zip(totals, full_sources)]
         return totals
 
     basis = Expansion(basis)
     au, ag = Expansion(np.zeros_like(rhs_u)), Expansion(np.zeros(shape))
-    scale = max(np.max(abs(rhs_u)), np.max(abs(rhs_t)), 1.0)
+    scale = max(np.max(abs(rhs_u), initial=0.0), np.max(abs(rhs_t), initial=0.0), 1.0)
     for iteration in range(13):
         evaluated = action(au, ag)
         error_u = Expansion(rhs_u) - evaluated[0].reshape(-1)
         error_t = Expansion(rhs_t) - divide(evaluated[1].reshape(-1), compliance)
-        full_error = max(np.max(abs(error_u.high)), np.max(abs(error_t.high)))
+        full_error = max(np.max(abs(error_u.high), initial=0.0), np.max(abs(error_t.high), initial=0.0))
         if not np.isfinite(full_error) or full_error <= 1e-10 * scale:
             break
         if iteration == 12:
@@ -508,15 +638,26 @@ def _implicit_pullback(
         left = basis.T @ (error_u - moved[0].reshape(-1))
         right = error_t - divide(moved[1].reshape(-1), compliance)
         reduced = Expansion(np.r_[left.high, right.high], np.r_[left.low, right.low])
-        correction = equilibrated_solve(J.T, reduced)
+        correction = equilibrated_solve(J.T, reduced) if reduced.high.size else Expansion(np.empty(0))
         au = au + particular + basis @ correction[:size]
         ag = ag + correction[size:].reshape(shape)
     if not np.isfinite(full_error) or full_error > 1e-10 * scale:
         raise RuntimeError(f"Compensated full implicit adjoint residual: {full_error}")
-    return [value.numpy() for value in action(-au, -ag)[2:]]
+    return [(rhs_scale * value).numpy() for value in action(-au, -ag)[2:]]
 
 
-def _canonical_output(inputs, u, force, compliance, info, *, integrated_force=False):
+def _canonical_output(
+    inputs,
+    u,
+    force,
+    compliance,
+    info,
+    *,
+    integrated_force=False,
+    remainders=None,
+    branches=None,
+    map_remainders=None,
+):
     """Differentiate the selected minimum-pressure reaction before root pullback."""
     from ._cohesive_solve import canonical_reaction
 
@@ -533,6 +674,9 @@ def _canonical_output(inputs, u, force, compliance, info, *, integrated_force=Fa
         selection_info,
         integrated_force=integrated_force,
         return_context=True,
+        remainders=remainders,
+        branches=branches,
+        map_remainders=map_remainders,
     )
     if context is None:
         return force
@@ -585,10 +729,23 @@ def _canonical_output(inputs, u, force, compliance, info, *, integrated_force=Fa
         result = wp.zeros(len(force), dtype=force.dtype, device=device, requires_grad=True)
         integer = lambda a: wp.array(np.asarray(a, dtype=np.int32), dtype=int, device=device)
         offset_array, closed_array = integer(offsets), integer(context["closed"])
-        common = [clones[0], clones[1], clones[2], clones[5], clones[6], clones[7], fixed_u, fixed_force]
         bounds = wp.zeros(len(active), dtype=wp.float64, device=device, requires_grad=True)
         bound_gradient = wp.zeros((len(active), count), dtype=wp.float64, device=device, requires_grad=True)
+        from .cohesive_geometry import InterfaceGeometry
+
         with wp.Tape() as local:
+            qlow, flow, ulow = (None, None, None) if remainders is None else remainders
+            geometry = InterfaceGeometry(clones[0], clones[1], qlow, flow)
+            unit = wp.array([1.0], dtype=wp.float64, device=device)
+            low_b, low_g = (None, None) if map_remainders is None else map_remainders
+            moved = geometry.advance(
+                CompensatedArray(clones[5], low_b),
+                CompensatedArray(clones[6], low_g),
+                CompensatedArray(fixed_u, ulow),
+                unit,
+            )
+            zero_u = wp.zeros_like(fixed_u, requires_grad=False)
+            common = [moved.gap, moved.frame, clones[2], clones[5], clones[6], clones[7], zero_u, fixed_force]
             launch_double(
                 reaction_coordinates,
                 count,
@@ -608,12 +765,12 @@ def _canonical_output(inputs, u, force, compliance, info, *, integrated_force=Fa
                     reaction_bounds,
                     len(active),
                     inputs=[
-                        clones[1],
+                        moved.frame,
                         clones[2],
                         clones[6],
                         clones[7],
                         clones[4],
-                        fixed_u,
+                        zero_u,
                         integer(active),
                         offset_array,
                         closed_array,
@@ -672,28 +829,24 @@ def _canonical_output(inputs, u, force, compliance, info, *, integrated_force=Fa
     return output
 
 
-def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inertia=None):
+def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inertia=None, map_remainders=None):
     inertia = None if inertia is None else inertia.frozen()
     device = inputs[0].device
     values = [a.numpy().copy() for a in inputs]
-    if integrated_force:
-        precise_u, traction_numpy, compliance, info, _, _ = refine_geometry(
-            values,
-            np.zeros_like(values[0]),
-            np.zeros_like(values[1]),
-            compliance_scale,
-            integrated_force=True,
-            inertia=inertia,
-        )
-        displacement = Expansion.from_value(precise_u)
-        u_numpy = displacement.high
-        displacement_remainder = displacement.low
-    else:
-        u_numpy, traction_numpy, compliance, info = solve_primal(
-            values, compliance_scale, return_traction=True, inertia=inertia
-        )
-        displacement_remainder = None
-    remainders = (None, None, displacement_remainder) if integrated_force else None
+    precise_u, traction_numpy, compliance, info, _, _, branches = refine_geometry(
+        values,
+        np.zeros_like(values[0]),
+        np.zeros_like(values[1]),
+        compliance_scale,
+        integrated_force=integrated_force,
+        inertia=inertia,
+        return_context=True,
+        map_remainders=map_remainders,
+    )
+    displacement = Expansion.from_value(precise_u)
+    u_numpy = displacement.high
+    displacement_remainder = displacement.low
+    remainders = (None, None, displacement_remainder)
     u = wp.array(u_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     traction = wp.array(traction_numpy, dtype=wp.vec3d, device=device, requires_grad=True)
     sources = inputs + ([] if inertia is None else inertia.parameters)
@@ -713,6 +866,7 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inert
                 integrated_force=integrated_force,
                 inertia=inertia,
                 remainders=remainders,
+                map_remainders=map_remainders,
             )
             for source, gradient in zip(sources, gradients):
                 if source.requires_grad:
@@ -726,9 +880,18 @@ def _solve_arrays(inputs, compliance_scale=1.0, *, integrated_force=False, inert
         compliance,
         info if inertia is None else dict(info, closed_linear_solution=False),
         integrated_force=integrated_force,
+        remainders=remainders,
+        branches=branches,
+        map_remainders=map_remainders,
     )
     result, _, _ = _evaluate(
-        inputs, u, selected_traction, compliance, integrated_force=integrated_force, remainders=remainders
+        inputs,
+        u,
+        selected_traction,
+        compliance,
+        integrated_force=integrated_force,
+        remainders=remainders,
+        map_remainders=map_remainders,
     )
     result_type = CohesiveForceStep if integrated_force else CohesiveStep
     return result_type(*result, u, info, displacement_remainder)
@@ -787,6 +950,7 @@ def _validated_inputs(
     compliance_scale=1.0,
     inertia=None,
     integrated_force=False,
+    allow_empty=False,
 ):
     """Solve one inertial interface update in float64.
 
@@ -795,6 +959,8 @@ def _validated_inputs(
     particle_mass and duration each contain one scalar, in kg and s.
     The common particle mass matches MaterialTrajectory's reference sampling.
     """
+    separation_map = as_compensated(separation_map).high
+    frame_map = as_compensated(frame_map).high
     inputs = [
         free_gap,
         free_frame,
@@ -824,7 +990,7 @@ def _validated_inputs(
     if any(a.dtype != dtype or a.device != free_gap.device for a, dtype in zip(inputs, expected)):
         raise ValueError("Interface arrays must use float64 on a common device")
     count = len(free_gap)
-    if count == 0:
+    if count == 0 and not allow_empty:
         raise ValueError("An interface solve requires at least one quadrature point")
     if separation_map.ndim != 2 or separation_map.shape[1] == 0:
         raise ValueError("The separation map requires quadrature and particle axes")
@@ -881,6 +1047,7 @@ def solve(
     inertia=None,
 ):
     """Return equilibrium displacement and response per reference interface area."""
+    map_remainders = tuple(as_compensated(a).low for a in [separation_map, frame_map])
     inputs, _ = _validated_inputs(
         free_gap,
         free_frame,
@@ -895,7 +1062,7 @@ def solve(
         compliance_scale=compliance_scale,
         inertia=inertia,
     )
-    return _solve_arrays(inputs, compliance_scale, inertia=inertia)
+    return _solve_arrays(inputs, compliance_scale, inertia=inertia, map_remainders=map_remainders)
 
 
 def solve_force(
@@ -914,6 +1081,7 @@ def solve_force(
     inertia=None,
 ):
     """Return equilibrium using integrated forces, including zero-area supports."""
+    map_remainders = tuple(as_compensated(a).low for a in [separation_map, frame_map])
     inputs, _ = _validated_inputs(
         free_gap,
         free_frame,
@@ -929,4 +1097,6 @@ def solve_force(
         inertia=inertia,
         integrated_force=True,
     )
-    return _solve_arrays(inputs, compliance_scale, integrated_force=True, inertia=inertia)
+    return _solve_arrays(
+        inputs, compliance_scale, integrated_force=True, inertia=inertia, map_remainders=map_remainders
+    )

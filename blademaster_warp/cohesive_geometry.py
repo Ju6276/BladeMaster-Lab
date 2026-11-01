@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 from ._compensated import Expansion
+from ._compensated_linalg import row_basis_product
 from .compensated_state import CompensatedArray, as_compensated, add_gradient as _add_gradient
 from ._cohesive_solve import refine_geometry
 from .differentiable_cohesive import (
@@ -60,11 +61,12 @@ class InterfaceGeometry:
 
     def advance(self, separation_map, frame_map, velocity, duration):
         velocity, duration = as_compensated(velocity), as_compensated(duration)
-        sources = [self.gap, self.frame, separation_map, frame_map, velocity.high, duration.high]
-        B = Expansion(separation_map.numpy())
-        G = [Expansion(frame_map.numpy()[:, :, c]) for c in range(3)]
+        separation_map, frame_map = as_compensated(separation_map), as_compensated(frame_map)
+        sources = [self.gap, self.frame, separation_map.high, frame_map.high, velocity.high, duration.high]
+        B = separation_map.cpu()
+        G = [frame_map.cpu()[:, :, c] for c in range(3)]
         v, dt = velocity.cpu(), duration.cpu()[0]
-        gap_rate = B @ v
+        gap_rate = row_basis_product(B, v)
         frame_rate = [g @ v for g in G]
         gap = Expansion(self.gap.numpy(), self.gap_remainder) + dt * gap_rate
         frames = [
@@ -87,10 +89,10 @@ class InterfaceGeometry:
                 sF = [Expansion(high_frame.grad.numpy()[:, :, c]) for c in range(3)]
                 _add_gradient(self.gap, sg)
                 _add_gradient(self.frame, high_frame.grad.numpy())
-                _add_gradient(separation_map, dt * (sg @ v.T))
+                _add_gradient(separation_map.high, dt * (sg @ v.T))
                 map_gradients = [dt * (seed @ v.T) for seed in sF]
                 _add_gradient(
-                    frame_map,
+                    frame_map.high,
                     Expansion(
                         np.stack([a.high for a in map_gradients], axis=-1),
                         np.stack([a.low for a in map_gradients], axis=-1),
@@ -104,7 +106,9 @@ class InterfaceGeometry:
                 _add_gradient(velocity.high, dt * dv)
                 _add_gradient(duration.high, time.reshape(1))
 
-            tape.record_func(backward, [high_gap, high_frame, *[a for a in sources if a.requires_grad]])
+            tape.record_func(
+                backward, [a for a in [high_gap, high_frame, *sources] if a.requires_grad and a.size]
+            )
         return result
 
     def extrapolate(self, other, fraction):
@@ -130,7 +134,9 @@ class InterfaceGeometry:
                     _add_gradient(a, (Expansion(1.0) - fraction) * seed)
                     _add_gradient(b, fraction * seed)
 
-                tape.record_func(backward, [out, *[a for a in (a, b) if a.requires_grad]])
+                tape.record_func(
+                    backward, [value for value in (out, a, b) if value.requires_grad and value.size]
+                )
         return InterfaceGeometry(*outputs, *remainders)
 
 
@@ -152,10 +158,12 @@ def solve_geometry(
 ):
     """Solve the interface response, retaining compensated geometry.
 
-    closed_motion optionally supplies d with g=B d on positive-area rows;
-    it is a factored evaluation of the same free gap, in mass-normalized metres.
-    The VJP follows g and B, whose chain rule includes that nodal motion.
+    closed_motion optionally checks g=B d on positive-area rows, with d in
+    mass-normalized metres. The supplied gap and its remainder determine the
+    forward geometry; the VJP follows g and B.
     """
+    separation_map, frame_map = as_compensated(separation_map), as_compensated(frame_map)
+    map_remainders = (separation_map.low, frame_map.low)
     inertia = None if inertia is None else inertia.frozen()
     inputs, values = _validated_inputs(
         geometry.gap,
@@ -172,7 +180,7 @@ def solve_geometry(
         inertia=inertia,
         integrated_force=integrated_force,
     )
-    precise_u, t_numpy, compliance, info, gap, _ = refine_geometry(
+    precise_u, t_numpy, compliance, info, gap, _, branches = refine_geometry(
         values,
         geometry.gap_remainder,
         geometry.frame_remainder,
@@ -180,6 +188,8 @@ def solve_geometry(
         integrated_force=integrated_force,
         closed_motion=closed_motion,
         inertia=inertia,
+        return_context=True,
+        map_remainders=map_remainders,
     )
     displacement = Expansion.from_value(precise_u)
     u_numpy = displacement.high
@@ -196,7 +206,13 @@ def solve_geometry(
             separation_map, frame_map, CompensatedArray(u, displacement_remainder), unit
         )
         raw, _, _ = _evaluate(
-            inputs, u, traction, compliance, integrated_force=integrated_force, motion=motion
+            inputs,
+            u,
+            traction,
+            compliance,
+            integrated_force=integrated_force,
+            motion=motion,
+            map_remainders=map_remainders,
         )
         result = [wp.array(a.numpy(), dtype=a.dtype, device=device, requires_grad=True) for a in raw]
     finally:
@@ -234,6 +250,9 @@ def solve_geometry(
                     compliance,
                     info if inertia is None else dict(info, closed_linear_solution=False),
                     integrated_force=integrated_force,
+                    remainders=remainders,
+                    branches=branches,
+                    map_remainders=map_remainders,
                 )
                 output, _, _ = _evaluate(
                     clones,
@@ -242,6 +261,7 @@ def solve_geometry(
                     compliance,
                     integrated_force=integrated_force,
                     remainders=remainders,
+                    map_remainders=map_remainders,
                 )
             local.backward(
                 grads={
@@ -261,6 +281,7 @@ def solve_geometry(
                 inertia=inertia,
                 integrated_force=integrated_force,
                 remainders=remainders,
+                map_remainders=map_remainders,
             )
             explicit.extend(np.zeros_like(a.numpy()) for a in sources[len(inputs) :])
             for source, direct, indirect in zip(sources, explicit, gradients):

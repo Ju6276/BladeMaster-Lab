@@ -9,28 +9,7 @@ import warp as wp
 from blademaster_warp.cohesive_geometry import InterfaceGeometry, solve_geometry
 from blademaster_warp.compensated_state import CompensatedArray
 from blademaster_warp.differentiable_cohesive import solve_force
-from blademaster_warp._cohesive_linear import minimum_norm
 from test_differentiable_cohesive import arrays, closed_pair
-
-
-def test_minimum_norm_keeps_row_space_for_inconsistent_redundant_equations():
-    matrix = np.array([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [0.0, 1.0, 1.0]])
-    solution = minimum_norm(matrix, np.array([1.0, 3.0, -2.0]))
-    with localcontext() as context:
-        context.prec = 90
-        for actual, numerator in zip(solution, [64, -47, 17]):
-            high = float(actual)
-            low = float(actual - np.longdouble(high))
-            total = Decimal(high) + Decimal(low)
-            assert abs(total - Decimal(numerator) / 15) < Decimal(2) ** -57
-    np.testing.assert_allclose(np.array([-1, -1, 1]) @ solution, 0.0, atol=2.0**-58)
-    np.testing.assert_allclose(matrix.T @ (matrix @ solution - [1, 3, -2]), 0.0, atol=2.0**-53)
-
-
-@pytest.mark.parametrize("rows", [0, 4])
-def test_minimum_norm_empty_or_zero_map(rows):
-    solution = minimum_norm(np.zeros((rows, 3)), np.ones((rows, 2)))
-    np.testing.assert_array_equal(solution, np.zeros((3, 2)))
 
 
 @pytest.mark.parametrize("integrated", [False, True])

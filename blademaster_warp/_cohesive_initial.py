@@ -5,7 +5,17 @@ import numpy as np
 from .reference_inertia import solve_inertia
 
 
-def fixed_normal_initial(values, compliance, *, integrated_force=False, max_iterations=500000, inertia=None):
+def fixed_normal_initial(
+    values,
+    compliance,
+    *,
+    integrated_force=False,
+    max_iterations=500000,
+    inertia=None,
+    return_primal=False,
+    constrain_normal=True
+):
+    """The quadratic-subproblem iterate and dual-balanced displacement agree at convergence."""
     q, frame, reference, history, material, mapping, _, area, mass, dt = values
     normal = (
         reference[:, :1] * np.cross(frame[:, :, 1], frame[:, :, 2])
@@ -36,7 +46,8 @@ def fixed_normal_initial(values, compliance, *, integrated_force=False, max_iter
     tiny = np.finfo(float).tiny
     for iteration in range(max_iterations):
         difference = weighted_q - root * gap + multiplier
-        raw = weighted_q - left @ ((eigen / (eigen + compliance))[:, None] * (left.T @ difference))
+        coordinates = (left.T @ difference) / (eigen + compliance)[:, None]
+        raw = weighted_q - left @ (eigen[:, None] * coordinates)
         trial = (raw + multiplier) / root
         local_compliance = compliance * area if integrated_force else np.full(len(q), compliance)
         component = np.sum(trial * normal, axis=1)
@@ -56,6 +67,8 @@ def fixed_normal_initial(values, compliance, *, integrated_force=False, max_iter
         previous = gap
         ratio = np.divide(opened, radius, out=np.zeros_like(opened), where=radius > 0)
         gap = ratio[:, None] * positive
+        if not constrain_normal:
+            gap = gap + compression[:, None] * normal
         multiplier += raw - root * gap
         primal = np.linalg.norm(raw - root * gap) / max(
             np.linalg.norm(raw), np.linalg.norm(root * gap), np.linalg.norm(weighted_q), tiny
@@ -72,7 +85,10 @@ def fixed_normal_initial(values, compliance, *, integrated_force=False, max_iter
             multiplier *= updated / compliance
             compliance = updated
     traction = multiplier / (compliance * root)
+    projected = left @ coordinates
+    primal_displacement = -solve_inertia(inertia, (root * mapping).T @ projected) / coefficient
     measure = np.ones_like(area) if integrated_force else area
     displacement = -solve_inertia(inertia, mapping.T @ (measure[:, None] * traction)) / coefficient
     info = dict(initial_iterations=iteration + 1, initial_primal=float(primal), initial_dual=float(dual))
-    return displacement.astype(float), traction.astype(float), compliance, info
+    result = displacement.astype(float), traction.astype(float), compliance, info
+    return (*result, primal_displacement.astype(float)) if return_primal else result

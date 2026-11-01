@@ -1,79 +1,53 @@
 # 交接说明
 
-2026-11-01：旧持续目标已删除；新目标执行方法核对、完整自然单刀验收和刀路优化。先读 [AGENTS.md](../AGENTS.md) 和 [DIFFERENTIABLE.md](DIFFERENTIABLE.md)。
+2026-11-01。目标与验收条件见 [DIFFERENTIABLE.md](DIFFERENTIABLE.md)，工作规范见 [AGENTS.md](../AGENTS.md)，实验数字见 [RESULTS.md](RESULTS.md)。
 
-## 机器与访问
+## 机器与版本
 
-| 机器 | 用途 | 地址与仓库 |
+- Mac：`/Users/judong/Desktop/Papers/Code/BladeMaster-Warp`，分支 `sync-20261020`，当前提交 `4624c6a`，主工作区干净。
+- 4090：`dong@tamsgpu9`，工作树位于 `/home/dong/Projects/`；使用项目 `.venv/bin/python`。
+- 跳板 tams61：`dong@100.70.97.92`。登录后执行 `ssh dong@tamsgpu9`；认证信息不写入文件。
+- GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`。
+- 数值进程设置 `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1`。长实验记录命令、配置、commit + dirty、逐步输出和退出码；运行中的源码保持冻结。
+
+## 当前源码与验收
+
+下列工作树在 Mac 和 4090 使用相同名称；候选基线均为 `4624c6a`。
+
+| 工作树或相对目录 | 内容 | 验收记录 |
 |---|---|---|
-| Mac | 编辑、提交、推送 | `/Users/judong/Desktop/Papers/Code/BladeMaster-Warp` |
-| tams61 / RTX 4060 | SSH 跳板、CRESSim 与旧记录 | `dong@100.70.97.92`；`~/Projects/BladeMaster-Warp` |
-| tamsGPU9 / RTX 4090 | 数值实验与 CUDA 测试 | 从 tams61 连接 `dong@tamsgpu9`；`~/Projects/BladeMaster-Warp` |
+| `BladeMaster-Warp-cache-20261101` | 统一内聚核心、缩放停止条件、提前 Newton、GMRES、零乘子反力选择及批量求值 | `runs/weak_full_20261101/`：2137 passed、8 skipped、18 subtests passed，退出 0 |
+| cache 的 `runs/numerical_weak_source/` | 核心修复去掉性能改动 | `runs/numerical_weak_full_20261101/`：2103 passed、8 skipped、18 subtests passed，退出 0 |
+| `BladeMaster-Warp-task-20261101` | 当前核心加连续刀路、任务目标、能量与检查点入口 | `runs/task_full_20261101/`：2162 项全量运行中 |
+| cache 的 `runs/accelerated_source/` | 任务版本加 16 点分块与输入设备驱动的 CUDA 补偿乘法 | 39 项定向检查通过；`runs/accelerated_full_complete_20261101/`：2201 项全量运行中 |
+| `BladeMaster-Warp-batched-20261101` | 自然下刀与捕获平衡方程实验 | 当前续跑 `runs/natural_weak_energy_20261101/` 使用冻结 cache 核心 |
 
-```bash
-ssh -o BatchMode=yes dong@100.70.97.92 '<命令>'
-ssh -t dong@100.70.97.92 'ssh -t dong@tamsgpu9'
-```
+8 项跳过检查均依赖独立 CRESSim 上游构建。全量状态以对应 `full_result.json`、`failures.txt` 和进程为准。临时源码的测试驱动必须核对 `blademaster_warp.__file__`；加速候选链接 task 的 vendor，并使用 task 的完整脚本与测试资源。
 
-第二跳使用已授权的认证方式；SSH 复用连接过期后重新认证。密码不写入仓库、命令日志或文档。
+## 已有实验结果
 
-4090 使用项目 `.venv/bin/python`；依赖版本以 `requirements.txt` 为准。开跑前检查 `nvidia-smi` 和现有任务。长批次保存命令、提交、日志与退出码；复查进程和退出码后更新结果。运行中保持该源码快照不变。
+- 自然下刀前 8 步：64 粒子、200 μs 步长、8 个分侧事件；刀位三档自然差分误差 0.277232% / 0.0000598127% / 0.0000149532%，E 两档误差 2.2772e−10 / 4.9092e−10。检查点与完整反向的刀路梯度逐项一致。
+- 任务入口七步承载案例：完整/检查点状态和刀路梯度逐项一致，两档自然差分误差 2.7393e−8 / 7.0570e−11；该案例分侧事件和损伤为零。
+- 同一七步任务固定参数，200/100/50 μs 的净能量残差为 1.3132% / 1.1284% / 0.9612%；分阶段绝对残差和为 2.6611e−6 / 9.0017e−7 / 2.0322e−7 J。
+- 同一 3312 阶平衡方程：分块加 CUDA 单次求值 7.2728→2.4901 s；完整求解 1670.76→561.52 s。主位移高低分量与独立参考解逐项一致，接触集合相同，相对残差 1.09097e−31。结果在 batched 的 `runs/cuda_equation_20261101/` 和 `runs/cuda_captured_20261101/`。
 
-主树 `95d547e` 的数组编译缓存修复全量：1715 passed、8 skipped、18 subtests passed，829.67 s，日志在 `BladeMaster-Warp-cache-20261101/runs/cache_fix_20261101/`。统一 batched 候选全量：2034 passed、8 skipped、18 subtests passed，4512.17 s，记录见下表。
+## 当前完整轨迹
 
-GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。Mac 推送后，干净的远端工作树再拉取；候选工作树先核对本地差异。`runs/` 不进 Git。
+- 原冻结核心：batched 的 `runs/natural_weak_energy_20261101/`，从第 8 步检查点继续 60 步下刀，当前第 9 步求解中；保留该运行至取得对应结果。
+- 加速候选：cache 的 `runs/natural_complete_accelerated_20261101/`，正式入口 `task/scripts/diff_natural_task.py`；由未切割初态下刀 12 ms、退刀 12 ms、静置 6 ms，dt=200 μs。配置 `cache/runs/natural_complete_case.json`，每步保存能量、事件和检查点；前 8 步完成，8 个自然分侧事件，能量残差 0.80403%，继续第 9 步。
+- 完整切透、退刀、切面重新接触、活跃断裂能量、完整任务自然差分和优化验收继续执行。
 
-## 源码与结果位置
+优化公共驱动在 cache 的 `runs/optimization_source`：13 项解析/预算检查通过；三步非零刀力任务的控制映射梯度检查通过，AD/自然差分误差 6.1740e−11 / 1.6367e−9，记录 `runs/optimization_adapter_20261101/`。
 
-2026-11-01 整理：主工作区已提交同顺序补偿求和、FMA、稀疏残差精化、数组除法编译及几何进入侧求根。本地待验收改动位于 `/Users/judong/Desktop/Papers/Code/BladeMaster-Warp-e5-review-20261101`，分支 `review/e5-pending-20261101`，包含 20 项已跟踪源码/测试变更和 13 个未跟踪文件；迁移前后逐文件内容及 Git 差异一致。
+## 下一步与提交
 
-下表按各工作树实际基线和结果目录区分候选。原 Mac `/tmp/BladeMaster-Warp-e5-*` 工作树已不存在，4090 副本仍在。
+1. 核对三套全量退出码及完整自然轨迹；失败定位、修复和复测。
+2. 数值改动与性能改动分开提交。核心拆分补丁为 cache 的 `runs/current_unified_20261101/performance_split_scaled.patch`；数值全量通过后再提交，任务入口和新增 CUDA 性能改动独立提交。
+3. 将通过的源码归并到主工作树，删除被替代入口；同一干净提交重跑完整任务验收。
+4. 固定任务、五组初始化和墙钟预算，执行 AD / FD / CMA-ES 刀路优化与独立重放。
 
-4090 根目录：`/home/dong/Projects/`。
-
-当前归并与运行快照如下；运行中的源码保持不变。
-
-| 位置（4090） | 内容 | 结果目录 |
-|---|---|---|
-| `BladeMaster-Warp-linear-20261101` | 已提交 `ae963d3`；91 项定向检查、1714 项全量通过 | `runs/refinement_stopping_20261101/` |
-| `BladeMaster-Warp-unified-20261101` | `843ddd6` 加核心、接触和自然推进归并；原全量发现 10 项低位/反力失败，已由修复候选替代 | `runs/unified_full_20261101/`、`runs/unified_failures_20261101/` |
-| unified 目录 `runs/integrated_source/` | 统一数值候选，包含低位停止条件及嵌套接触派发修复；全量复验中 | `runs/integrated_full_20261101/` |
-| unified 目录 `runs/natural_repaired_source/` | 修复加固定方程求值缓存；自然轨迹前 8 步完成 | `runs/natural_repaired_20261101/` |
-| `BladeMaster-Warp-batched-20261101` | `ae963d3` 加统一候选、缓存、批量求值和嵌套接触修复；2034 项全量通过，退出码 0 | `runs/worktree_full_20261101/`、`runs/natural_batched_20261101/` |
-| batched 目录 `runs/nested_source/` | 冻结的相同候选；带板下刀和自然梯度检查中，前 8 步能量观测已完成 | `runs/natural_board_cut_20261101/`、`runs/natural_gradient_*_20261101/`、`runs/energy_cut_precise_20261101/` |
-| batched 目录 `runs/opening_jacobian_source/` | 数组缓存修复、按法向分支计算 Hessian、三种子构造开口反向块；87 项检查通过，全量及 8 步自然反向运行中 | `runs/opening_full_20261101/`、`runs/natural_colored_backward_20261101/` |
-| batched 目录 `runs/pivot_budget_source/` | 接触集合整组更新及内层 Newton 预算修复；95 项检查通过，实际第 9 步平衡重算中 | `runs/pivot_budget_20261101_result.json`、`runs/pivot_budget_refinement_20261101/` |
-
-Mac 对应工作树为 `BladeMaster-Warp-linear-20261101`、`BladeMaster-Warp-unified-20261101`、`BladeMaster-Warp-core-20261101` 和 `BladeMaster-Warp-batched-20261101`。unified 根目录保留原失败快照；batched 根目录与 `nested_source` 的 120 个 Python 源码文件相同，含正式 `tests/test_nested_contacts.py`。当前有效全量分别使用 `integrated_source` 和 batched 正式工作树，运行结束后归并。
-
-旧 `runs/nested_full_20261101/` 的 15 项 Franka/伺服/显示测试失败于临时源码目录缺少 `vendor` 模型资源；补齐资源后，原 15 项与嵌套接触两项共 **17 passed / 61.61 s**。正式工作树全量采用根目录资源，记录在 `runs/worktree_full_20261101/`。自然切割第 9 步的耗时定位保存在 `runs/board_step9_trace_20261101/` 与 `runs/board_equilibrium_capture_20261101/`。
-
-旧 performance、core-compiled、repair_source 及未修复嵌套接触的全量已终止，由上表两套全量替代。替代记录在 unified 的 `runs/unified_failures_20261101/` 和 batched 的 `runs/nested_contacts_20261101/`。旧 goal 的 FMA 自然事件运行已终止；稀疏版本第 8 步结果保留在 `BladeMaster-Warp-goal-20261101/runs/natural_sparse_events_20261101/`。
-
-| 目录 | 内容 | 现有全量日志状态 |
-|---|---|---|
-| `BladeMaster-Warp-e5-state-20261023` | 主树对应的补偿状态、闭合 KKT 等 | `closed_kkt_full.log`：1713 passed、26 failed、8 skipped |
-| `BladeMaster-Warp-e5-blade-20261024` | 有限刀、刀/板及粒子对联合接触 | `blade_pair_full.log`：1769 passed、26 failed、8 skipped |
-| `BladeMaster-Warp-e5-impact-20261024` | 仿射闭合碰撞与接触归属 | `impact_active_full.log`：异常结束 |
-| `BladeMaster-Warp-e5-adhesion-20261024` | 内聚/法向接触分离与空间配对 | `separated_spatial_full.log`：异常结束 |
-| `BladeMaster-Warp-e5-events-20261024` | 接触事件分段与闭合回归修复候选 | 36/117/19 项定向修复通过；完整事件批次异常结束，进入事件单例复跑通过 |
-
-日志相对各工作树的位置均为 `runs/grid_update/`。其他 `e5-*` 工作树按 Git 差异检查其内容；源码归并后再删除被替代目录。
-
-闭合回归原因是解析反向入口被迁移流程关闭、零余量表示阻断入口，以及 `(3N,0)` 映射的 reshape 错误。本地 review 工作树包含定向修复。impact 原失败节点已定位到 Python 定时诊断线程段错误，关闭定时输出后通过；运行设置见 RUNNING。统一版本的全量和事件批次复验待完成。
-
-上表 `runs/grid_update/` 历史批次已结束；当前归并批次以进程、退出码和日志末尾为准。
+待归并的早期 review 位于 `BladeMaster-Warp-e5-review-20261101`。历史实验目录在 `runs/`，版本与结果索引在 RESULTS；淘汰代码由 Git 历史保留。显示网格修补不恢复，归档 tag 为 `archive/before-cleanup-20261020`。
 
 ## 文档分工
 
-| 文件 | 内容 |
-|---|---|
-| `README.md` / `docs/RUNNING.md` | 安装、运行、脚本索引 |
-| `docs/DIFFERENTIABLE.md` | 当前状态、持续目标、验收条件 |
-| `TODO.md` | 主线待办和保留的正向问题 |
-| `docs/METHOD.md` | 公式、方法来源、本地差异 |
-| `docs/PARAMETERS.md` | 参数来源与单位 |
-| `docs/RESULTS.md` | 日期、版本、命令、关键结果 |
-| `NOTICE.md` | 第三方来源与许可 |
-
-原标定/投稿草案从当前文档删除，历史可从 Git 查阅。已撤回的显示网格修补见 tag `archive/before-cleanup-20261020`。任务视频仍在 Mac 的 `~/Desktop/BladeMaster_videos/`；实验报告保留在 GPU 工作树的 `runs/`。
+README / RUNNING：运行方式；METHOD：公式与方法差异；PARAMETERS：单位与参数来源；RESULTS：实验数字；DIFFERENTIABLE / TODO：当前验收与待办；NOTICE：第三方来源与许可。

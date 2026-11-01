@@ -159,6 +159,17 @@ class FixedTopology:
     particles: wp.array
     corners: wp.array
 
+    def shared_velocity_slots(self, node_count):
+        """Fully compatible fields at one node carry the same coupled velocity."""
+        nodes = self.keys.numpy() % node_count
+        counts = np.diff(self.offsets.numpy())
+        representatives = np.arange(self.count)
+        for node in np.unique(nodes):
+            group = np.flatnonzero(nodes == node)
+            if np.all(counts[group] == len(group)):
+                representatives[group] = group[0]
+        return representatives
+
 
 @wp.kernel
 def ordered_p2g(

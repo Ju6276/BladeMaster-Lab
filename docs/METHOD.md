@@ -63,11 +63,13 @@ PIC/FLIP 速度为 `v_new=PIC_new+α(v_old−PIC_old)`。固定每步 α 的有�
 
 本地主树包含双线性单元、初始刚性单元和隐式平衡。双线性单元使用 K（Pa/m）、σ（Pa）、G_c（J/m²）；初始刚性单元使用 σ、G_c，完整断裂开口 `δ_f=2G_c/σ`，永久历史 `κ=max(κ_old,|g|)`。
 
-`differentiable_cohesive.solve` / `solve_force` 计算界面平衡及其隐式反向；后者以积分总力处理面积。闭合冗余反力按参考面积选择最小范数，反向包含固定秩伪逆的零空间项。解析闭合反向用于正面积、闭合且反力严格位于强度内部的分支；其余分支使用相应残差/KKT 反向。迁移回归的修复保存在本地 review 工作树，包含闭合解析入口恢复和 `(3N,0)` 零维映射构造。
+`differentiable_cohesive.solve` / `solve_force` 计算界面平衡及其隐式反向；后者以积分总力处理面积。闭合冗余反力按参考面积选择最小范数，反向包含固定秩伪逆的零空间项。解析闭合反向用于正面积、闭合且反力严格位于强度内部的分支，映射余量和惯性算子进入同一闭合 KKT 导数；其余分支使用相应残差/KKT 反向。零维映射显式构造 `(3N,0)` 形状。
 
 `reference_surface`、`reference_cut`、`reference_grid` 构造扫掠切面、参考积分与双侧映射。`CohesiveHistory` 保存切面出生朝向和永久损伤；`cohesive_stages.advance_affine` 使用独立平移/仿射速度及 ARS 两阶段推进。补偿数组保存同一变量的主值与余量，CPU 求根和线性代数使用两分量运算。
 
-4090 的接触、碰撞、内聚分离和事件分段候选另见 HANDOFF。当前自然轨迹入口仍使用 `GeometryEventContact`，新界面的完整自然切割接入待完成。
+仿射阶段同时保存位置、形变和映射的余量，检查点重建相同状态。材料应力由 `H=F−I` 计算等价的共旋公式，避免近静置时先构造 `I+H` 再相减；塑性返回及其能量定义保持相同。固定率传递耗散与内聚响应共同进入隐式 ARS 阶段。
+
+`NaturalCohesive.step` 在同一推进中处理在线切面出生、几何分侧、刀/板接触及切后粒子对接触。`NaturalHistory` 同时保存内聚历史、接触历史、侧码和接触模式；`snapshot` / `restore` 重建完整状态。整体任务结果见 RESULTS。
 
 ## 与论文及参考实现的差异
 
@@ -83,11 +85,15 @@ PIC/FLIP 速度为 `v_new=PIC_new+α(v_old−PIC_old)`。固定每步 α 的有�
 | 移动界面功 | 固定或小变形界面的内聚关系 | 本地由平均面法向推导开口力与面转动共轭力，参考 [Reinoso–Paggi](https://arxiv.org/abs/1507.05168) 的大变形虚功 |
 | 隐式伴随 | 收敛方程的导数 | 本地求同一残差/KKT 的转置方程；参考 [OptNet](https://proceedings.mlr.press/v70/amos17a.html)、[DiffPD 反向实现](https://github.com/mit-gfx/diff_pd_public/blob/1594aa07a6983ff9a9c107e9f0d83d07fa99c8d1/cpp/core/src/fem/deformable_newton_backward.cpp)、[Nimble 约束梯度](https://github.com/keenon/nimblephysics/blob/c405b056fc35068027e03e0c384e84e12870b475/dart/neural/ConstrainedGroupGradientMatrices.cpp#L210) 的约束与伪逆导数 |
 | 数值精度 | 原 GPU 正向使用普通浮点状态 | 梯度对照采用 float64；内聚候选含 CPU 两分量算术、残差细化与独立高精度参考，依据 [Ogita–Rump–Oishi](https://www.tuhh.de/ti3/paper/rump/OgRuOi05.pdf)。补偿乘积采用 [TwoProductFMA](https://www.tuhh.de/ti3/paper/rump/Ru12.pdf)，通过 LLVM FMA 获取一次舍入的乘积余量；其余运算保持原累加顺序与 `fastmath=False`。线性求解先用 [SciPy SuperLU](https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.splu.html) 分解主值，再用完整两分量矩阵/右端计算残差并修正解；方法依据 [Carson–Higham](https://eprints.maths.manchester.ac.uk/2629/) 和[作者实现](https://github.com/eccarson/ir3)，本地采用 float64 分解与两分量残差。局部实现持续精化到相对后向误差不再下降，保留满足原残差界的最佳解，避免首次达到误差界就丢失右端低位；主值奇异或细化不满足原残差界时，使用完整两分量分解 |
-| 非线性求根与冗余约束 | 内聚 ADMM 初值及约束平衡 | 本地残差求根、坐标缩放和最小范数反力；依据 [Lewis–Overton 弱 Wolfe 搜索](https://cs.nyu.edu/overton/papers/pdffiles/nsoquasi.pdf)、[LAPACK DGEEQUB](https://www.netlib.org/lapack/explore-html/df/d0a/group__geequb_gaef3a3015d58122ab3d4d018422b93b90.html)、[KINSOL](https://sundials.readthedocs.io/en/v7.7.0/kinsol/Mathematics_link.html)、[Golub–Pereyra 固定秩伪逆导数](https://epubs.siam.org/doi/10.1137/0710036)；候选最终检查原方程和相同活跃约束 |
+| 非线性求根与冗余约束 | 内聚 ADMM 初值及约束平衡 | 本地闭合解析候选与正则化延拓求解原方程，再按面积加权选择满足强度约束的最小范数反力；反向对该平衡和反力选择共同求导；闭合判断、正反向基底和解析反力导数使用映射主值与余量的完整值；独立方向由两分量重正交保留，动量残差按相消前的绝对乘积缩放。通用伴随先归一化右端，求解后恢复损失尺度。坐标缩放和最小范数反力依据 [Lewis–Overton 弱 Wolfe 搜索](https://cs.nyu.edu/overton/papers/pdffiles/nsoquasi.pdf)、[LAPACK DGEEQUB](https://www.netlib.org/lapack/explore-html/df/d0a/group__geequb_gaef3a3015d58122ab3d4d018422b93b90.html)、[Golub–Pereyra 固定秩伪逆导数](https://epubs.siam.org/doi/10.1137/0710036) |
 | 内聚与重新接触 | BladeMaster 按侧码选择粒子对接触 | 远端候选分开内聚牵引与普通法向接触，避免重复承载；参考 [GEOS 接触分支](https://github.com/GEOS-DEV/GEOS/blob/e068c20772fe157428b5509c363146f0efd2e8ac/src/coreComponents/physicsSolvers/solidMechanics/SolidMechanicsMPM.cpp#L13812)、[MOOSE](https://mooseframework.inl.gov/source/userobjects/BilinearMixedModeCohesiveZoneModel.html)、[Collins-Craft–Acary 作者代码](https://zenodo.org/records/16911870)；历史重排与事件分段为本地实现 |
+| 接触集合求解 | [Ito–Kunisch](https://www.numdam.org/item/M2AN_2003__37_1_41_0/) 分析变分不等式的半光滑 Newton 与活跃集合方法；[PETSc VI](https://petsc.org/release/src/snes/impls/vi/rs/virs.c.html) 重建活跃/非活跃集合并做搜索 | 本地在各延拓阶段先尝试固定接触集合的完整 Newton，再更新全部发生切换的接触；候选失败后使用缩放信赖域与弱 Wolfe 搜索。候选检查自然接触残差，重复集合与迭代超限返回失败。内聚损伤分支随当前状态更新。内外两层残差按 DGEEQU 行/列尺度检查，并保留原残差界；依据 [SUNDIALS KINSOL](https://sundials.readthedocs.io/en/latest/kinsol/Mathematics_link.html)，本地使用两分量算术的 64ε² 判据 |
+| 停滞线性精化 | [Carson–Higham 作者实现](https://github.com/eccarson/ir3/blob/master/gmres_dq.m) 使用左预处理 GMRES | 本地在两分量 LU 精化失败后，从原 LU 初解开始右预处理 GMRES；复用 LU，Arnoldi 两次重正交，每步核对原矩阵的分量后向误差，保留原 64ε² 误差界 |
+| 零乘子接触 | [约束优化的活跃集](https://www.cs.cornell.edu/courses/cs4220/2026sp/lec/2026-04-29.html) 由约束达到边界定义，允许乘子为零 | 本地最小压力反力选择包含几何闭合、当前反力为零的约束。法向间隙以未归一化三重积计算，按几何求值相消前绝对乘积和的 64ε² 舍入界识别零；选择后重新检查原平衡残差及单边反力约束 |
 | 刀具查询 | 本地箱形/楔形解析几何 | 远端联合求解保留有限刀具几何链式导数；参考 [Newton 碰撞几何](https://github.com/newton-physics/newton/blob/f121272e7af8795d94994b3b7478f990ffd02c27/newton/_src/geometry/collision_primitive.py) |
 | 连续损伤与软梯度对照 | [DiSECt](https://diff-cutting-sim.github.io/) 沿预先给定切面软化；[DiffMJX/CFD](https://arxiv.org/html/2506.14186v2) 使用接触代理梯度 | 作为方法比较来源；正式刀路任务仍每次生成自然切口，导数定义分别记录 |
 | 网格刀面约束 | BladeMaster 使用粒子接触冲量 | `hold` 刀位下增加相容网格速度约束，防止传递后穿刀；将反力/矩返回刚体接口 |
 | 切割标签与采样 | 论文给出切割带及几何分侧 | `contact.assign` 增加触板底层标签；扰动采样将初始粒子反射至砧板上方；用于处理底层残连及初始穿透，网格/刀路核对见 TODO |
+| 任务目标求导 | [Warp 动态循环文档](https://nvidia.github.io/warp/latest/user_guide/differentiability.html) 要求非线性运算使用反向可重放的循环结果 | 本地加权位置误差与净刀力平方积分，将动态求和放入 `wp.func`，归一化及平方放入调用核；保持原目标值并用解析梯度核对 |
 | 场景与控制 | 论文扫描物体与机器人任务 | 香蕉沿用 DexLab 合成几何；规定刀路、自由刀与本地伺服，Franka 使用 MuJoCo 和 libfranka/SERL 形式控制器；尺寸和参数见 PARAMETERS |
 | 黏弹性 | BladeMaster 有可选牛顿黏性 | Maxwell 为本地可选扩展、默认关闭；正向内部状态 `Fv`，参数为 `maxwell_tau` 与 `maxwell_fraction` |

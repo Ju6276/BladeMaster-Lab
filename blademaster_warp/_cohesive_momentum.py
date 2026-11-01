@@ -14,9 +14,12 @@ def _stack(values, axis):
     )
 
 
-def momentum_residual(b, gradient, area, traction, stress, mass, dt, u, integrated=False):
-    B = Expansion(b.numpy())
-    G = [Expansion(gradient.numpy()[:, :, c]) for c in range(3)]
+def momentum_residual(
+    b, gradient, area, traction, stress, mass, dt, u, integrated=False, map_remainders=None
+):
+    low_b, low_g = (0.0, np.zeros_like(gradient.numpy())) if map_remainders is None else map_remainders
+    B = Expansion(b.numpy(), low_b)
+    G = [Expansion(gradient.numpy()[:, :, c], low_g[:, :, c]) for c in range(3)]
     T, S = Expansion(traction.numpy()), Expansion(stress.numpy())
     weight = Expansion(np.ones(len(area)) if integrated else area.numpy())
     m, t = Expansion(mass.numpy()[0]), Expansion(dt.numpy()[0])
@@ -51,5 +54,5 @@ def momentum_residual(b, gradient, area, traction, stress, mass, dt, u, integrat
                     value = value + (S[:, :, c] * g).sum(axis=1)
                 add_gradient(area, factor * value)
 
-        tape.record_func(backward, [result, *[a for a in inputs if a.requires_grad]])
+        tape.record_func(backward, [result, *[a for a in inputs if a.requires_grad and a.size]])
     return result

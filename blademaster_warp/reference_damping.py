@@ -52,12 +52,17 @@ def decay(transfer, moments, duration, rate):
     mapping = transfer.grid_map.numpy().copy()
     masses = transfer.grid_mass.copy() / m.mass
     size = mapping.shape[1]
+    dissipation = getattr(transfer, "dissipation", None)
 
     def generator(x):
+        if dissipation is not None:
+            return dissipation.action(x)
         return x - mapping.T @ (masses[:, None] * (mapping @ x))
 
     exponent = -t * eta
     trace = size - np.sum(masses[:, None] * mapping * mapping)
+    if dissipation is not None:
+        trace = dissipation.trace()
 
     def product(x):
         return (exponent * generator(x.reshape(size, 1))).ravel()

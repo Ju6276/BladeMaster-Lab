@@ -1,5 +1,7 @@
 """Scalar expansion arithmetic with fixed CPU accumulation order."""
 
+import math
+
 import numpy as np
 from numba import float64, guvectorize, njit
 from numba.extending import intrinsic
@@ -66,6 +68,27 @@ def matrix_product(left_high, left_low, right_high, right_low):
                     nl += l + pl
                     h, l = _two_sum(nh, nl)
                 high[batch, i, j], low[batch, i, j] = h, l
+    return high, low
+
+
+@njit(cache=True, fastmath=False)
+def sparse_matrix_product(offsets, indices, coefficients, right_high, right_low):
+    rows, columns = len(offsets) - 1, right_high.shape[1]
+    high = np.zeros((rows, columns))
+    low = np.zeros_like(high)
+    for i in range(rows):
+        for j in range(columns):
+            h, l = 0.0, 0.0
+            for position in range(offsets[i], offsets[i + 1]):
+                k = indices[position]
+                coefficient = coefficients[position]
+                ph, pl = _two_product(coefficient, right_high[k, j])
+                pl += coefficient * right_low[k, j]
+                ph, pl = _two_sum(ph, pl)
+                nh, nl = _two_sum(h, ph)
+                nl += l + pl
+                h, l = _two_sum(nh, nl)
+            high[i, j], low[i, j] = h, l
     return high, low
 
 
@@ -188,8 +211,6 @@ def matrix_residual(ah, al, xh, xl, bh, bl):
     return high, low
 
 
-# Numba stores gufunc cores and wrappers separately; mixed cache generations can
-# leave a wrapper calling an unresolved native symbol in a fresh process.
 @guvectorize([(float64, float64, float64[:], float64[:])], "(),()->(),()", nopython=True, cache=False)
 def array_sum(a, b, high, low):
     high[0], low[0] = _two_sum(a, b)

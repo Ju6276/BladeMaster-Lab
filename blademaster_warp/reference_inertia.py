@@ -10,46 +10,6 @@ from ._compensated import Expansion
 from .compensated_state import CompensatedArray, as_compensated, add_gradient
 
 
-@wp.kernel
-def _grid_velocity(
-    mapping: wp.array2d(dtype=wp.float64),
-    value: wp.array(dtype=wp.vec3d),
-    grid: wp.array(dtype=wp.vec3d),
-):
-    i = wp.tid()
-    result = wp.vec3d(0.0)
-    for p in range(value.shape[0]):
-        result += mapping[i, p] * value[p]
-    grid[i] = result
-
-
-@wp.kernel
-def _grid_projection(
-    mapping: wp.array2d(dtype=wp.float64),
-    masses: wp.array(dtype=wp.float64),
-    grid: wp.array(dtype=wp.vec3d),
-    projected: wp.array(dtype=wp.vec3d),
-):
-    p = wp.tid()
-    value = wp.vec3d(0.0)
-    for i in range(grid.shape[0]):
-        value += mapping[i, p] * masses[i] * grid[i]
-    projected[p] = value
-
-
-@wp.kernel
-def _momentum(
-    duration: wp.array(dtype=wp.float64),
-    rate: wp.array(dtype=wp.float64),
-    value: wp.array(dtype=wp.vec3d),
-    projected: wp.array(dtype=wp.vec3d),
-    original: wp.array(dtype=wp.vec3d),
-    result: wp.array(dtype=wp.vec3d),
-):
-    p = wp.tid()
-    result[p] = original[p] + duration[0] * rate[0] * (value[p] - projected[p])
-
-
 class ReferenceInertia:
     """Symmetric inertia action; duration is in s and damping rate in s^-1."""
 
@@ -67,6 +27,7 @@ class ReferenceInertia:
         self.values = values.copy()
         self.theta = np.longdouble(values[0]) * np.longdouble(values[1])
         self.mass_array = transfer.model.array(self.masses, float, False)
+        self.dissipation = getattr(transfer, "dissipation", None)
 
     def frozen(self):
         result = copy(self)
@@ -82,6 +43,8 @@ class ReferenceInertia:
         return result
 
     def generator(self, value):
+        if self.dissipation is not None:
+            return self.dissipation.action(value)
         if isinstance(value, Expansion):
             masses = self.masses if value.ndim == 1 else self.masses[:, None]
             return value - Expansion(self.mapping.T) @ (masses * (Expansion(self.mapping) @ value))
@@ -145,20 +108,27 @@ class ReferenceInertia:
         return self.solve_compensated(rhs).numpy(rhs.dtype)
 
     def add_momentum(self, original, value):
-        m = self.transfer.model
-        grid = wp.zeros(self.mapping.shape[0], dtype=wp.vec3d, device=m.device, requires_grad=True)
-        projected = wp.zeros(self.size, dtype=wp.vec3d, device=m.device, requires_grad=True)
-        result = wp.zeros(self.size, dtype=wp.vec3d, device=m.device, requires_grad=True)
-        wp.launch(_grid_velocity, len(grid), [self.transfer.grid_map, value, grid], device=m.device)
-        wp.launch(
-            _grid_projection,
-            self.size,
-            [self.transfer.grid_map, self.mass_array, grid, projected],
-            device=m.device,
-        )
-        wp.launch(
-            _momentum, self.size, [*self.parameters, value, projected, original, result], device=m.device
-        )
+        bound = self.frozen()
+        time, rate = map(Expansion, bound.values)
+        generated = bound.generator(Expansion(value.numpy()))
+        result = CompensatedArray.from_cpu(
+            Expansion(original.numpy()) + time * rate * generated,
+            dtype=wp.vec3d,
+            device=original.device,
+        ).high
+        tape = wp._src.context.runtime.tape
+        if tape is not None:
+
+            def backward():
+                seed = Expansion(result.grad.numpy())
+                add_gradient(original, seed)
+                add_gradient(value, time * rate * bound.generator(seed))
+                power = (seed * generated).sum()
+                add_gradient(bound.parameters[0], (rate * power).reshape(1))
+                add_gradient(bound.parameters[1], (time * power).reshape(1))
+
+            sources = [original, value, *bound.parameters]
+            tape.record_func(backward, [result, *[a for a in sources if a.requires_grad]])
         return result
 
     def solve_state(self, value):

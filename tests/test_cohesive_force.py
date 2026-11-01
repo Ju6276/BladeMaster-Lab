@@ -1,6 +1,7 @@
 """Integrated interface forces, empty supports and implicit derivatives."""
 
 from dataclasses import fields
+from decimal import Decimal, localcontext
 
 import numpy as np
 import pytest
@@ -207,10 +208,63 @@ def test_redundant_selected_reaction_area_and_geometry_pullbacks(scenario, integ
 
 
 @pytest.mark.parametrize("force_scale", [1e-9, 1.0, 1e3])
+def test_rounded_contact_cycle_matches_decimal_complementarity(force_solver, force_scale):
+    B = np.array([[-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0], [0.0, 1.0, -1.0]])
+    load = force_scale * np.array([-0.001, -0.1, -0.001])
+    mass, duration = 1e-4, 2e-5
+    gap = B @ B.T @ load / (mass / duration**2)
+    values = [
+        np.column_stack([gap, np.zeros((3, 2))]),
+        np.tile(np.eye(3), (3, 1, 1)),
+        np.tile([1.0, 0.0, 0.0], (3, 1)),
+        np.full(3, 0.0002),
+        np.tile([5e4, 70.0, 0.0], (3, 1)),
+        B,
+        np.zeros((3, 3, 3)),
+        np.full(3, 4e-6),
+        np.array([mass]),
+        np.array([duration]),
+    ]
+    # Rounding the three gaps independently can open one member of the cycle.
+    # Solve the resulting complementarity equations for those exact inputs.
+    with localcontext() as context:
+        context.prec = 90
+        decimal = lambda value: Decimal.from_float(float(value))
+        q = [decimal(value) for value in gap]
+        coefficient = decimal(mass) / decimal(duration) ** 2
+        sigma, gc, previous, area = map(decimal, [5e4, 70.0, 0.0002, 4e-6])
+        stiffness = area * sigma * (1 - previous * sigma / (2 * gc)) / previous
+        cycle = q[0] - q[1] - q[2]
+        assert cycle != 0
+        if cycle > 0:
+            first = stiffness * cycle
+            force = [
+                first,
+                coefficient * (2 * q[1] + q[2]) / 3 - first,
+                coefficient * (q[1] + 2 * q[2]) / 3 - first,
+            ]
+            opened = 0
+        else:
+            third = -stiffness * cycle
+            force = [
+                coefficient * (2 * q[0] - q[1]) / 3 - third,
+                coefficient * (2 * q[1] - q[0]) / 3 + third,
+                third,
+            ]
+            opened = 2
+        assert all(force[i] < 0 for i in range(3) if i != opened)
+        expected = np.array([float(value) for value in force])
+    result = force_solver(*arrays(values))
+    np.testing.assert_allclose(result.force.numpy()[:, 0], expected, rtol=1e-12, atol=1e-25 * force_scale)
+    np.testing.assert_allclose(result.gap.numpy()[opened, 0], abs(float(cycle)), rtol=1e-12, atol=0)
+
+
+@pytest.mark.parametrize("force_scale", [2.0**-30, 1.0, 2.0**10])
 def test_nonpositive_canonical_contact_reaction_with_binding_constraint(force_solver, force_scale):
     B = np.array([[-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0], [0.0, 1.0, -1.0]])
-    force = force_scale * np.array([-0.001, -0.1, -0.001])
-    coefficient = 1e-4 / (2e-5) ** 2
+    force = force_scale * np.array([-1.0, -100.0, -1.0]) / 1024
+    mass, duration = 2.0**-16, 2.0**-17
+    coefficient = mass / duration**2
     values = [
         np.column_stack([B @ B.T @ force / coefficient, np.zeros((3, 2))]),
         np.tile(np.eye(3), (3, 1, 1)),
@@ -220,20 +274,23 @@ def test_nonpositive_canonical_contact_reaction_with_binding_constraint(force_so
         B,
         np.zeros((3, 3, 3)),
         np.full(3, 4e-6),
-        np.array([1e-4]),
-        np.array([2e-5]),
+        np.array([mass]),
+        np.array([duration]),
     ]
+    # Dyadic loads and perturbations keep q[0] = q[1] + q[2] exactly.
     source = arrays(values)
     with wp.Tape() as tape:
         result = force_solver(*source)
     np.testing.assert_allclose(
-        result.force.numpy()[:, 0], force_scale * np.array([-0.002, -0.099, 0.0]), atol=1e-12 * force_scale
+        result.force.numpy()[:, 0],
+        force_scale * np.array([-2.0, -99.0, 0.0]) / 1024,
+        atol=1e-12 * force_scale,
     )
     seed = np.random.default_rng(43).normal(size=(3, 3)) / force_scale
     tape.backward(grads={result.force: wp.array(seed, dtype=wp.vec3d)})
     direction = values[7] * np.array([0.1, 0.3, 0.5])
     ad = float(np.sum(source[7].grad.numpy() * direction))
-    for epsilon in [1e-4, 1e-5]:
+    for epsilon in [2.0**-13, 2.0**-17]:
         trials = []
         for sign in [-1, 1]:
             source[7].assign(values[7] + sign * epsilon * direction)
@@ -242,13 +299,13 @@ def test_nonpositive_canonical_contact_reaction_with_binding_constraint(force_so
         np.testing.assert_allclose(ad, fd, rtol=2e-5, atol=1e-10)
 
     source[7].assign(values[7])
-    force_direction = force_scale * np.array([-0.03, -0.2, 0.0])
+    force_direction = force_scale * np.array([-30.0, -200.0, 0.0]) / 1024
     direction = np.zeros_like(values[0])
     direction[:, 0] = B @ B.T @ force_direction / coefficient
     ad = float(np.sum(source[0].grad.numpy() * direction))
     expected = float(seed[:, 0] @ force_direction)
     np.testing.assert_allclose(ad, expected, rtol=2e-8, atol=1e-10)
-    for epsilon in [1e-4, 1e-5]:
+    for epsilon in [2.0**-13, 2.0**-17]:
         trials = []
         for sign in [-1, 1]:
             source[0].assign(values[0] + sign * epsilon * direction)

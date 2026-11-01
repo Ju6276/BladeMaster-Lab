@@ -9,6 +9,8 @@ from .cohesive_geometry import InterfaceGeometry, solve_geometry
 from .differentiable_cohesive import CohesiveForceStep
 from .differentiable_material import PlasticState
 from .grid_constraints import project_velocity
+from ._cohesive_expansion import E, root, divide
+from .compensated_state import CompensatedArray, add_gradient
 
 
 @wp.kernel
@@ -27,17 +29,36 @@ def multiply_mass(
     momentum[i] = mass[i] * velocity[i]
 
 
-@wp.kernel
-def whiten(
-    mapping: wp.array2d(dtype=wp.float64),
-    gradient: wp.array2d(dtype=wp.vec3d),
-    mass: wp.array(dtype=wp.float64),
-    result: wp.array2d(dtype=wp.float64),
-    result_gradient: wp.array2d(dtype=wp.vec3d),
-):
-    q, i = wp.tid()
-    result[q, i] = mapping[q, i] / wp.sqrt(mass[i])
-    result_gradient[q, i] = gradient[q, i] / wp.sqrt(mass[i])
+def mass_coordinates(mapping, gradient, velocity, mass):
+    """Geometry and momentum use the same positive-mass coordinate transform."""
+    B, G, v, weights = [E(source.numpy()) for source in [mapping, gradient, velocity, mass]]
+    if np.any(weights.high <= 0.0):
+        raise ValueError("Mass coordinates require positive active grid masses")
+    roots = root(weights)
+    mapped = divide(B, roots[None, :])
+    derivative = divide(G, roots[None, :, None])
+    speed = roots[:, None] * v
+    outputs = [
+        CompensatedArray.from_cpu(value, dtype=source.dtype, device=source.device)
+        for value, source in [(mapped, mapping), (derivative, gradient), (speed, velocity)]
+    ]
+    tape = wp._src.context.runtime.tape
+    if tape is not None:
+
+        def backward():
+            b, g, z = [E(value.high.grad.numpy()) for value in outputs]
+            add_gradient(mapping, divide(b, roots[None, :]))
+            add_gradient(gradient, divide(g, roots[None, :, None]))
+            add_gradient(velocity, roots[:, None] * z)
+            contraction = (z * speed).sum(axis=1)
+            contraction = contraction - (b * mapped).sum(axis=0)
+            contraction = contraction - (g * derivative).sum(axis=0).sum(axis=1)
+            add_gradient(mass, divide(0.5 * contraction, weights))
+
+        sources = [mapping, gradient, velocity, mass]
+        arrays = [value.high for value in outputs] + [a for a in sources if a.requires_grad]
+        tape.record_func(backward, [a for a in arrays if a.size])
+    return outputs
 
 
 @wp.kernel
@@ -140,16 +161,8 @@ def advance_material(
             np.where(intact[:, None], geometry.gap_remainder, base.gap_remainder),
             base.frame_remainder,
         )
-        free = base.advance(separation_map, frame_map, data["increment"], duration)
-        mapping = model.zeros(separation_map.shape, float)
-        gradient = model.zeros(frame_map.shape, wp.vec3)
-        wp.launch(
-            whiten,
-            separation_map.shape,
-            inputs=[separation_map, frame_map, mass],
-            outputs=[mapping, gradient],
-            device=model.device,
-        )
+        mapping, gradient, speed = mass_coordinates(separation_map, frame_map, data["increment"], mass)
+        free = base.advance(mapping, gradient, speed, duration)
         closed_motion = None
         if (
             np.all(intact[support])

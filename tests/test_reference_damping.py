@@ -81,6 +81,7 @@ def test_diagonal_operator_and_zero_parameter_derivatives(time, rate):
         transfer,
         grid_map=m.array(np.diag(np.sqrt(1.0 - eigenvalues)), float, False),
         grid_mass=np.full(size, m.mass),
+        dissipation=None,
     )
     rng = np.random.default_rng(444)
     values = rng.normal(size=(size, 3))

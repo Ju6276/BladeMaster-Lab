@@ -275,22 +275,8 @@ def accumulate_segment(force: wp.array(dtype=wp.vec3), work: wp.array(dtype=floa
         wp.atomic_add(total_tool_work, 0, tool_work[0])
 
 
-class GeometryEventContact(NaturalCutContact):
-    """Bracketed cut-region entry with midpoint or symplectic TLMPM flow.
-
-    The prescribed knife has constant linear/angular velocity within a macro
-    step. Bracketed secant iterations solve the selected guard on the actual
-    pre-event material flow; all times and flow evaluations participate in AD.
-    """
-
-    def __init__(self, trajectory, *, release="integrated", friction_update="midpoint",
-                 integration="midpoint"):
-        super().__init__(trajectory, release=release, friction_update=friction_update)
-        if integration not in ("symplectic", "midpoint"):
-            raise ValueError("Geometry integration must be symplectic or midpoint")
-        if integration == "midpoint" and friction_update != "midpoint":
-            raise ValueError("Midpoint integration requires midpoint friction histories")
-        self.integration = integration
+class GeometryEvents:
+    """Cut-region queries and root location on a supplied material flow."""
 
     def pose(self, tool, elapsed):
         m = self.model
@@ -300,10 +286,12 @@ class GeometryEventContact(NaturalCutContact):
                  outputs=[position, rotation], device=m.device)
         return Tool(position, tool.velocity, rotation, tool.omega)
 
+
     def interval(self, end, start):
         duration = self.model.zeros(1, float)
         self.model.launch(clock_difference, 1, inputs=[end, start], outputs=[duration], device=self.model.device)
         return duration
+
 
     def candidates(self, state, trial, history, tool0, tool1, index, trial_history=None, duration=None):
         m, cfg = self.model, self.model.config
@@ -361,6 +349,7 @@ class GeometryEventContact(NaturalCutContact):
         return (particle, float(values[particle]), int(kinds.numpy()[particle]), int(planes.numpy()[particle]),
                 float(lower.numpy()[particle]), float(upper.numpy()[particle]))
 
+
     def guard(self, state, tool, particle, kind, plane):
         m, cfg = self.model, self.model.config
         value = m.zeros(1, float)
@@ -370,21 +359,6 @@ class GeometryEventContact(NaturalCutContact):
                  outputs=[value], device=m.device)
         return value
 
-    def advance_segment(self, state, history, tool, duration, cutting):
-        if self.integration == "midpoint":
-            from .differentiable_midpoint import advance_midpoint
-            result, updated, force = advance_midpoint(self, state, history, tool, duration, cutting)
-        else:
-            keys = self.contact_keys(state, history.codes, float(duration.numpy()[0]))
-            branch = self.freeze(history.codes.numpy(), keys, history.pair_keys,
-                                 history.damage.numpy() >= 1, cutting=cutting)
-            result, updated, force = FixedCutContact.step(
-                self, state, history, tool, branch, duration=duration, edge_departed=history.edge_departed,
-            )
-            updated.codes, updated.pair_keys, updated.cut_index = history.codes, keys, history.cut_index
-        if self.energy_ledger is not None:
-            self.energy_ledger.finish_trial(state, history, tool, result, updated, cutting)
-        return result, updated, force
 
     def locate(self, state, history, tool, tool0, elapsed, end, trial, trial_tool, particle, kind, plane,
                lower_fraction=0., upper_fraction=1.):
@@ -415,7 +389,6 @@ class GeometryEventContact(NaturalCutContact):
             at_event = self.pose(tool, time)
             value = self.guard(before, at_event, particle, kind, plane)
             residual = float(value.numpy()[0])
-            # The returned state must satisfy the entered region inequalities.
             if -tolerance <= residual <= 0.0:
                 region = m.zeros(1, float, False)
                 cfg = m.config
@@ -432,11 +405,52 @@ class GeometryEventContact(NaturalCutContact):
                 hi, ghi = time, value
         raise RuntimeError(f'Geometric event root did not converge: residual={residual:g} m')
 
+
     def root_tolerance(self, state, tool):
         x = state.x.numpy()
         scale = max(self.model.config.grid_spacing, float(np.max(np.abs(x))),
                     float(np.max(np.abs(tool.position.numpy()))))
         return 32 * np.finfo(x.dtype).eps * scale
+
+
+class GeometryEventContact(GeometryEvents, NaturalCutContact):
+    """Bracketed cut-region entry with midpoint or symplectic TLMPM flow.
+
+    The prescribed knife has constant linear/angular velocity within a macro
+    step. Bracketed secant iterations solve the selected guard on the actual
+    pre-event material flow; all times and flow evaluations participate in AD.
+    """
+
+    def __init__(self, trajectory, *, release="integrated", friction_update="midpoint",
+                 integration="midpoint"):
+        super().__init__(trajectory, release=release, friction_update=friction_update)
+        if integration not in ("symplectic", "midpoint"):
+            raise ValueError("Geometry integration must be symplectic or midpoint")
+        if integration == "midpoint" and friction_update != "midpoint":
+            raise ValueError("Midpoint integration requires midpoint friction histories")
+        self.integration = integration
+
+
+
+
+
+    def advance_segment(self, state, history, tool, duration, cutting):
+        if self.integration == "midpoint":
+            from .differentiable_midpoint import advance_midpoint
+            result, updated, force = advance_midpoint(self, state, history, tool, duration, cutting)
+        else:
+            keys = self.contact_keys(state, history.codes, float(duration.numpy()[0]))
+            branch = self.freeze(history.codes.numpy(), keys, history.pair_keys,
+                                 history.damage.numpy() >= 1, cutting=cutting)
+            result, updated, force = FixedCutContact.step(
+                self, state, history, tool, branch, duration=duration, edge_departed=history.edge_departed,
+            )
+            updated.codes, updated.pair_keys, updated.cut_index = history.codes, keys, history.cut_index
+        if self.energy_ledger is not None:
+            self.energy_ledger.finish_trial(state, history, tool, result, updated, cutting)
+        return result, updated, force
+
+
 
     def step(self, state, history, tool, instruction=CutInstruction()):
         m, cfg = self.model, self.model.config

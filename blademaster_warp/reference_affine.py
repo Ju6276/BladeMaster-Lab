@@ -12,6 +12,9 @@ import numpy as np
 import warp as wp
 
 from .geometry import grid_cells
+from ._compensated import Expansion
+from .compensated_state import CompensatedArray, as_compensated, add_gradient
+from ._transfer_dissipation import TransferDissipation, build as build_dissipation
 
 
 @wp.kernel
@@ -41,22 +44,42 @@ def _unpack(
     gradient[p] = affine * inverse_root[p]
 
 
-@wp.kernel
-def _compose(
-    separation: wp.array2d(dtype=wp.float64),
-    frame: wp.array2d(dtype=wp.vec3d),
-    transfer: wp.array2d(dtype=wp.float64),
-    result_separation: wp.array2d(dtype=wp.float64),
-    result_frame: wp.array2d(dtype=wp.vec3d),
-):
-    q, p = wp.tid()
-    value = wp.float64(0.0)
-    derivative = wp.vec3d(0.0)
-    for i in range(transfer.shape[0]):
-        value += separation[q, i] * transfer[i, p]
-        derivative += frame[q, i] * transfer[i, p]
-    result_separation[q, p] = value
-    result_frame[q, p] = derivative
+def compose_maps(separation, frame, transfer):
+    separation, frame, transfer = map(as_compensated, [separation, frame, transfer])
+    B, G, P = separation.cpu(), frame.cpu(), transfer.cpu()
+    mapped = [G[:, :, c] @ P for c in range(3)]
+    values = [
+        B @ P,
+        Expansion(np.stack([a.high for a in mapped], axis=-1), np.stack([a.low for a in mapped], axis=-1)),
+    ]
+    result = [
+        CompensatedArray.from_cpu(value, dtype=source.high.dtype, device=source.high.device)
+        for value, source in zip(values, [separation, frame])
+    ]
+    tape = wp._src.context.runtime.tape
+    if tape is not None:
+
+        def backward():
+            b = Expansion(result[0].high.grad.numpy())
+            g = Expansion(result[1].high.grad.numpy())
+            add_gradient(separation.high, b @ P.T)
+            parts = [g[:, :, c] @ P.T for c in range(3)]
+            add_gradient(
+                frame.high,
+                Expansion(
+                    np.stack([a.high for a in parts], axis=-1), np.stack([a.low for a in parts], axis=-1)
+                ),
+            )
+            value = B.T @ b
+            for c in range(3):
+                value = value + G[:, :, c].T @ g[:, :, c]
+            add_gradient(transfer.high, value)
+
+        sources = [separation.high, frame.high, transfer.high]
+        tape.record_func(
+            backward, [a for a in [*[value.high for value in result], *sources] if a.requires_grad and a.size]
+        )
+    return tuple(result)
 
 
 @wp.kernel
@@ -111,6 +134,7 @@ class ReferenceAffineTransfer:
     inverse_root: wp.array
     grid_mass: np.ndarray
     equivalent_slots: np.ndarray
+    dissipation: TransferDissipation | None = None
 
     def _check(self, value, dtype, shape):
         if value.dtype != dtype or value.shape != shape or value.device != self.model.device:
@@ -138,16 +162,7 @@ class ReferenceAffineTransfer:
         shape = (count, self.grid_map.shape[0])
         self._check(trace.separation_map, wp.float64, shape)
         self._check(trace.frame_map, wp.vec3d, shape)
-        separation = self.model.zeros((count, 4 * self.model.n), float)
-        frame = self.model.zeros(separation.shape, wp.vec3)
-        if count:
-            wp.launch(
-                _compose,
-                separation.shape,
-                [trace.separation_map, trace.frame_map, self.grid_map, separation, frame],
-                device=self.model.device,
-            )
-        return separation, frame
+        return compose_maps(trace.separation_map, trace.frame_map, self.grid_map)
 
     def kinematics(self, moments):
         self._check(moments, wp.vec3d, (4 * self.model.n,))
@@ -213,15 +228,24 @@ def build_transfer(model, topology):
     if np.any(masses <= 0) or not np.isfinite(masses).all():
         raise ValueError("Every reference-affine grid slot requires positive finite mass")
     mapping = np.zeros_like(numerator)
-    equivalent = np.arange(topology.count)
+    unmixed = numerator / masses[:, None]
+    exchange = []
+    equivalent = topology.shared_velocity_slots(model.node_count)
     offsets, sources = [getattr(topology, name).numpy() for name in ["offsets", "sources"]]
     for node in np.unique(keys % model.node_count):
         group = np.flatnonzero(keys % model.node_count == node)
         total = np.sum(masses[group])
-        fully_shared = all(offsets[i + 1] - offsets[i] == len(group) for i in group)
+        fully_shared = np.all(equivalent[group] == group[0])
+        for i in group:
+            compatible = np.sort(sources[offsets[i] : offsets[i + 1]])
+            excluded = np.setdiff1d(group, compatible)
+            for j in compatible:
+                fraction = masses[j] / total
+                if j == i:
+                    fraction += np.sum(masses[excluded]) / total
+                exchange.append((i, j, masses[i] / model.mass * fraction))
         if fully_shared:
             mapping[group] = np.sum(numerator[group], axis=0) / total
-            equivalent[group] = group[0]
         else:
             for i in group:
                 compatible = np.sort(sources[offsets[i] : offsets[i + 1]])
@@ -237,4 +261,5 @@ def build_transfer(model, topology):
         model.array(inverse_root, wp.mat33, False),
         masses,
         equivalent,
+        build_dissipation(slots, weights, feature, unmixed, mapping, exchange),
     )

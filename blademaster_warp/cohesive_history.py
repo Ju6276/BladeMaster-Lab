@@ -259,12 +259,20 @@ class CohesiveHistory:
         if not len(self.history):
             result = model.step(state, topology=topology, duration=duration, impulse=impulse, gravity=gravity)
             return result, self
+        equivalent = topology.shared_velocity_slots(model.node_count)
         if sides is None:
-            trace = self.reference_trace(model, topology, positive_sides)
+            trace = self.reference_trace(model, topology, positive_sides, equivalent_slots=equivalent)
         elif positive_sides is not None:
             raise ValueError("Specify explicit side codes or natural face orientations")
         else:
-            trace = build_trace(model, topology, self.quadrature.points, self.quadrature.normals, sides)
+            trace = build_trace(
+                model,
+                topology,
+                self.quadrature.points,
+                self.quadrature.normals,
+                sides,
+                equivalent_slots=equivalent,
+            )
         step = advance_material(
             model,
             state,

@@ -1,84 +1,25 @@
-"""ARS(2,2,2) with explicit bulk forces and implicit cohesive motion.
+"""ARS(2,2,2) with explicit bulk force and joint implicit cohesive/damping stages.
 
-Particle translation and reference velocity gradients remain separate state
-arrays. Contact force laws use the transported position rate, not the stored
-translation moment. Both material and interface rates use the same transfer.
+Position rates are transported velocities; particle translation moments and
+reference velocity gradients remain separate state arrays.
 """
 
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 
 import numpy as np
 import warp as wp
 
 from .cohesive_geometry import InterfaceGeometry, solve_geometry
 from .differentiable_cohesive import CohesiveForceStep
-from .differentiable_material import PlasticState, compute_stress, project_plastic
-from .reference_damping import decay
+from .differentiable_material import PlasticState, project_plastic
+from .reference_inertia import ReferenceInertia
+from .compensated_state import CompensatedArray, as_compensated
+from ._affine_arithmetic import AffineArithmetic
+from ._increment_stress import compute as compute_increment_stress
 
 
 GAMMA = 1.0 - 1.0 / np.sqrt(2.0)
 DELTA = 1.0 - 1.0 / (2.0 * GAMMA)
-
-
-@wp.kernel
-def _duration(source: wp.array(dtype=wp.float64), factor: wp.float64, result: wp.array(dtype=wp.float64)):
-    result[0] = factor * source[0]
-
-
-@wp.kernel
-def _sum_energy(
-    first: wp.array(dtype=wp.float64),
-    second: wp.array(dtype=wp.float64),
-    result: wp.array(dtype=wp.float64),
-):
-    p = wp.tid()
-    result[p] = first[p] + second[p]
-
-
-@wp.kernel
-def _vector_increment(
-    base: wp.array(dtype=wp.vec3d),
-    rate: wp.array(dtype=wp.vec3d),
-    duration: wp.array(dtype=wp.float64),
-    factor: wp.float64,
-    result: wp.array(dtype=wp.vec3d),
-):
-    p = wp.tid()
-    result[p] = base[p] + factor * duration[0] * rate[p]
-
-
-@wp.kernel
-def _matrix_increment(
-    base: wp.array(dtype=wp.mat33d),
-    rate: wp.array(dtype=wp.mat33d),
-    duration: wp.array(dtype=wp.float64),
-    factor: wp.float64,
-    result: wp.array(dtype=wp.mat33d),
-):
-    p = wp.tid()
-    result[p] = base[p] + factor * duration[0] * rate[p]
-
-
-@wp.kernel
-def _stress_moment(stress: wp.array(dtype=wp.mat33d), volume: wp.float64, result: wp.array(dtype=wp.mat33d)):
-    p = wp.tid()
-    result[p] = -volume * stress[p]
-
-
-@wp.kernel
-def _acceleration(force: wp.array(dtype=wp.vec3d), mass: wp.float64, result: wp.array(dtype=wp.vec3d)):
-    p = wp.tid()
-    result[p] = force[p] / mass
-
-
-@wp.kernel
-def _cohesive_acceleration(
-    displacement: wp.array(dtype=wp.vec3d),
-    duration: wp.array(dtype=wp.float64),
-    result: wp.array(dtype=wp.vec3d),
-):
-    p = wp.tid()
-    result[p] = displacement[p] / (duration[0] * duration[0])
 
 
 @wp.kernel
@@ -111,9 +52,30 @@ def _path_midpoint(
     )
 
 
+@wp.kernel
+def _damping_energy(
+    z1: wp.array(dtype=wp.vec3d),
+    l1: wp.array(dtype=wp.vec3d),
+    z2: wp.array(dtype=wp.vec3d),
+    l2: wp.array(dtype=wp.vec3d),
+    duration: wp.array(dtype=wp.float64),
+    rate: wp.array(dtype=wp.float64),
+    mass: wp.float64,
+    gamma: wp.float64,
+    result: wp.array(dtype=wp.float64),
+):
+    p = wp.tid()
+    value = wp.float64(0.0)
+    for a in range(4):
+        j = 4 * p + a
+        value += (wp.float64(1.0) - gamma) * wp.dot(z1[j], l1[j]) + gamma * wp.dot(z2[j], l2[j])
+    result[p] = mass * duration[0] * rate[0] * value
+
+
 @dataclass
 class AffineState(PlasticState):
     affine: wp.array | None = None
+    rounding_remainders: dict = field(default_factory=dict)
 
     @classmethod
     def from_material(cls, state, affine):
@@ -128,13 +90,26 @@ class AffineState(PlasticState):
             **{field.name: getattr(state, field.name) for field in fields(PlasticState)}, affine=affine
         )
 
-    def snapshot(self):
-        return {
-            field.name: (
-                None if getattr(self, field.name) is None else getattr(self, field.name).numpy().copy()
-            )
-            for field in fields(self)
+    def capture_remainders(self, arithmetic):
+        self.rounding_remainders = {
+            item.name: arithmetic.state(getattr(self, item.name)).low.copy()
+            for item in fields(self)
+            if item.name != "rounding_remainders"
+            and getattr(self, item.name) is not None
+            and getattr(self, item.name).numpy().dtype == np.float64
         }
+        return self
+
+    def snapshot(self):
+        result = {
+            item.name: None if getattr(self, item.name) is None else getattr(self, item.name).numpy().copy()
+            for item in fields(self)
+            if item.name != "rounding_remainders"
+        }
+        result["rounding_remainders"] = {
+            name: value.copy() for name, value in self.rounding_remainders.items()
+        }
+        return result
 
     @classmethod
     def restore(cls, snapshot, *, device, requires_grad=True):
@@ -151,7 +126,10 @@ class AffineState(PlasticState):
                     )
                 )
                 for name, kind in kinds.items()
-            }
+            },
+            rounding_remainders={
+                name: value.copy() for name, value in snapshot.get("rounding_remainders", {}).items()
+            },
         )
 
 
@@ -164,6 +142,8 @@ class AffineMaterialStep:
     stage: AffineState
     path_midpoint: wp.array
     damping_energy: wp.array
+    contact_history: CompensatedArray | None = None
+    contact_stages: tuple = ()
 
 
 def advance_affine(
@@ -182,6 +162,9 @@ def advance_affine(
     gravity=(0.0, 0.0, -9.81),
     force=None,
     damping_rate=None,
+    contacts=None,
+    contact_history=None,
+    constrain_normal=True,
 ):
     """Advance material and permanent interface history over one event segment.
 
@@ -191,10 +174,20 @@ def advance_affine(
     over this segment and replaces gravity, matching MaterialTrajectory.step.
     The callback replaces both impulse and gravity. Stage plastic returns use
     the segment's initial Fp; the final return supplies the retained plastic state.
-    Transfer damping uses two symmetric half steps at a fixed rate in s^-1;
+    Transfer damping shares the implicit stages at a fixed rate in s^-1;
     its default is (1 - flip_fraction) / (flip_reference_dt or config.dt).
+    contacts(x, filtered_moments, stage_duration, elapsed, history) returns
+    MappedContacts for that stage; x, moments and history retain rounding
+    remainders. The provider evaluates the tool at the supplied stage end time.
     """
     m = transfer.model
+    arithmetic = AffineArithmetic(state)
+    if (contacts is None) != (contact_history is None):
+        raise ValueError("Contact stages require both a provider and elastic history")
+    if not constrain_normal and contacts is None:
+        raise ValueError("Separated adhesion requires an independent contact provider")
+    initial_contact = None if contacts is None else arithmetic.remember(as_compensated(contact_history))
+    contact_outputs = []
     if not isinstance(state, AffineState) or state.affine is None:
         raise ValueError("Affine material stages require independent velocity-gradient state")
     transfer._check(duration, wp.float64, (1,))
@@ -203,8 +196,8 @@ def advance_affine(
     if force is not None and impulse is not None:
         raise ValueError("Specify a force callback or a segment impulse")
     count, size = len(history), 4 * m.n
-    transfer._check(separation_map, wp.float64, (count, size))
-    transfer._check(frame_map, wp.vec3d, (count, size))
+    transfer._check(as_compensated(separation_map).high, wp.float64, (count, size))
+    transfer._check(as_compensated(frame_map).high, wp.vec3d, (count, size))
     for array, kind, shape in [
         (state.x, wp.vec3d, (m.n,)),
         (state.F, wp.mat33d, (m.n,)),
@@ -223,11 +216,12 @@ def advance_affine(
         wp.launch(kernel, shape, inputs=sources, outputs=[result], device=m.device)
         return result
 
+    strains = {state.F: arithmetic.shift_identity(state.F, -1.0)}
     free_branch = m.zeros(m.n, int, False)
     free_branch.fill_(-1)
 
     def material_state(x, moments, F):
-        velocity, affine = transfer.unpack(moments)
+        velocity, affine = arithmetic.unpack(transfer, moments)
         result = AffineState(
             x, velocity, F, m.zeros(m.n, wp.mat33), m.zeros(m.n, int, False), m.zeros(m.n, wp.mat33), affine
         )
@@ -241,7 +235,10 @@ def advance_affine(
         )
         if int(errors.numpy()[0]):
             raise FloatingPointError("Affine material-stage return mapping failed")
-        return result
+        result.stress = launch(
+            compute_increment_stress, m.n, [strains[F], result.Fp, m.young, m.config.poisson_ratio], wp.mat33d
+        )
+        return result.capture_remainders(arithmetic)
 
     constant_force = None
     if force is None:
@@ -252,32 +249,89 @@ def advance_affine(
             constant_force = launch(_impulse_force, m.n, [impulse, duration])
 
     def explicit(value, moments, elapsed):
-        physical_velocity, _ = transfer.kinematics(moments)
+        physical_velocity, _ = arithmetic.kinematics(transfer, moments)
         load = constant_force if force is None else force(value, physical_velocity, elapsed)
         transfer._check(load, wp.vec3d, (m.n,))
-        moment = launch(_stress_moment, m.n, [value.stress, m.volume], wp.mat33d)
-        return launch(_acceleration, size, [transfer.pullback_force(load, moment), m.mass])
+        moment = arithmetic.scale(value.stress, -m.volume)
+        return arithmetic.scale(arithmetic.pullback_force(transfer, load, moment), m.mass, inverse=True)
 
     def move(x, F, moments, dt, factor=1.0):
-        velocity, rate = transfer.kinematics(moments)
-        return (
-            launch(_vector_increment, m.n, [x, velocity, dt, factor]),
-            launch(_matrix_increment, m.n, [F, rate, dt, factor], wp.mat33d),
-        )
+        velocity, rate = arithmetic.kinematics(transfer, moments)
+        H = arithmetic.increment(strains[F], rate, dt, factor)
+        next_F = arithmetic.shift_identity(H, 1.0)
+        strains[next_F] = H
+        return arithmetic.increment(x, velocity, dt, factor), next_F
 
-    tau = launch(_duration, 1, [duration, GAMMA], wp.float64)
+    tau = arithmetic.scale(duration, GAMMA)
     mass = m.array([m.mass], float, False)
+    if damping_rate is None:
+        reference_dt = m.config.flip_reference_dt or m.config.dt
+        damping_rate = m.array([(1.0 - m.config.flip_fraction) / reference_dt], float, False)
+    inertia = ReferenceInertia(transfer, tau, damping_rate)
 
-    def stage(x, F, moments, base_geometry, maximum):
-        if count:
-            free = base_geometry.advance(separation_map, frame_map, moments, tau)
-            motion = None
-            if (
-                np.all(maximum.numpy() == 0.0)
-                and np.all(base_geometry.gap.numpy() == 0.0)
-                and np.all(base_geometry.gap_remainder == 0.0)
-            ):
-                motion = tau.numpy().astype(np.longdouble)[0] * moments.numpy().astype(np.longdouble)
+    def stage(x, F, moments, base_geometry, maximum, contact_base, elapsed):
+        original = moments
+        moments = arithmetic.inverse(inertia, original)
+        if contacts is not None:
+            from .cohesive_contact import solve as solve_contact, history_rate
+            from .differentiable_cohesive import _evaluate
+
+            free = (
+                arithmetic.advance_geometry(inertia, base_geometry, separation_map, frame_map, original)
+                if count
+                else base_geometry
+            )
+            batch = contacts(
+                arithmetic.state(x),
+                arithmetic.state(moments),
+                arithmetic.state(tau),
+                elapsed,
+                arithmetic.state(contact_base),
+            )
+            inputs = [
+                free.gap,
+                free.frame,
+                reference_normal,
+                maximum,
+                material,
+                as_compensated(separation_map).high,
+                as_compensated(frame_map).high,
+                area,
+                mass,
+                tau,
+            ]
+            low_maps = (as_compensated(separation_map).low, as_compensated(frame_map).low)
+            root, displacement, selected, contact_force, updated_history = solve_contact(
+                inputs, free, inertia, batch, low_maps, constrain_normal=constrain_normal
+            )
+            arithmetic.remember(CompensatedArray(displacement, root.displacement.low))
+            acceleration = arithmetic.acceleration(displacement, tau)
+            moments = arithmetic.increment(moments, acceleration, tau)
+            if count:
+                raw, _, _ = _evaluate(
+                    inputs,
+                    displacement,
+                    selected,
+                    root.compliance,
+                    integrated_force=True,
+                    inertia=inertia,
+                    remainders=(free.gap_remainder, free.frame_remainder, root.displacement.low),
+                    map_remainders=low_maps,
+                    constrain_normal=constrain_normal,
+                )
+                response = CohesiveForceStep(*raw, displacement, root.info, root.displacement.low)
+                response.gap.assign(root.gap.high)
+                updated = InterfaceGeometry(response.gap, response.frame, root.gap.low, root.frame.low)
+                maximum = response.history
+            else:
+                response, updated = None, base_geometry
+            contact_rate = arithmetic.remember(
+                history_rate(updated_history, arithmetic.state(contact_base), arithmetic.state(tau))
+            )
+            next_contact = arithmetic.remember(updated_history)
+            contact_outputs.append((batch, contact_force, updated_history))
+        elif count:
+            free = arithmetic.advance_geometry(inertia, base_geometry, separation_map, frame_map, original)
             response, updated = solve_geometry(
                 free,
                 reference_normal,
@@ -289,51 +343,71 @@ def advance_affine(
                 mass,
                 tau,
                 integrated_force=True,
-                closed_motion=motion,
+                inertia=inertia,
             )
-            acceleration = launch(_cohesive_acceleration, size, [response.displacement, tau])
-            moments = launch(_vector_increment, size, [moments, acceleration, tau, 1.0])
+            arithmetic.remember(response.displacement_state)
+            acceleration = arithmetic.acceleration(response.displacement, tau)
+            moments = arithmetic.increment(moments, acceleration, tau)
             maximum = response.history
         else:
             response, updated = None, base_geometry
             acceleration = m.zeros(size, wp.vec3)
+        generator = arithmetic.generator(inertia, original)
+        filtered_rate = arithmetic.inverse(inertia, generator)
+        acceleration = arithmetic.increment(acceleration, filtered_rate, damping_rate, -1.0)
         xp, Fp = move(x, F, moments, tau)
-        return material_state(xp, moments, Fp), moments, updated, maximum, response, acceleration
+        result_state = material_state(xp, moments, Fp)
+        if contacts is None:
+            next_contact, contact_rate = None, None
+        return result_state, moments, updated, maximum, response, acceleration, next_contact, contact_rate
 
-    incoming = transfer.pack(state.v, state.affine)
-    if damping_rate is None:
-        reference_dt = m.config.flip_reference_dt or m.config.dt
-        damping_rate = m.array([(1.0 - m.config.flip_fraction) / reference_dt], float, False)
-    half_dt = launch(_duration, 1, [duration, 0.5], wp.float64)
-    first_decay = decay(transfer, incoming, half_dt, damping_rate)
-    z0 = first_decay.moments
-    initial_v, initial_A = transfer.unpack(z0)
-    initial = replace(state, v=initial_v, affine=initial_A)
+    incoming = arithmetic.pack(transfer, state.v, state.affine)
+    z0 = incoming
+    initial = state
     if state.stress is None:
-        stress = m.zeros(m.n, wp.mat33)
-        m.launch(
-            compute_stress,
+        stress = launch(
+            compute_increment_stress,
             m.n,
-            inputs=[state.F, state.Fp, m.young, m.config.poisson_ratio],
-            outputs=[stress],
-            device=m.device,
+            [strains[state.F], state.Fp, m.young, m.config.poisson_ratio],
+            wp.mat33d,
         )
         initial = replace(initial, stress=stress)
     e0 = explicit(initial, z0, m.zeros(1, float, False))
-    zbase = launch(_vector_increment, size, [z0, e0, duration, GAMMA])
-    mid, z1, geometry1, history1, _, a1 = stage(state.x, state.F, zbase, geometry, history)
+    zbase = arithmetic.increment(z0, e0, duration, GAMMA)
+    mid, z1, geometry1, history1, _, a1, _, rate1 = stage(
+        state.x, state.F, zbase, geometry, history, initial_contact, tau
+    )
     e1 = explicit(mid, z1, tau)
     xb, Fb = move(state.x, state.F, z1, duration, 1.0 - GAMMA)
     gb = geometry.extrapolate(geometry1, (1.0 - GAMMA) / GAMMA) if count else geometry
-    zbase = launch(_vector_increment, size, [z0, a1, duration, 1.0 - GAMMA])
-    zbase = launch(_vector_increment, size, [zbase, e0, duration, DELTA])
-    zbase = launch(_vector_increment, size, [zbase, e1, duration, 1.0 - DELTA])
-    result, zend, updated, maximum, response, _ = stage(xb, Fb, zbase, gb, history1)
-    last_decay = decay(transfer, zend, half_dt, damping_rate)
-    final_v, final_A = transfer.unpack(last_decay.moments)
-    result = replace(result, v=final_v, affine=final_A)
-    dissipated = launch(_sum_energy, m.n, [first_decay.energy, last_decay.energy], wp.float64)
-    start_rate, _ = transfer.kinematics(incoming)
-    end_rate, _ = transfer.kinematics(last_decay.moments)
+    zbase = arithmetic.increment(z0, a1, duration, 1.0 - GAMMA)
+    zbase = arithmetic.increment(zbase, e0, duration, DELTA)
+    zbase = arithmetic.increment(zbase, e1, duration, 1.0 - DELTA)
+    contact_base = (
+        None if contacts is None else arithmetic.increment(initial_contact, rate1, duration, 1.0 - GAMMA)
+    )
+    result, zend, updated, maximum, response, _, final_contact, _ = stage(
+        xb, Fb, zbase, gb, history1, contact_base, duration
+    )
+    dissipated = launch(
+        _damping_energy,
+        m.n,
+        [
+            z1,
+            arithmetic.generator(inertia, z1),
+            zend,
+            arithmetic.generator(inertia, zend),
+            duration,
+            damping_rate,
+            m.mass,
+            GAMMA,
+        ],
+        wp.float64,
+    )
+    start_rate, _ = arithmetic.kinematics(transfer, incoming)
+    end_rate, _ = arithmetic.kinematics(transfer, zend)
     midpoint = launch(_path_midpoint, m.n, [state.x, result.x, start_rate, end_rate, duration])
-    return AffineMaterialStep(result, updated, maximum, response, mid, midpoint, dissipated)
+    final_history = None if contacts is None else arithmetic.state(final_contact)
+    return AffineMaterialStep(
+        result, updated, maximum, response, mid, midpoint, dissipated, final_history, tuple(contact_outputs)
+    )

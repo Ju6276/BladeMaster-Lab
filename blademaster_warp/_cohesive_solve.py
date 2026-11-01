@@ -1,11 +1,10 @@
 """Reduced nonlinear equations for moving cohesive interfaces."""
 
 import numpy as np
-from scipy.optimize import least_squares, minimize
+from scipy.optimize import minimize
 
 from ._cohesive_initial import fixed_normal_initial
-from ._cohesive_linear import minimum_norm, solve_blocks
-from .reference_inertia import apply_inertia, solve_inertia, solve_reduced
+from .reference_inertia import apply_inertia, solve_inertia
 
 
 def skew(x):
@@ -255,164 +254,31 @@ def setup(values, compliance_factor=1.0, *, extended=False, integrated_force=Fal
     return (at, basis, float(compliance), length)
 
 
-def _solve_primal(
-    values, compliance_factor=1.0, return_traction=False, *, integrated_force=False, inertia=None
-):
-    (at, basis, compliance, length) = setup(
-        values, compliance_factor, integrated_force=integrated_force, inertia=inertia
-    )
-    count = len(values[0])
-    size = basis.shape[1]
-    y = np.zeros(size + 3 * count)
-    (q, frame, reference, history, material, b, gradient, area, mass, dt) = values
-    coefficient = float(mass[0] / dt[0] ** 2)
-    support = area > 0.0 if integrated_force else np.ones(count, dtype=bool)
-    if inertia is not None and np.all(history[support] == 0.0):
-        closed = _closed_increment(values, None, inertia=inertia)
-        if closed is not None:
-            candidate_u, candidate_t, info, _, _ = closed
-            candidate_u = candidate_u.astype(float)
-            if not integrated_force:
-                candidate_t = candidate_t / area[:, None]
-            return candidate_u, candidate_t if return_traction else compliance * candidate_t, compliance, info
-    if inertia is None and np.all(history[support] == 0.0):
-        active_b = b[support]
-        motion, _, reaction_rank, _ = np.linalg.lstsq(active_b, q[support], rcond=None)
-        candidate_u = -motion
-        reaction = np.linalg.lstsq(active_b.T, motion, rcond=None)[0]
-        root_area = np.sqrt(area)
-        weighted = b.T * root_area[None, :]
-        pressure = np.linalg.lstsq(weighted, -candidate_u, rcond=None)[0]
-        if integrated_force:
-            candidate_t = coefficient * pressure * root_area[:, None]
-            if reaction_rank == len(active_b):
-                candidate_t[support] = coefficient * reaction
-        else:
-            candidate_t = coefficient * pressure / root_area[:, None]
-        candidate_frame = frame + np.einsum("pa,qpb->qab", candidate_u, gradient)
-        candidate_n = (
-            reference[:, :1] * np.cross(candidate_frame[:, :, 1], candidate_frame[:, :, 2])
-            + reference[:, 1:2] * np.cross(candidate_frame[:, :, 2], candidate_frame[:, :, 0])
-            + reference[:, 2:3] * np.cross(candidate_frame[:, :, 0], candidate_frame[:, :, 1])
-        )
-        candidate_n /= np.linalg.norm(candidate_n, axis=1)[:, None]
-        component = np.sum(candidate_t * candidate_n, axis=1)
-        positive = candidate_t - np.minimum(component, 0.0)[:, None] * candidate_n
-        gap_error = np.max(np.abs(q[support] + active_b @ candidate_u), initial=0.0)
-        roundoff = 64 * np.finfo(float).eps * np.max(np.abs(q))
-        strength = material[:, 0] * (area if integrated_force else 1.0)
-        if gap_error <= roundoff and np.all(np.linalg.norm(positive, axis=1) <= strength):
-            y[:size] = basis.T @ candidate_u.ravel() / length
-            y[size:] = compliance * candidate_t.ravel() / length
-            error = float(np.max(np.abs(at(y)[0])))
-            assert error < 1e-13
-            result = candidate_t if return_traction else compliance * candidate_t
-            return (
-                candidate_u,
-                result,
-                compliance,
-                dict(
-                    iterations=0,
-                    initial_evaluations=0,
-                    initializer="closed_linear",
-                    closed_linear_solution=True,
-                    residual=error,
-                    closed=int(np.count_nonzero(support)),
-                    compressed=int(np.count_nonzero(component < 0)),
-                ),
-            )
-    initial_u, traction, selected_compliance, initial_info = fixed_normal_initial(
-        values, compliance, integrated_force=integrated_force, inertia=inertia
-    )
-    selected_factor = compliance_factor * selected_compliance / compliance
-    at, basis, compliance, length = setup(
-        values, selected_factor, integrated_force=integrated_force, inertia=inertia
-    )
-    initializer = "adaptive_fixed_normal_admm"
-    y[:size] = basis.T @ initial_u.ravel() / length
-    y[size:] = compliance * traction.ravel() / length
-    residual_scale = np.max(np.abs(at(y)[0]))
-    state_scale = max(np.max(np.abs(y)), np.max(np.abs(q)) / length, np.finfo(float).tiny)
-    initial_evaluations = 0
-    if residual_scale > 64 * np.finfo(float).eps * state_scale:
-        initial = least_squares(
-            lambda y: at(y)[0] / residual_scale,
-            y,
-            jac=lambda y: at(y)[1] / residual_scale,
-            x_scale="jac",
-            ftol=1e-13,
-            xtol=1e-13,
-            gtol=1e-13,
-            max_nfev=400,
-        )
-        y = initial.x.copy()
-        initial_evaluations = initial.nfev
-    for iteration in range(80):
-        (residual, jacobian, auxiliary) = at(y)
-        error = float(np.max(np.abs(residual)))
-        scale = max(np.max(np.abs(y)), np.max(np.abs(q)) / length, np.finfo(float).tiny)
-        if error <= 64 * np.finfo(float).eps * scale:
-            break
-        step = solve_blocks(jacobian, -residual, size)
-        norm = np.linalg.norm(residual)
-        fraction = 1.0
-        roundoff = 64 * np.finfo(float).eps * scale
-        if not np.isfinite(step).all():
-            raise RuntimeError(f"Nonfinite semismooth step at {iteration}: {error}")
-        while fraction:
-            candidate = y + fraction * step
-            if np.array_equal(candidate, y):
-                raise RuntimeError(f"Semismooth line search stalled at {iteration}: {error}")
-            updated = at(candidate)[0]
-            if np.linalg.norm(updated) <= (1 - 0.0001 * fraction) * norm + roundoff:
-                y = candidate
-                break
-            fraction *= 0.5
-        else:
-            raise RuntimeError(f"Semismooth line search failed at {iteration}: {error}")
-    else:
-        raise RuntimeError(f"Semismooth iteration limit: {error}")
-    u = (length * basis @ y[:size]).reshape(-1, 3)
-    dual = length * y[size:].reshape(count, 3)
-    result = dual / compliance if return_traction else dual
-    return (
-        u,
-        result,
-        compliance,
-        dict(
-            **initial_info,
-            iterations=iteration,
-            initial_evaluations=initial_evaluations,
-            initializer=initializer,
-            residual=error,
-            closed=int(np.count_nonzero(np.linalg.norm(auxiliary["proximal_gap"], axis=1) == 0)),
-            compressed=int(np.count_nonzero(auxiliary["compression"] < 0)),
-        ),
-    )
-
-
 def canonical_reaction(
-    values, u, traction, compliance, info, *, integrated_force=False, return_context=False
+    values,
+    u,
+    traction,
+    compliance,
+    info,
+    *,
+    integrated_force=False,
+    return_context=False,
+    remainders=None,
+    branches=None,
+    map_remainders=None,
 ):
     if info.get("closed_linear_solution", False):
         return (traction, info, None) if return_context else (traction, info)
     q, frame, reference, history, material, b, gradient, area, mass, dt = values
-    support = area > 0.0
-    base, L, _ = geometry(q, frame, reference, b, gradient)
-    gap_normal, C, _ = constraint_gradient(base, L, u.ravel())
-    gap = q + b @ u
-    scale = np.linalg.norm(q, axis=1) + np.linalg.norm(b @ u, axis=1)
-    closed = support & (history == 0.0) & (np.linalg.norm(gap, axis=1) <= 64 * np.finfo(float).eps * scale)
-    contact = support & ~closed & (np.abs(gap_normal) <= 64 * np.finfo(float).eps * scale)
+    from ._cohesive_projection import reaction_geometry
+
+    gap, mapped, normals, C, closed, contact = reaction_geometry(
+        values, u, traction, compliance, integrated_force, remainders, map_remainders
+    )
+    if branches is not None:
+        closed, contact = branches.closed, branches.contact
     if not np.any(closed | contact):
         return (traction, info, None) if return_context else (traction, info)
-    mapped = frame + np.einsum("pa,qpb->qab", u, gradient)
-    normals = (
-        reference[:, :1] * np.cross(mapped[:, :, 1], mapped[:, :, 2])
-        + reference[:, 1:2] * np.cross(mapped[:, :, 2], mapped[:, :, 0])
-        + reference[:, 2:3] * np.cross(mapped[:, :, 0], mapped[:, :, 1])
-    )
-    normals /= np.linalg.norm(normals, axis=1)[:, None]
     root_area = np.sqrt(area)
     integrated = traction.copy() if integrated_force else area[:, None] * traction
     blocks, original, slices = [], [], []
@@ -508,101 +374,16 @@ def canonical_reaction(
 def solve_primal(
     values, compliance_factor=1.0, return_traction=False, *, integrated_force=False, inertia=None
 ):
-    u, traction, compliance, info = _solve_primal(
-        values, compliance_factor, return_traction=True, integrated_force=integrated_force, inertia=inertia
-    )
-    traction, info = canonical_reaction(
-        values, u, traction, compliance, info, integrated_force=integrated_force
+    displacement, traction, compliance, info, _, _ = refine_geometry(
+        values,
+        np.zeros_like(values[0]),
+        np.zeros_like(values[1]),
+        compliance_factor,
+        integrated_force=integrated_force,
+        inertia=inertia,
     )
     result = traction if return_traction else compliance * traction
-    return u, result, compliance, info
-
-
-def _closed_increment(values, motion, *, inertia=None):
-    """Solve g=B(d+u)=0 from d without subtracting nearly equal point gaps.
-
-    d is the mass-normalized free nodal displacement. The supplied gap and
-    B d must agree within the rounding bound of their coordinate conversion.
-    """
-    q, frame, reference, history, material, b, gradient, area, mass, dt = values
-    support = area > 0.0
-    if not np.any(support) or np.any(history[support] != 0.0):
-        return None
-    if motion is not None:
-        motion = np.asarray(motion, dtype=np.longdouble)
-        if motion.shape != (b.shape[1], 3) or not np.isfinite(motion).all():
-            raise ValueError("Closed motion must match the mass-normalized grid displacement")
-        product = b @ motion
-        bound = 64 * np.finfo(float).eps * (np.abs(b) @ np.abs(motion))
-        if np.any(np.abs(q[support] - product[support]) > bound[support]):
-            raise ValueError("Closed motion must generate the supported free gap")
-    active = b[support].astype(float)
-    left, singular, right = np.linalg.svd(active, full_matrices=False)
-    rank = np.count_nonzero(singular > singular[0] * max(active.shape) * np.finfo(float).eps)
-    right = right[:rank].astype(np.longdouble)
-    if motion is None:
-        coordinates = -(left[:, :rank].astype(np.longdouble).T @ q[support]) / singular[:rank, None]
-    else:
-        coordinates = -right @ motion
-    if inertia is None:
-        u = right.T @ coordinates
-    else:
-        modes = solve_inertia(inertia, right.T)
-        u = modes @ solve_reduced(right @ modes, coordinates)
-    gap = q + b @ u
-    if motion is None and np.max(np.abs(gap[support]), initial=0.0) > 64 * np.finfo(float).eps * max(
-        np.max(np.abs(q)), np.finfo(float).tiny
-    ):
-        return None
-    momentum = apply_inertia(inertia, u)
-    root_area = np.sqrt(area)
-    weighted = b.T * root_area[None, :]
-    pressure = np.linalg.lstsq(weighted.astype(float), -momentum.astype(float), rcond=None)[0]
-    pressure = pressure.astype(np.longdouble)
-    for _ in range(8):
-        pressure += np.linalg.lstsq(
-            weighted.astype(float), (-momentum - weighted @ pressure).astype(float), rcond=None
-        )[0]
-    balance = momentum + weighted @ pressure
-    balance_bound = (
-        64
-        * np.finfo(float).eps
-        * (np.linalg.norm(momentum) + np.linalg.norm(weighted) * np.linalg.norm(pressure))
-    )
-    if np.linalg.norm(balance) > balance_bound:
-        raise RuntimeError("Factored closed reactions failed nodal momentum balance")
-    coefficient = mass[0] / dt[0] ** 2
-    force = coefficient * pressure * root_area[:, None]
-    frame = frame + np.einsum("pa,qpb->qab", u, gradient)
-    normal = (
-        reference[:, :1] * np.cross(frame[:, :, 1], frame[:, :, 2])
-        + reference[:, 1:2] * np.cross(frame[:, :, 2], frame[:, :, 0])
-        + reference[:, 2:3] * np.cross(frame[:, :, 0], frame[:, :, 1])
-    )
-    normal /= np.linalg.norm(normal, axis=1)[:, None]
-    component = np.sum(force * normal, axis=1)
-    positive = force - np.minimum(component, 0.0)[:, None] * normal
-    if np.any(np.linalg.norm(positive, axis=1) > area * material[:, 0]):
-        return None
-    gap = q + b @ u
-    error = (
-        float(np.max(np.abs(gap[support]), initial=0.0))
-        if motion is None
-        else float(np.max(np.abs(right @ (motion + u)), initial=0.0))
-    )
-    gap[support] = 0.0
-    info = dict(
-        iterations=0,
-        initial_evaluations=0,
-        initializer="closed_linear",
-        closed_linear_solution=True,
-        closed_factorized=True,
-        residual=error,
-        extended_residual=error,
-        closed=int(np.count_nonzero(support)),
-        compressed=int(np.count_nonzero(component < 0)),
-    )
-    return u, force.astype(float), info, gap, frame
+    return displacement.high, result, compliance, info
 
 
 def refine_geometry(
@@ -614,96 +395,61 @@ def refine_geometry(
     integrated_force=False,
     closed_motion=None,
     inertia=None,
+    return_context=False,
+    map_remainders=None,
 ):
-    if np.finfo(np.longdouble).nmant <= np.finfo(np.float64).nmant:
-        raise RuntimeError("Interface refinement requires extended-precision CPU arithmetic")
-    precise = [np.asarray(value, dtype=np.longdouble) for value in values]
-    precise[0] = precise[0] + gap_remainder
-    precise[1] = precise[1] + frame_remainder
+    from ._cohesive_equilibrium import solve
+    from ._compensated import Expansion
+
+    precise = list(values)
+    precise[0] = values[0].astype(np.longdouble) + gap_remainder
+    precise[1] = values[1].astype(np.longdouble) + frame_remainder
     if closed_motion is not None:
         if not integrated_force:
             raise ValueError("Factored closed motion requires integrated interface forces")
-        closed = _closed_increment(precise, closed_motion, inertia=inertia)
-        if closed is not None:
-            u, force, info, gap, frame = closed
-            compliance = setup(values, compliance_factor, integrated_force=True, inertia=inertia)[2]
-            return u, force, compliance, info, gap, frame
-    seed_u, seed_t, seed_compliance, info = _solve_primal(
-        values, compliance_factor, return_traction=True, integrated_force=integrated_force, inertia=inertia
-    )
-    if info["initializer"] == "closed_linear" and inertia is not None:
-        closed = _closed_increment(precise, None, inertia=inertia)
-        if closed is not None:
-            u, force, info, gap, frame = closed
-            if not integrated_force:
-                force = force / values[7][:, None]
-            return u, force, seed_compliance, info, gap, frame
-    if info["initializer"] == "closed_linear" and inertia is None:
-        # With zero opening and history, equilibrium is independent of cohesive parameters.
-        q, frame, reference, _, material, b, gradient, area, mass, dt = precise
-        coefficient = mass[0] / dt[0] ** 2
-        support = area > 0.0 if integrated_force else np.ones(len(q), dtype=bool)
-        active_b = b[support]
-        _, _, reaction_rank, _ = np.linalg.lstsq(active_b.astype(float), q[support].astype(float), rcond=None)
-        u = -minimum_norm(active_b, q[support])
-        reaction = minimum_norm(active_b.T, -u)
-        root_area = np.sqrt(area)
-        weighted = b.T * root_area[None, :]
-        pressure = minimum_norm(weighted, -u)
-        if integrated_force:
-            traction = coefficient * pressure * root_area[:, None]
-            if reaction_rank == len(active_b):
-                traction[support] = coefficient * reaction
-        else:
-            traction = coefficient * pressure / root_area[:, None]
-        frame = frame + np.einsum("pa,qpb->qab", u, gradient)
-        normal = (
-            reference[:, :1] * np.cross(frame[:, :, 1], frame[:, :, 2])
-            + reference[:, 1:2] * np.cross(frame[:, :, 2], frame[:, :, 0])
-            + reference[:, 2:3] * np.cross(frame[:, :, 0], frame[:, :, 1])
-        )
-        normal /= np.linalg.norm(normal, axis=1)[:, None]
-        normal_force = np.sum(traction * normal, axis=1)
-        active = traction - np.minimum(normal_force, 0.0)[:, None] * normal
-        gap = q + b @ u
-        error = float(np.max(np.abs(gap[support]), initial=0.0))
-        scale = max(np.max(np.abs(q)), np.finfo(float).tiny)
-        if error <= 64 * np.finfo(float).eps * scale and np.all(
-            np.linalg.norm(active, axis=1) <= material[:, 0] * (area if integrated_force else 1.0)
-        ):
-            info["extended_residual"] = error / float(np.min(2 * material[:, 1] / material[:, 0]))
-            gap[support] = 0.0
-            return u, traction.astype(float), seed_compliance, info, gap, frame
-    info["closed_linear_solution"] = False
-    base_compliance = setup(values, integrated_force=integrated_force, inertia=inertia)[2]
-    at, basis, compliance, length = setup(
+        motion = np.asarray(closed_motion, dtype=np.longdouble)
+        mapping = values[5]
+        if motion.shape != (mapping.shape[1], 3) or not np.isfinite(motion).all():
+            raise ValueError("Closed motion must match the mass-normalized grid displacement")
+        support = values[7] > 0.0
+        gap = Expansion(values[0], gap_remainder)
+        product = Expansion(
+            mapping, 0.0 if map_remainders is None else map_remainders[0]
+        ) @ Expansion.from_value(motion)
+        bound = 64 * np.finfo(float).eps * (abs(mapping) @ abs(motion))
+        if np.any(abs((gap - product).high[support]) > bound[support]):
+            raise ValueError("Closed motion must generate the supported free gap")
+    compliance = setup(values, compliance_factor, integrated_force=integrated_force, inertia=inertia)[2]
+    _, force, _, info, displacement = fixed_normal_initial(
         precise,
-        seed_compliance / base_compliance,
-        extended=True,
+        compliance,
+        integrated_force=integrated_force,
+        max_iterations=1024,
+        inertia=inertia,
+        return_primal=True,
+    )
+    info = dict(info, initializer="fixed_normal_admm")
+    seed = (displacement, force, compliance, info, precise[0], precise[1])
+    response = solve(
+        values,
+        gap_remainder,
+        frame_remainder,
+        seed,
         integrated_force=integrated_force,
         inertia=inertia,
+        map_remainders=map_remainders,
     )
-    basis = basis.astype(np.longdouble)
-    size = basis.shape[1]
-    y = np.r_[
-        basis.T @ seed_u.astype(np.longdouble).ravel() / length,
-        compliance * seed_t.astype(np.longdouble).ravel() / length,
-    ]
-    for _ in range(8):
-        residual, jacobian, _ = at(y)
-        correction = solve_blocks(jacobian.astype(float), -residual.astype(float), size)
-        y += correction
-    residual, _, response = at(y)
-    error = float(np.max(np.abs(residual)))
-    scale = max(np.max(np.abs(y)), np.max(np.abs(precise[0])) / length, np.finfo(float).tiny)
-    if not np.isfinite(error) or error > 64 * np.finfo(float).eps * scale:
-        raise RuntimeError(f"Refined interface residual: {error}")
-    precise_u = (length * basis @ y[:size]).reshape(seed_u.shape)
-    u = precise_u.astype(float)
-    traction = (length * y[size:] / compliance).astype(float).reshape(seed_t.shape)
-    traction, info = canonical_reaction(
-        values, u, traction, compliance, info, integrated_force=integrated_force
+    info = dict(
+        response.info,
+        residual=response.info["paired_residual"],
+        extended_residual=response.info["paired_residual"],
     )
-    info["extended_residual"] = error
-    frame = precise[1] + np.einsum("pa,qpb->qab", precise_u, precise[6])
-    return precise_u, traction, compliance, info, response["proximal_gap"], frame
+    result = (
+        response.displacement,
+        response.traction.high,
+        response.compliance,
+        info,
+        response.gap,
+        response.frame,
+    )
+    return (*result, response.branches) if return_context else result

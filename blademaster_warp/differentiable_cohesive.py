@@ -461,6 +461,42 @@ def _closed_pullback(
     return gradients
 
 
+def _opening_jacobian(local, inputs, traction, output, basis, compliance, map_remainders=None):
+    """Each opening depends only on its own free gap, frame and traction.
+
+    Three reverse seeds recover these diagonal blocks; the full displacement
+    coupling is then composed with the separation and frame maps.
+    """
+    count = len(output)
+    size = basis.shape[1]
+    result = np.zeros((3 * count, size + 3 * count))
+    if not count:
+        return result
+    low_b, low_g = (0.0, 0.0) if map_remainders is None else map_remainders
+    mapping = Expansion(inputs[5].numpy(), low_b)
+    frame_map = Expansion(inputs[6].numpy(), low_g)
+    for component in range(3):
+        seed = np.zeros((count, 3))
+        seed[:, component] = 1.0
+        local.zero()
+        local.backward(grads={output: wp.array(seed, dtype=output.dtype, device=output.device)})
+        gap_gradient = inputs[0].grad.numpy()
+        frame_gradient = inputs[1].grad.numpy()
+        displacement = mapping[:, :, None] * gap_gradient[:, None, :]
+        for column in range(3):
+            displacement = (
+                displacement
+                + frame_map[:, :, column, None] * frame_gradient[:, None, :, column]
+            )
+        displacement = displacement.numpy()
+        reaction = traction.grad.numpy() / compliance
+        for point in range(count):
+            row = 3 * point + component
+            result[row, :size] = basis.T @ displacement[point].ravel()
+            result[row, size + 3 * point : size + 3 * point + 3] = reaction[point]
+    return result
+
+
 def _implicit_pullback(
     inputs,
     values,
@@ -595,12 +631,7 @@ def _implicit_pullback(
         local.backward(grads={Ru: array(column.reshape(-1, 3), True)})
         rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), gradient(fixed_t).ravel() / compliance])
     shape = Rg.numpy().shape
-    for index in range(np.prod(shape)):
-        local.zero()
-        unit = np.zeros(shape)
-        unit.ravel()[index] = 1.0
-        local.backward(grads={Rg: array(unit, True)})
-        rows.append(np.r_[basis.T @ fixed_u.grad.numpy().ravel(), gradient(fixed_t).ravel() / compliance])
+    rows.extend(_opening_jacobian(local, clones, fixed_t, Rg, basis, compliance, map_remainders))
     J = np.array(rows).reshape(len(rows), size + 3 * len(inputs[0]))
     full_sources = [fixed_u, fixed_t, *clones]
     if local_contacts is not None:

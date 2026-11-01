@@ -31,9 +31,34 @@ class Balanced:
         return residual, jacobian, gaps
 
 
-def regularized_response(equations, state, mu, weights):
+def _cached_response(equations):
+    """Reuse the last state for one solve with fixed equation parameters."""
+    previous = None
+
+    def clone(response):
+        residual, jacobian, gaps = response
+        return (
+            E(residual.high.copy(), residual.low.copy()),
+            E(jacobian.high.copy(), jacobian.low.copy()),
+            [E(gap.high.copy(), gap.low.copy()) for gap in gaps],
+        )
+
+    def evaluate(state):
+        nonlocal previous
+        if previous is not None:
+            high, low, response = previous
+            if np.array_equal(state.high, high) and np.array_equal(state.low, low):
+                return clone(response)
+        response = equations(state)
+        previous = state.high.copy(), state.low.copy(), clone(response)
+        return response
+
+    return evaluate
+
+
+def regularized_response(equations, state, mu, weights, evaluate=None):
     size = equations.size
-    residual, jacobian, gaps = equations(state)
+    residual, jacobian, gaps = (equations if evaluate is None else evaluate)(state)
     assign(residual, slice(size, None), residual[size:] - mu * weights * state[size:])
     for i, weight in enumerate(weights):
         j = size + i
@@ -130,11 +155,12 @@ def closed_active_candidate(equations):
 def regularized(equations, y, weights):
     size = equations.size
     trace = []
+    evaluate = _cached_response(equations)
     for exponent in range(2, 35, 2):
         mu = 10.0**-exponent
 
         def at(state):
-            return regularized_response(equations, state, mu, weights)
+            return regularized_response(equations, state, mu, weights, evaluate)
 
         line_evaluations = 0
         search = None
@@ -173,7 +199,7 @@ def regularized(equations, y, weights):
             line_evaluations += len(line)
         else:
             y, active_info = contact_active_candidate(equations, y, mu, weights)
-        original, original_jacobian, gaps = equations(y)
+        original, original_jacobian, gaps = evaluate(y)
         error = np.max(abs(original.high))
         scale = max(np.max(abs(y.high)), np.finfo(float).tiny)
         scaled_error = 0.0 if error == 0.0 else _scaled_relative_residual(original, original_jacobian, y)

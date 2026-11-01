@@ -4,6 +4,14 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：统一候选全量与界面反向构造
+
+batched 工作树 `ae963d3` 加统一数值、批量求值及嵌套接触修复，dirty=true。`PYTHONPATH=.:runs/worktree_full_20261101 python -m pytest tests -q -p run_status --durations=20`：**2034 passed、8 skipped、18 subtests passed / 4512.17 s**，退出码 0。插件核对源码位置并记录逐项结果；根目录与冻结的 `runs/nested_source` 共 **120** 个 Python 源码文件逐项相同，命令和配置保存在该结果目录的 `manifest.json`。
+
+同一基线的反向构造候选 `runs/opening_jacobian_source`，按界面点独立性用三个反向种子构造开口残差块。`PYTHONPATH=runs/opening_jacobian_source:tests:. python runs/check_opening_source.py runs/test_opening_jacobian.py tests/test_joint_closed_adjoint.py tests/test_joint_adjoint_scaling.py tests/test_separated_adhesion.py -q`：**87 passed / 96.93 s**。四种界面状态、两种力表示、法向约束开/关及普通/补偿映射共 **32** 例与逐行反向对照通过。
+
+`python runs/profile_opening_jacobian.py` 使用相同候选：64 粒子、32/128 积分点时，开口 Jacobian 构造 **0.40692→0.01527 s / 1.87557→0.01959 s**，矩阵逐项相同。32 积分点的完整局部反向 `python runs/profile_small_colored.py`：**0.6290→0.2335 s**，16 组输入梯度逐项相同。记录 `runs/opening_jacobian_benchmark_20261101/` 与 `runs/pullback_small_colored_20261101/`。
+
 ## 2026-11-01：数组编译缓存的进程启动崩溃
 
 RTX 4090 主机、Numba 0.68.0，batched 候选的 `python runs/probe_compiled_divide.py raw` 与 `wrapper` 均在 `1÷2` 处以 **−11** 退出；隔离缓存串行构建、第二进程复用均以 **0** 退出。缓存主体导出 `array_divide…v5`，包装器引用 `array_divide…v3`；串行缓存两者均为 `v5`。记录 `runs/compiled_cache_20261101/{result,symbol_versions}.json`。Numba 上游有[并发 gufunc 缓存崩溃记录](https://github.com/numba/numba/issues/4807)。

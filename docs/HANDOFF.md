@@ -19,7 +19,7 @@ ssh -t dong@100.70.97.92 'ssh -t dong@tamsgpu9'
 
 4090 使用项目 `.venv/bin/python`；依赖版本以 `requirements.txt` 为准。开跑前检查 `nvidia-smi` 和现有任务。长批次保存命令、提交、日志与退出码；复查进程和退出码后更新结果。运行中保持该源码快照不变。
 
-当前稀疏精化停止条件修复全量测试：1714 passed、8 skipped、18 subtests passed，723.58 s，日志在 `BladeMaster-Warp-linear-20261101/runs/refinement_stopping_20261101/`。文档整理基线的 1669 项结果保留在主仓库 `runs/docs_cleanup_20261101/`。
+主树 `95d547e` 的数组编译缓存修复全量：1715 passed、8 skipped、18 subtests passed，829.67 s，日志在 `BladeMaster-Warp-cache-20261101/runs/cache_fix_20261101/`。统一 batched 候选全量：2034 passed、8 skipped、18 subtests passed，4512.17 s，记录见下表。
 
 GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。Mac 推送后，干净的远端工作树再拉取；候选工作树先核对本地差异。`runs/` 不进 Git。
 
@@ -39,8 +39,10 @@ GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。
 | `BladeMaster-Warp-unified-20261101` | `843ddd6` 加核心、接触和自然推进归并；原全量发现 10 项低位/反力失败，已由修复候选替代 | `runs/unified_full_20261101/`、`runs/unified_failures_20261101/` |
 | unified 目录 `runs/integrated_source/` | 统一数值候选，包含低位停止条件及嵌套接触派发修复；全量复验中 | `runs/integrated_full_20261101/` |
 | unified 目录 `runs/natural_repaired_source/` | 修复加固定方程求值缓存；自然轨迹前 8 步完成 | `runs/natural_repaired_20261101/` |
-| `BladeMaster-Warp-batched-20261101` | `ae963d3` 加统一候选、缓存、批量求值和嵌套接触修复；正式工作树全量复验中 | `runs/worktree_full_20261101/`、`runs/natural_batched_20261101/` |
+| `BladeMaster-Warp-batched-20261101` | `ae963d3` 加统一候选、缓存、批量求值和嵌套接触修复；2034 项全量通过，退出码 0 | `runs/worktree_full_20261101/`、`runs/natural_batched_20261101/` |
 | batched 目录 `runs/nested_source/` | 冻结的相同候选；带板下刀和自然梯度检查中，前 8 步能量观测已完成 | `runs/natural_board_cut_20261101/`、`runs/natural_gradient_*_20261101/`、`runs/energy_cut_precise_20261101/` |
+| batched 目录 `runs/opening_jacobian_source/` | 数组缓存修复、按法向分支计算 Hessian、三种子构造开口反向块；87 项检查通过，全量及 8 步自然反向运行中 | `runs/opening_full_20261101/`、`runs/natural_colored_backward_20261101/` |
+| batched 目录 `runs/pivot_budget_source/` | 接触集合整组更新及内层 Newton 预算修复；95 项检查通过，实际第 9 步平衡重算中 | `runs/pivot_budget_20261101_result.json`、`runs/pivot_budget_refinement_20261101/` |
 
 Mac 对应工作树为 `BladeMaster-Warp-linear-20261101`、`BladeMaster-Warp-unified-20261101`、`BladeMaster-Warp-core-20261101` 和 `BladeMaster-Warp-batched-20261101`。unified 根目录保留原失败快照；batched 根目录与 `nested_source` 的 120 个 Python 源码文件相同，含正式 `tests/test_nested_contacts.py`。当前有效全量分别使用 `integrated_source` 和 batched 正式工作树，运行结束后归并。
 

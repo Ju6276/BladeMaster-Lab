@@ -27,8 +27,8 @@ E5 原八项清单按实际范围归并如下：
 
 - 分项能量账本已接入旧自然轨迹入口。
 - 内聚断裂、参考切面与多刀历史、分阶段推进、固定率耗散有独立模块结果。闭合反向迁移回归已在定向修复候选通过 36/117/19 项检查。
-- 接触联合推进、碰撞和空间配对位于 4090 候选；部分全量失败或异常结束。
-- 新界面的完整自然切割接入及整体能量/受影响 E1–E4 复验待完成。
+- 接触联合推进、碰撞、空间配对及自然推进的统一 batched 候选全量 **2034 passed、8 skipped**；主树缓存修复全量 **1715 passed、8 skipped**。两者结果分别绑定 HANDOFF 所列源码。
+- 新界面从未切割初态完成带板下刀前 8 步，发生 8 个自然分侧事件，损伤历史仍为零。第 9 步接触平衡和前 8 步完整反向正在核对；切透、退刀、再接触及活跃断裂能量待完成。
 
 当前 `scripts.diff_natural_validate`、`scripts.diff_multicut_validate`、`scripts.diff_energy_validate` 使用 `MaterialTrajectory + GeometryEventContact`。内聚阶段入口为 `CohesiveHistory.advance` / `advance_affine`。两条流程的公式和来源见 [METHOD](METHOD.md)。
 

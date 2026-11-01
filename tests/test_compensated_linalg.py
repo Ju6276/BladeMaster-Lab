@@ -6,18 +6,20 @@ import numpy as np
 import pytest
 
 from blademaster_warp._compensated import Expansion
-from blademaster_warp._compensated_linalg import Factorization, minimum_norm
+from blademaster_warp._compensated_linalg import Factorization, minimum_norm, solve
+from blademaster_warp._compensated_sparse import try_solve
 
 
 def decimal_value(value, index):
     return Decimal.from_float(float(value.high[index])) + Decimal.from_float(float(value.low[index]))
 
 
+@pytest.mark.parametrize("sparse", [False, True])
 @pytest.mark.parametrize("small", [2.0**-60, 2.0**-80, 1e-22])
-def test_solve_retains_a_pivot_stored_below_the_matrix_ulp(small):
+def test_solve_retains_a_pivot_stored_below_the_matrix_ulp(small, sparse):
     matrix = Expansion(np.ones((2, 2)), [[0.0, 0.0], [0.0, small]])
     rhs = Expansion([[2.0, 3.0], [2.0, 3.0]], [[0.0, 0.0], [3 * small, -2 * small]])
-    result = Factorization(matrix).solve(rhs)
+    result = solve(matrix, rhs) if sparse else Factorization(matrix).solve(rhs)
     with localcontext() as context:
         context.prec = 100
         determinant = decimal_value(matrix, (1, 1)) - 1
@@ -28,12 +30,13 @@ def test_solve_retains_a_pivot_stored_below_the_matrix_ulp(small):
                 assert abs(decimal_value(result, (row, column)) - expected) < Decimal("1e-28")
 
 
+@pytest.mark.parametrize("sparse", [False, True])
 @pytest.mark.parametrize("exponent", [-1000, -900, 0, 900])
-def test_refinement_keeps_a_widely_scaled_right_hand_side(exponent):
+def test_refinement_keeps_a_widely_scaled_right_hand_side(exponent, sparse):
     matrix = np.array([[1.0, 2.0, 3.0], [2.0, -1.0, 4.0], [-1.0, 3.0, 2.0]])
     scale = np.ldexp(1.0, exponent)
     rhs = Expansion(np.array([1.0, -2.0, 3.0]) * scale)
-    result = Factorization(matrix).solve(rhs)
+    result = solve(matrix, rhs) if sparse else Factorization(matrix).solve(rhs)
     with localcontext() as context:
         context.prec = 100
         unit = Decimal.from_float(scale)
@@ -55,6 +58,19 @@ def test_refinement_keeps_a_widely_scaled_right_hand_side(exponent):
         tolerance = max(abs(unit) * Decimal("1e-28"), Decimal.from_float(np.nextafter(0.0, 1.0)) * 16)
         for i, expected in enumerate(values):
             assert abs(decimal_value(result, i) - expected) < tolerance
+
+
+def test_sparse_refinement_resolves_remainder_only_load():
+    matrix = Expansion([[2.0, 1.0], [1.0, 3.0]])
+    rhs = Expansion([1.0, 1.0], [2.0**-60, -(2.0**-62)])
+    result = try_solve(matrix, rhs)
+    assert result is not None
+    with localcontext() as context:
+        context.prec = 100
+        first, second = [decimal_value(rhs, i) for i in range(2)]
+        expected = [(3 * first - second) / 5, (2 * second - first) / 5]
+        for i in range(2):
+            assert abs(decimal_value(result, i) - expected[i]) < Decimal("1e-30")
 
 
 def test_rank_deficient_least_squares_matches_exact_minimum_norm():

@@ -100,6 +100,12 @@ class Factorization:
 
 
 def solve(matrix, rhs):
+    from ._compensated_sparse import try_solve
+
+    matrix, rhs = map(Expansion.from_value, [matrix, rhs])
+    refined = try_solve(matrix, rhs)
+    if refined is not None:
+        return refined
     return Factorization(matrix).solve(rhs)
 
 

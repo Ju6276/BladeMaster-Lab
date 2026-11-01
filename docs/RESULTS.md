@@ -4,6 +4,16 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：稀疏分解与两分量残差细化
+
+RTX 4090 主机 CPU，`113b344` 加稀疏细化改动。goal 工作树 `python runs/natural_linear_benchmark_20261101/benchmark.py`：实际自然切割的 **4032×4032** 系统有 **436113** 个非零项；FMA 两分量分解 **21.354 s**，稀疏分解 **0.06948 s**、求解及两轮残差修正 **0.11779 s**。分解填充由 **9014193** 降至 **535779** 项；最终后向误差 **2.86749e-33**，解主值相同、完整两分量解的相对差 **2.06887e-31**，使用原残差判据。
+
+linear 工作树 `python runs/sparse_refinement_full_20261101/small_benchmark.py`：1/3/16 阶系统增加约 **50–62 μs**，64 阶 **0.3705→0.3140 ms**、256 阶 **14.842→3.457 ms**，预热后五次中位数。`python -m pytest tests/test_compensated_products.py tests/test_compensated_linalg.py tests/test_compensated_state.py -q`：**79 passed / 0.67 s**，包含低位独立主元、极小/极大载荷及 Decimal 解核对。
+
+相同源码 `python -m pytest tests -q`：**1702 passed、8 skipped、18 subtests passed / 734.20 s**，退出码 0。本地与 4090 源码/测试差异逐项相同；日志与退出记录为 `runs/sparse_refinement_full_20261101/full.log`、`full_result.json`。
+
+goal 接触快照 `c20b3dc`、dirty=true，`PYTHONPATH=runs/natural_fma_source:. python runs/natural_refined_flow.py`：保存的 **1311** 积分点、**10** 个已分侧粒子状态完成一次接触推进，**361.60 s**，55 次 4032 阶求解均以两轮修正达到原残差界；结果为 1 个阶段、0 个新接触事件。完整自然切割仍在推进。
+
 ## 2026-11-01：FMA 补偿乘积
 
 RTX 4090 主机，`4556cfa` 加 FMA 改动，`python runs/fma_probe_20261101/probe.py`：**87809** 组跨数量级有限乘积的主值/余量与原拆分算法相同，**200** 组独立 Decimal 余量核对通过；32/128/256/512 阶 LU 主值、余量与置换相同，512 阶分解 **0.51657→0.10575 s**。生成指令为 `vmulsd` 与 `vfmsub213sd`。

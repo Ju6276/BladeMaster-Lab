@@ -18,9 +18,11 @@
 |---|---|---|
 | `BladeMaster-Warp-cache-20261101` | 统一内聚核心、缩放停止条件、提前 Newton、GMRES、零乘子反力选择及批量求值 | `runs/weak_full_20261101/`：2137 passed、8 skipped、18 subtests passed，退出 0 |
 | cache 的 `runs/numerical_weak_source/` | 核心修复去掉性能改动 | `runs/numerical_weak_full_20261101/`：2103 passed、8 skipped、18 subtests passed，退出 0 |
-| `BladeMaster-Warp-task-20261101` | 当前核心加连续刀路、任务目标、能量与检查点入口 | `runs/task_full_20261101/`：2162 项全量运行中 |
-| cache 的 `runs/accelerated_source/` | 任务版本加 16 点分块与输入设备驱动的 CUDA 补偿乘法 | 39 项定向检查通过；`runs/accelerated_full_complete_20261101/`：2201 项全量运行中 |
+| `BladeMaster-Warp-task-20261101` | 当前核心加连续刀路、任务目标、能量与检查点入口 | `runs/task_full_20261101/`：2154 passed、8 skipped、18 subtests passed，退出 0；入口已归并主树 |
+| cache 的 `runs/accelerated_source/` | 任务版本加 16 点分块与输入设备驱动的 CUDA 补偿乘法 | 39 项定向检查通过；中间全量在 1710 passed、8 skipped 时主动结束，由 throughput 最终候选全量覆盖 |
 | `BladeMaster-Warp-batched-20261101` | 自然下刀与捕获平衡方程实验 | 当前续跑 `runs/natural_weak_energy_20261101/` 使用冻结 cache 核心 |
+
+`BladeMaster-Warp-throughput-20261101` 是基于 `59abcf5` 的最终性能候选，包含任务入口、CUDA 分块与逐元素运算融合。源码冻结，`runs/throughput_full_20261101/` 运行 2229 项全量检查；算术与设备定向检查 67 passed。
 
 8 项跳过检查均依赖独立 CRESSim 上游构建。全量状态以对应 `full_result.json`、`failures.txt` 和进程为准。临时源码的测试驱动必须核对 `blademaster_warp.__file__`；加速候选链接 task 的 vendor，并使用 task 的完整脚本与测试资源。
 

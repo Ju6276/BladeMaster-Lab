@@ -4,6 +4,10 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：统一任务入口全量
+
+task 工作树 `4624c6a`、dirty=true，包含已归并核心和 `NaturalTask` 入口。`PYTHONPATH=. python -m pytest tests -q`：**2154 passed、8 skipped、18 subtests passed / 6541.16 s**，退出 0。记录 `runs/task_full_20261101/`；三步/七步承载任务的完整反向、检查点及自然差分均通过，分别耗时 **301.60 / 1334.77 s**。完整 150 步自然切割仍在第 9 步求解。
+
 ## 2026-11-01：统一核心提交
 
 数值核心提交 `2f4bddf` 对应 `runs/numerical_weak_full_20261101/` 的 **2103 passed、8 skipped、18 subtests passed / 9732.87 s**；批量求值提交 `20fc706` 对应 `runs/weak_full_20261101/` 的 **2137 passed、8 skipped、18 subtests passed / 4786.21 s**。RTX 4090，命令均为对应源码目录的 `python -m pytest tests -q`。8 项跳过依赖独立 CRESSim 构建。313 个数值源码/测试/脚本文件核对一致，末尾空白整理后的映射检查 **24 passed / 4.33 s**。两项提交已推送至 `sync-20261020`。

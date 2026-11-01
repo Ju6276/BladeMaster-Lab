@@ -1,0 +1,80 @@
+{
+  "simulation": {
+    "size": [
+      0.012,
+      0.012,
+      0.012
+    ],
+    "grid_spacing": 0.006,
+    "dt": 0.0002,
+    "young_modulus": 20000.0,
+    "yield_stress": 0.0,
+    "flip_fraction": 1.0,
+    "external_tool": true,
+    "blade_grid_constraint": false,
+    "label_board_layer": false,
+    "blade_half_size": [
+      0.0005,
+      0.0077,
+      0.006
+    ],
+    "blade_bevel_height": 0.002
+  },
+  "task": {
+    "durations": [
+      0.001,
+      0.0002,
+      0.0002
+    ],
+    "controls": [
+      [
+        0.0,
+        0.0,
+        -1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "position": [
+      0.0002,
+      0.0001,
+      0.01801
+    ],
+    "rotation": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "strength": 50000.0,
+    "fracture_energy": 70.0,
+    "contact_parameters": [
+      1000.0,
+      500.0,
+      0.2,
+      0.3,
+      0.2
+    ],
+    "diameter": 0.003,
+    "offset": 0.0015,
+    "cutting": true,
+    "force_weight": 0.1
+  }
+}

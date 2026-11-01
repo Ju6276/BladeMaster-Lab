@@ -5,6 +5,7 @@ reference velocity gradients remain separate state arrays.
 """
 
 from dataclasses import dataclass, field, fields, replace
+from typing import NamedTuple
 
 import numpy as np
 import warp as wp
@@ -131,6 +132,14 @@ class AffineState(PlasticState):
                 name: value.copy() for name, value in snapshot.get("rounding_remainders", {}).items()
             },
         )
+
+
+class ContactStage(NamedTuple):
+    batch: object
+    force: CompensatedArray
+    history: CompensatedArray
+    correction: CompensatedArray
+    duration: wp.array
 
 
 @dataclass(frozen=True)
@@ -329,7 +338,10 @@ def advance_affine(
                 history_rate(updated_history, arithmetic.state(contact_base), arithmetic.state(tau))
             )
             next_contact = arithmetic.remember(updated_history)
-            contact_outputs.append((batch, contact_force, updated_history))
+            contact_outputs.append(ContactStage(
+                batch, contact_force, updated_history,
+                CompensatedArray(displacement, root.displacement.low), tau,
+            ))
         elif count:
             free = arithmetic.advance_geometry(inertia, base_geometry, separation_map, frame_map, original)
             response, updated = solve_geometry(
@@ -409,5 +421,6 @@ def advance_affine(
     midpoint = launch(_path_midpoint, m.n, [state.x, result.x, start_rate, end_rate, duration])
     final_history = None if contacts is None else arithmetic.state(final_contact)
     return AffineMaterialStep(
-        result, updated, maximum, response, mid, midpoint, dissipated, final_history, tuple(contact_outputs)
+        result, updated, maximum, response, mid, midpoint, dissipated, final_history,
+        tuple(contact_outputs)
     )

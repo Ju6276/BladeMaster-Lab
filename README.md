@@ -32,8 +32,7 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 | 材料/接触梯度 | `scripts.diff_validate`、`scripts.diff_horizon`、`scripts.diff_contact_scan`、`scripts.diff_contact_horizon`、`scripts.diff_contact_convergence` |
 | 推压优化 | `scripts.diff_optimize`：AD/FD/CMA-ES 对照 |
 | 固定分支切割 | `scripts.diff_cut_validate`、`scripts.diff_cut_trajectory`；后者支持同刀路并排视频 |
-| 自然事件切割 | `scripts.diff_cut_events`、`scripts.diff_release_validate`、`scripts.diff_natural_validate`、`scripts.diff_natural_refine`、`scripts.diff_multicut_validate` |
-| 自然轨迹能量 | `scripts.diff_energy_validate`：静置、压入、切割与阈值扫描 |
+| 可微分自然任务 | `scripts.diff_natural_task --case examples/natural_contact.json --output runs/natural_contact`：统一刀路、接触历史、内聚状态、梯度、检查点与能量记录 |
 | 对照/诊断/显示 | `scripts.fig5_compare`、`scripts.topocut_compare`、`scripts.probe_substep` 等，完整索引见运行指南 |
 
 ## 文档

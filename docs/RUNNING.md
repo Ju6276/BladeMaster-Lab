@@ -9,6 +9,25 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
+## 可微分自然任务
+
+同一 JSON 文件指定物体、材料、刀具、分段刀路和目标。入口使用 `NaturalTask` / `NaturalCohesive`，每次评估从未切割初态重新生成切面与接触。
+
+```bash
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_task \
+  --case examples/natural_contact.json --output runs/natural_contact
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_task \
+  --case examples/natural_contact.json --gradient --output runs/natural_contact_ad
+PYTHONPATH=. .venv/bin/python -m scripts.diff_natural_task \
+  --case examples/natural_contact.json --checkpoint-steps 1 --output runs/natural_contact_checkpoint
+```
+
+示例为 64 粒子、200 μs 步长、七步下刀/退刀/侧移的承载接触任务。`durations` 单位为秒；每段 `controls` 是世界坐标系线速度（m/s）与角速度（rad/s），按 x/y/z 排列。`--dt` 覆盖最大步长并保持各段物理时长。
+
+正向输出 `report.json`（逐步力、事件、能量）、`checkpoint.pkl`（最近完整时间步）和 `terminal.pkl`。反向输出 `gradients.npz`，包含刀路、材料及初态梯度。完整切透任务的当前结果见 DIFFERENTIABLE / RESULTS。
+
+全仓库测试同时保护显示、在线界面和原正向功能；完整自然切割按轨迹完成、自然差分、检查点、能量、步长趋势和优化效果分别验收。模块通过数量与这些任务结果分别记录。
+
 ## 在线运行
 
 ```bash

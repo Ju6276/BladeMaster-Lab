@@ -6,6 +6,31 @@ import numpy as np
 import pytest
 
 from blademaster_warp._compensated import Expansion
+from blademaster_warp._compensated_kernels import array_product
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (1.0 + 2.0**-27, 1.0 - 2.0**-27),
+        (np.ldexp(1.1, 900), np.ldexp(1.3, -900)),
+        (np.ldexp(1.1, -1020), np.ldexp(1.3, 1020)),
+        (np.ldexp(1.0 + 2.0**-52, -1022), 0.5),
+        (np.ldexp(1.0 + 2.0**-52, -1022), 1.0 + 2.0**-27),
+        (np.nextafter(0.0, 1.0), 0.5),
+        (np.nextafter(0.0, 1.0), 1.0 + 2.0**-52),
+        (np.finfo(float).max, 1.0 - 2.0**-27),
+    ],
+)
+def test_product_remainder_matches_decimal_at_float_boundaries(left, right):
+    high, low = array_product(left, right)
+    with localcontext() as context:
+        context.prec = 1600
+        exact = Decimal.from_float(float(left)) * Decimal.from_float(float(right))
+        expected_high = float(exact)
+        expected_low = float(exact - Decimal.from_float(expected_high))
+    assert high == expected_high
+    assert low == expected_low
 
 
 def decimal_array(value):

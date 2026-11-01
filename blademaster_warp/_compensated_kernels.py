@@ -1,9 +1,8 @@
 """Scalar expansion arithmetic with fixed CPU accumulation order."""
 
-import math
-
 import numpy as np
 from numba import float64, guvectorize, njit
+from numba.extending import intrinsic
 
 
 @njit(cache=True, fastmath=False, inline="always")
@@ -13,18 +12,21 @@ def _two_sum(a, b):
     return value, (a - (value - shifted)) + (b - shifted)
 
 
+@intrinsic
+def _fma(typing_context, a, b, c):
+    if a != float64 or b != float64 or c != float64:
+        return None
+
+    def codegen(context, builder, signature, arguments):
+        return builder.fma(*arguments)
+
+    return float64(float64, float64, float64), codegen
+
+
 @njit(cache=True, fastmath=False, inline="always")
 def _two_product(a, b):
     value = a * b
-    ma, ea = math.frexp(a)
-    mb, eb = math.frexp(b)
-    ca, cb = 134217729.0 * ma, 134217729.0 * mb
-    ah, bh = ca - (ca - ma), cb - (cb - mb)
-    al, bl = ma - ah, mb - bh
-    product = ma * mb
-    error = ((ah * bh - product) + ah * bl + al * bh) + al * bl
-    exponent = ea + eb
-    return value, math.ldexp((product - math.ldexp(value, -exponent)) + error, exponent)
+    return value, _fma(a, b, -value)
 
 
 @njit(cache=True, fastmath=False)

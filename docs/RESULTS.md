@@ -4,6 +4,14 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：FMA 补偿乘积
+
+RTX 4090 主机，`4556cfa` 加 FMA 改动，`python runs/fma_probe_20261101/probe.py`：**87809** 组跨数量级有限乘积的主值/余量与原拆分算法相同，**200** 组独立 Decimal 余量核对通过；32/128/256/512 阶 LU 主值、余量与置换相同，512 阶分解 **0.51657→0.10575 s**。生成指令为 `vmulsd` 与 `vfmsub213sd`。
+
+`python -m pytest tests/test_compensated_products.py tests/test_compensated_linalg.py tests/test_compensated_state.py -q`：**71 passed / 2.42 s**，含新增 8 组正常数、次正规数和下溢边界。自然入口 `PYTHONPATH=runs/natural_fma_source:. python runs/natural_fma_comparison.py`：第 5 步 **41** 组状态/历史数组与原实现相同，步骤耗时 **27.03→24.34 s**；记录分别在 linear 工作树 `runs/fma_probe_20261101/`、`runs/fma_full_20261101/` 和 goal 工作树 `runs/natural_fma_step_20261101/`。
+
+`python -m pytest tests -q`：**1694 passed、8 skipped、18 subtests passed / 763.57 s**，退出码 0；测试源码为 `4556cfa` 加 FMA 与边界测试两文件改动。
+
 ## 2026-11-01：批量两分量算术编译
 
 RTX 4090 主机，`6591d00` 加数组 TwoSum/TwoProduct 编译。单独原型 `python runs/compiled_expansion_probe.py`：100 组标量/数组/广播及二进制尺度对照，主值和余量逐项相同；3 元素乘积中位耗时 **6.577→0.713 μs**，1908² 元素乘积 **101.65→46.63 ms**。

@@ -39,10 +39,12 @@ GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。
 | `BladeMaster-Warp-unified-20261101` | `843ddd6` 加核心、接触和自然推进归并；原全量发现 10 项低位/反力失败，已由修复候选替代 | `runs/unified_full_20261101/`、`runs/unified_failures_20261101/` |
 | unified 目录 `runs/integrated_source/` | 统一数值候选，包含低位停止条件及嵌套接触派发修复；全量复验中 | `runs/integrated_full_20261101/` |
 | unified 目录 `runs/natural_repaired_source/` | 修复加固定方程求值缓存；自然轨迹前 8 步完成 | `runs/natural_repaired_20261101/` |
-| `BladeMaster-Warp-batched-20261101` | `ae963d3` 加统一候选、缓存和批量方程求值；前 8 步的状态/历史及事件与原计算相同 | `runs/natural_batched_20261101/` |
-| batched 目录 `runs/nested_source/` | 加速候选加嵌套接触修复；全量、带板下刀及切割能量检查中 | `runs/nested_full_20261101/`、`runs/natural_board_cut_20261101/`、`runs/energy_cut_events_20261101/` |
+| `BladeMaster-Warp-batched-20261101` | `ae963d3` 加统一候选、缓存、批量求值和嵌套接触修复；正式工作树全量复验中 | `runs/worktree_full_20261101/`、`runs/natural_batched_20261101/` |
+| batched 目录 `runs/nested_source/` | 冻结的相同候选；带板下刀和自然梯度检查中，前 8 步能量观测已完成 | `runs/natural_board_cut_20261101/`、`runs/natural_gradient_*_20261101/`、`runs/energy_cut_precise_20261101/` |
 
-Mac 对应工作树为 `BladeMaster-Warp-linear-20261101`、`BladeMaster-Warp-unified-20261101`、`BladeMaster-Warp-core-20261101` 和 `BladeMaster-Warp-batched-20261101`。unified 根目录保留原失败快照；batched 根目录尚未包含嵌套接触修复。当前有效全量分别使用上表的 `integrated_source` 和 `nested_source`，运行结束后归并。
+Mac 对应工作树为 `BladeMaster-Warp-linear-20261101`、`BladeMaster-Warp-unified-20261101`、`BladeMaster-Warp-core-20261101` 和 `BladeMaster-Warp-batched-20261101`。unified 根目录保留原失败快照；batched 根目录与 `nested_source` 的 120 个 Python 源码文件相同，含正式 `tests/test_nested_contacts.py`。当前有效全量分别使用 `integrated_source` 和 batched 正式工作树，运行结束后归并。
+
+旧 `runs/nested_full_20261101/` 的 15 项 Franka/伺服/显示测试失败于临时源码目录缺少 `vendor` 模型资源；补齐资源后，原 15 项与嵌套接触两项共 **17 passed / 61.61 s**。正式工作树全量采用根目录资源，记录在 `runs/worktree_full_20261101/`。自然切割第 9 步的耗时定位保存在 `runs/board_step9_trace_20261101/` 与 `runs/board_equilibrium_capture_20261101/`。
 
 旧 performance、core-compiled、repair_source 及未修复嵌套接触的全量已终止，由上表两套全量替代。替代记录在 unified 的 `runs/unified_failures_20261101/` 和 batched 的 `runs/nested_contacts_20261101/`。旧 goal 的 FMA 自然事件运行已终止；稀疏版本第 8 步结果保留在 `BladeMaster-Warp-goal-20261101/runs/natural_sparse_events_20261101/`。
 

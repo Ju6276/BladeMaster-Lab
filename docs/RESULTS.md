@@ -12,7 +12,9 @@ unified 的修复/缓存快照 `843ddd6`、dirty=true，`PYTHONPATH=runs/natural
 
 batched `runs/nested_source`，`PYTHONPATH=runs/nested_source:. python runs/natural_energy_observer.py --dt <步长> --steps <步数> --no-cutting --output <目录>`：64 粒子、12 mm 方块、h=6 mm、E=20 kPa；接触参数固定为 kn=1000 N/m、kt=500 N/m、c=0.2 N·s/m、μs/μd=0.3/0.2。独立记录动能、仿射动能、重力势能、弹性/接触储能、刀功、黏性与滑动耗散；独立接触力重算差 **0 N**，摩擦功分解最大误差 **3.47e−18 W**。
 
-步长 **200/100/50 μs**：静置推进 **0.6 ms** 的能量收支残差为 **−1.334e−11 / −1.890e−12 / −2.417e−13 J**；增加 `--knife-z .01801 --knife-speed -1`，无切割压入 **1 ms** 的残差为 **−1.187e−6 / −3.291e−7 / +1.176e−7 J**，绝对值占输入功 **3.963% / 1.118% / 0.405%**。压入相邻时间步的最大位置差 **1.140→0.409 μm**。记录 `runs/energy_audit_20261101.json`，各运行的 `manifest.json` 保存完整参数和命令。
+步长 **200/100/50 μs**：静置推进 **0.6 ms** 的能量收支残差为 **−1.334e−11 / −1.890e−12 / −2.417e−13 J**。增加 `--knife-z .01801 --knife-speed -1`，无切割压入 **1 ms**，步长 **200/100/50/25 μs** 的残差为 **−1.187e−6 / −3.291e−7 / +1.176e−7 / −1.728e−8 J**，绝对值占输入功 **3.963% / 1.118% / 0.405% / 0.0591%**；相邻时间步的最大位置差 **1.140→0.409→0.0395 μm**。记录 `runs/energy_audit_20261101.json`，各运行的 `manifest.json` 保存完整参数和命令。
+
+同一候选，能量观测器用两分量历史差计算切向速率，修复极短事件段先转为 float64 丢失历史增量的问题。`PYTHONPATH=runs/nested_source:. python runs/check_energy_history_precision.py`：时间 **1e−4/1e−12/1e−18/1e−22 s** 的四个解析黏着例通过，黏性功率均为 **2e−5 W**。`python runs/natural_energy_observer.py --dt .0002 --steps 8 --knife-z .01801 --knife-speed -1 --output runs/energy_cut_precise_20261101` 使用相同 PYTHONPATH：**8 个自然分侧事件**，观测前后 **41** 组状态/历史数组完全相同；摩擦功分解最大误差 **2.530e−22 W**。输入功 **1.49925e−4 J**，能量残差 **−1.20544e−6 J（0.8040%）**，累计断裂耗散 **0 J**。记录 `runs/energy_cut_precise_20261101/{energy_totals,state_comparison}.json`；活跃断裂的整体能量检查继续随完整下刀推进。
 
 ## 2026-11-01：保留稀疏精化中仍可解析的低位载荷
 

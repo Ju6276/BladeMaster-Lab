@@ -4,6 +4,17 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：保留稀疏精化中仍可解析的低位载荷
+
+`843ddd6` 加停止条件修复，linear 工作树 `python -m pytest tests/test_compensated_linalg.py tests/test_compensated_products.py tests/test_compensated_state.py -q`：**91 passed / 1.04 s**。六个单位矩阵小例保留右端 `2^-80 / 2^-110 / 2^-150` 低位。旧实现首次达到残差界时返回，丢失后两档低位；修复继续到相对后向误差不再下降。
+
+unified 候选 `843ddd6`、dirty=true，`PYTHONPATH=runs/repair_source:. python runs/check_repair.py tests/test_cohesive_displacement_precision.py::test_empty_interface_outputs_and_pullback_use_total_gap tests/test_cohesive_force.py::test_nonpositive_canonical_contact_reaction_with_binding_constraint -q`：原 **10 failed**，修复后 **10 passed / 27.16 s**。关闭稀疏加速的独立对照 **10 passed / 24.53 s**；旧除法对照仍 **10 failed**。记录 `runs/unified_failures_20261101/`。
+
+linear 工作树 `python runs/refinement_stopping_20261101/benchmark.py`：同一 **4032** 阶实际系统，五次中位数 **0.18176→0.21625 s**；主值解相同，原方程相对后向误差均 **2.86749e-33**。
+
+相同源码 `PYTHONPATH=. .venv/bin/python -m pytest tests -q`：**1714 passed、8 skipped、18 subtests passed / 723.58 s**，退出码 0。本地与 4090 源码/测试差异逐字节相同。记录 `runs/refinement_stopping_20261101/full.log`、`full_result.json`。
+
+
 ## 2026-11-01：两分量数组除法编译
 
 goal 接触快照 `c20b3dc`、dirty=true，`PYTHONPATH=runs/natural_sparse_source:. python runs/profile_natural_sparse.py`：1311 积分点推进的性能采样中，**186** 次内聚残差/Jacobian 累计 **586.58 s**，推进累计 **660.08 s**；数组除法调用 **3401660** 次，累计 **161.12 s**。采样记录为 `runs/natural_sparse_profile_20261101/profile.pstats`。

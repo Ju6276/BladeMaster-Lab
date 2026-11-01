@@ -19,15 +19,15 @@ ssh -t dong@100.70.97.92 'ssh -t dong@tamsgpu9'
 
 4090 使用项目 `.venv/bin/python`；依赖版本以 `requirements.txt` 为准。开跑前检查 `nvidia-smi` 和现有任务。长批次保存命令、提交、日志与退出码；复查进程和退出码后更新结果。运行中保持该源码快照不变。
 
-当前补偿除法编译版本全量测试：1708 passed、8 skipped、18 subtests passed，789.28 s，日志在 `BladeMaster-Warp-linear-20261101/runs/compiled_division_full_20261101/`。文档整理基线的 1669 项结果保留在主仓库 `runs/docs_cleanup_20261101/`。
+当前稀疏精化停止条件修复全量测试：1714 passed、8 skipped、18 subtests passed，723.58 s，日志在 `BladeMaster-Warp-linear-20261101/runs/refinement_stopping_20261101/`。文档整理基线的 1669 项结果保留在主仓库 `runs/docs_cleanup_20261101/`。
 
 GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。Mac 推送后，干净的远端工作树再拉取；候选工作树先核对本地差异。`runs/` 不进 Git。
 
 ## 源码与结果位置
 
-2026-11-01 整理：主工作区在 `34304b0` 求解器基础上归并同顺序补偿求和、线性代数编译及几何进入侧求根，当前增加 FMA 补偿乘积。本地待验收改动位于 `/Users/judong/Desktop/Papers/Code/BladeMaster-Warp-e5-review-20261101`，分支 `review/e5-pending-20261101`，包含 20 项已跟踪源码/测试变更和 13 个未跟踪文件；迁移前后逐文件内容及 Git 差异一致。
+2026-11-01 整理：主工作区已提交同顺序补偿求和、FMA、稀疏残差精化、数组除法编译及几何进入侧求根。本地待验收改动位于 `/Users/judong/Desktop/Papers/Code/BladeMaster-Warp-e5-review-20261101`，分支 `review/e5-pending-20261101`，包含 20 项已跟踪源码/测试变更和 13 个未跟踪文件；迁移前后逐文件内容及 Git 差异一致。
 
-下表 4090 候选也基于 `34304b0`，各自有不同的未提交源码。原 Mac `/tmp/BladeMaster-Warp-e5-*` 工作树已不存在，4090 副本仍在。
+下表按各工作树实际基线和结果目录区分候选。原 Mac `/tmp/BladeMaster-Warp-e5-*` 工作树已不存在，4090 副本仍在。
 
 4090 根目录：`/home/dong/Projects/`。
 
@@ -35,16 +35,15 @@ GitHub：`git@github.com:Ju6276/BladeMaster-Lab.git`，分支 `sync-20261020`。
 
 | 位置（4090） | 内容 | 结果目录 |
 |---|---|---|
-| `BladeMaster-Warp-linear-20261101` | `d3f1d92` 加两分量数组除法编译；85 项定向检查、1708 项全量通过 | `runs/compiled_division_full_20261101/` |
-| `BladeMaster-Warp-core-compiled-20261101` | `113b344` 加核心归并、完整映射和惯性闭合反向修复；弱约束 8 项、材料惯性/反力/种子缩放 66 项通过，全量复验中 | `runs/core_metric_full_20261101/`、`runs/weak_mapping_probe_20261101/` |
-| `BladeMaster-Warp-goal-20261101` | 接触归并快照；112 项定向检查通过，后续全量由 performance 工作树执行 | `runs/contact_integration_20261101/` |
-| `BladeMaster-Warp-performance-20261101` | 接触归并加零项消除、线性代数及刀具几何编译；140 项通过，全量运行中 | `runs/formal_performance_20261101/` |
-| performance 目录 `runs/contact_closed_source/` | 接入核心映射/惯性反向修复；联合入口闭合 KKT 和种子缩放 14 项通过，接触/反力检查运行中 | `runs/contact_closed_20261101/` |
-| goal 目录 `runs/natural_fma_source/` | 自然事件、在线参考切面及 FMA；从第 7 步续跑并保存慢阶段输入 | `runs/natural_fma_events_20261101/` |
-| goal 目录 `runs/natural_sparse_source/` | 相同自然入口加稀疏细化，复验第 8 步；1311 积分点的独立接触推进完成，继续测量残差/Jacobian 耗时 | `runs/natural_sparse_events_20261101/`、`runs/natural_sparse_profile_20261101/` |
-| goal 目录 `runs/natural_division_source/` | 相同接触推进加数组除法编译，310.06 s；18 个状态/历史数组与原实现相同 | `runs/natural_division_flow_20261101/` |
+| `BladeMaster-Warp-linear-20261101` | `843ddd6` 加稀疏精化停止条件修复；91 项定向检查、1714 项全量通过 | `runs/refinement_stopping_20261101/` |
+| `BladeMaster-Warp-unified-20261101` | `843ddd6` 加核心、接触和自然推进归并；原全量发现 10 项低位/反力失败，已由修复候选替代 | `runs/unified_full_20261101/`、`runs/unified_failures_20261101/` |
+| unified 目录 `runs/repair_source/` | 保留可继续解析的右端低位；原 10 项全部通过，继续定向与全量检查 | `runs/repaired_full_20261101/` |
+| unified 目录 `runs/natural_repaired_source/` | 相同修复加固定方程的重复求值缓存；从未切割初态运行自然事件 | `runs/natural_repaired_20261101/` |
+| `BladeMaster-Warp-core-compiled-20261101` | 核心归并对照，基线 `113b344`；材料阶段多步梯度全量复验中 | `runs/core_metric_full_20261101/` |
 
-Mac 核心归并工作树为 `BladeMaster-Warp-core-20261101`；接触与自然入口稿在其 `runs/events_merge/`、`runs/natural_source/`。核心旧运行快照 `BladeMaster-Warp-core-fixed-20261101` 已由编译快照接替，保留其结果目录。方法小例与性能分析在 goal 工作树 `runs/method_audit_20261101/`；数组编译对照在 `runs/natural_array_compile_20261101/`。
+Mac 对应工作树为 `BladeMaster-Warp-linear-20261101`、`BladeMaster-Warp-unified-20261101` 和 `BladeMaster-Warp-core-20261101`。unified 的根目录保留原失败快照，修复在独立 `runs/repair_source/`，运行结束后归并。
+
+已被替代的 performance 与 unified 全量已主动终止，替代原因记录在 `runs/unified_failures_20261101/superseded_*.json`。旧 goal 的 FMA 自然事件运行已终止；稀疏版本第 8 步已完成（12 个分侧事件，2837.79 s），记录在 `BladeMaster-Warp-goal-20261101/runs/natural_sparse_events_20261101/`。当前自然推进使用上表修复快照。
 
 | 目录 | 内容 | 现有全量日志状态 |
 |---|---|---|

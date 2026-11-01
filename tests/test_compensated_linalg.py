@@ -92,6 +92,18 @@ def test_sparse_refinement_resolves_remainder_only_load():
             assert abs(decimal_value(result, i) - expected[i]) < Decimal("1e-30")
 
 
+@pytest.mark.parametrize("exponent", [80, 110, 150])
+@pytest.mark.parametrize("matrix_rhs", [False, True])
+def test_sparse_refinement_preserves_load_below_backward_error_bound(exponent, matrix_rhs):
+    high = np.eye(3) if matrix_rhs else np.ones(3)
+    low = -np.ldexp(high, -exponent)
+    rhs = Expansion(high, low)
+    result = try_solve(Expansion(np.eye(3)), rhs)
+    assert result is not None
+    np.testing.assert_array_equal(result.high, rhs.high)
+    np.testing.assert_array_equal(result.low, rhs.low)
+
+
 def test_rank_deficient_least_squares_matches_exact_minimum_norm():
     matrix = np.array([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [0.0, 1.0, 1.0]])
     result = minimum_norm(matrix, [1.0, 3.0, -2.0])

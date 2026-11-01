@@ -4,6 +4,16 @@
 
 命令在对应版本的仓库根目录执行，统一前缀为 `PYTHONPATH=. .venv/bin/python`。以下使用 `python` 简写。旧 `runs/*.py` 是该次实验记录中的入口。
 
+## 2026-11-01：两分量数组除法编译
+
+goal 接触快照 `c20b3dc`、dirty=true，`PYTHONPATH=runs/natural_sparse_source:. python runs/profile_natural_sparse.py`：1311 积分点推进的性能采样中，**186** 次内聚残差/Jacobian 累计 **586.58 s**，推进累计 **660.08 s**；数组除法调用 **3401660** 次，累计 **161.12 s**。采样记录为 `runs/natural_sparse_profile_20261101/profile.pstats`。
+
+linear 工作树 `d3f1d92`，`python runs/ufunc_dispatch_20261101/division.py`：**40** 组标量/向量/矩阵、广播、二进制尺度 −500/−100/0/100/500 的高低分量逐项相同；3 元素除法 **25.163→1.981 μs**，512² 元素 **13.103→3.584 ms**，预热后三次中位数。正式改动复用 LU 内的同一两轮除法修正，`python -m pytest tests/test_compensated_linalg.py tests/test_compensated_state.py tests/test_compensated_products.py -q`：**85 passed / 2.44 s**，含新增六组 Decimal 与广播核对。
+
+自然接触推进 `PYTHONPATH=runs/natural_division_source:. python runs/natural_division_flow.py`：**310.06 s**，18 个状态、余量和历史数组与采样基线完全相同；记录 `runs/natural_division_flow_20261101/`。
+
+`d3f1d92` 加编译除法和六项测试，`python -m pytest tests -q`：**1708 passed、8 skipped、18 subtests passed / 789.28 s**，退出码 0。本地与 4090 源码/测试差异逐项相同；记录 `runs/compiled_division_full_20261101/`。
+
 ## 2026-11-01：稀疏分解与两分量残差细化
 
 RTX 4090 主机 CPU，`113b344` 加稀疏细化改动。goal 工作树 `python runs/natural_linear_benchmark_20261101/benchmark.py`：实际自然切割的 **4032×4032** 系统有 **436113** 个非零项；FMA 两分量分解 **21.354 s**，稀疏分解 **0.06948 s**、求解及两轮残差修正 **0.11779 s**。分解填充由 **9014193** 降至 **535779** 项；最终后向误差 **2.86749e-33**，解主值相同、完整两分量解的相对差 **2.06887e-31**，使用原残差判据。

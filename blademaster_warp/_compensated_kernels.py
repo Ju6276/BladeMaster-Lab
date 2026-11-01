@@ -196,3 +196,13 @@ def array_sum(a, b, high, low):
 @guvectorize([(float64, float64, float64[:], float64[:])], "(),()->(),()", nopython=True, cache=True)
 def array_product(a, b, high, low):
     high[0], low[0] = _two_product(a, b)
+
+
+@guvectorize(
+    [(float64, float64, float64, float64, float64[:], float64[:])],
+    "(),(),(),()->(),()",
+    nopython=True,
+    cache=True,
+)
+def array_divide(ah, al, bh, bl, high, low):
+    high[0], low[0] = _divide_expansion(ah, al, bh, bl)

@@ -4,16 +4,13 @@ import numpy as np
 from scipy.linalg.lapack import dgeequ
 
 from ._compensated import Expansion
-from ._compensated_kernels import lu_factor, lu_substitute, matrix_residual
+from ._compensated_kernels import array_divide, lu_factor, lu_substitute, matrix_residual
 
 
 def divide(numerator, denominator):
     numerator, denominator = map(Expansion.from_value, [numerator, denominator])
-    result = Expansion(numerator.high / denominator.high)
-    for _ in range(2):
-        residual = numerator - denominator * result
-        result = result + residual.high / denominator.high
-    return result
+    high, low = array_divide.ufunc(numerator.high, numerator.low, denominator.high, denominator.low)
+    return Expansion(high, low)
 
 
 def _norm(value):

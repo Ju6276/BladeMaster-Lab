@@ -6,12 +6,31 @@ import numpy as np
 import pytest
 
 from blademaster_warp._compensated import Expansion
-from blademaster_warp._compensated_linalg import Factorization, minimum_norm, solve
+from blademaster_warp._compensated_linalg import Factorization, divide, minimum_norm, solve
 from blademaster_warp._compensated_sparse import try_solve
 
 
 def decimal_value(value, index):
     return Decimal.from_float(float(value.high[index])) + Decimal.from_float(float(value.low[index]))
+
+
+@pytest.mark.parametrize("exponent", [-900, 0, 900])
+@pytest.mark.parametrize("broadcast", [False, True])
+def test_division_preserves_remainders_across_scales_and_broadcasts(exponent, broadcast):
+    numerator = Expansion(
+        np.ldexp([[1.0, 2.0, 3.0], [-4.0, 5.0, -6.0]], exponent),
+        np.ldexp([[1.0, -1.0, 2.0], [-3.0, 4.0, -5.0]], exponent - 55),
+    )
+    base = np.array([[3.0], [7.0]]) if broadcast else np.array([[3.0, 5.0, 7.0], [11.0, 13.0, 17.0]])
+    denominator = Expansion(np.ldexp(base, exponent), np.ldexp(np.ones_like(base), exponent - 55))
+    result = divide(numerator, denominator)
+    with localcontext() as context:
+        context.prec = 100
+        for row, column in np.ndindex(numerator.shape):
+            expected = decimal_value(numerator, (row, column)) / decimal_value(
+                denominator, (row, 0 if broadcast else column)
+            )
+            assert abs(decimal_value(result, (row, column)) - expected) < Decimal("1e-31")
 
 
 @pytest.mark.parametrize("sparse", [False, True])

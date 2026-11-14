@@ -416,3 +416,38 @@ CRESSim（上游 `09aa5009`，2026-10-20 本仓库 `3c3d380`，RTX 4060 主机 C
 TopoCut 式本地 MLS-MPM 对照的旧汇总：Fig. 4 在 0.25 ms 下多场抬升 **38.4 mm**，MLS-MPM（损伤剪切倍数 0.1）为 **0.0 mm**；Fig. 8 的 MLS-MPM 在 1 ms 下发散，0.25 ms 下几何分块为 **2380/2380/2142/952**。入口 `python -m scripts.topocut_compare --scenario fig4 --dt .00025 --damaged-shear .1 --output runs/topocut`，Fig. 8 改 `--scenario fig8`。
 
 2026-10-20，`8fad2c5`，RTX 4060，Fig. 1 含机器人、表面与录制：仿真 **21.04 s**，墙钟 **35.54 s**，速度 **0.59×**；材料 **24.8 s**、表面 **5.2 s**。入口同上 Fig. 1，增加 `--surface --surface-embedding cuda --surface-ccd cuda --record`。可微完整轨迹耗时见 E3 条目。
+
+
+## 2026-11-14 — Grouped forward material worlds for UR5e training
+
+Source base `db06c1a`; branch `codex/ur5e-batched`. The original forward
+material/contact kernels remain unchanged; generated world-indexed kernels
+and `BatchedSolver` provide independent active masks and reset states.
+
+- GPU tests: `tests/test_batched.py tests/test_reference_cloud.py`, **4 passed**
+  in 19.58 s on RTX 4090. Contact, moving side labels, odd-substep continuation,
+  selected-world reset, settled board-friction history and generator consistency
+  are covered. Peak scalar/batch contact 1.1584 N; maximum wrench difference
+  3.55e-5, maximum particle-position difference 5.96e-8 m.
+- UR5e three-object execution: 256 worlds (86 cucumber, 85 half potato, 85 prism);
+  all reference pose goals completed, each final native graph had two components.
+- Full shared WM/actor/critic: 10,240 actual transitions, batch2048 WM and batch4096
+  actor/real critic, h8 actor/32-step critic, optimizer update and checkpoint/replay
+  restoration completed. Peak driver memory 22,624 MiB including two replays
+  during restoration.
+- Six 50 ms physical steps: first 11.67 s, subsequent 9.61–9.65 s.
+
+Command from the source worktree, with the CUDA environment loaded:
+
+```sh
+PYTHONPATH=/dataHDD/dong/Envs/blademaster-batch-test-deps:. \
+ /dataHDD/dong/Envs/cutting-mppi-20261108/bin/python \
+ -m pytest tests/test_batched.py tests/test_reference_cloud.py -q
+```
+
+The repository-wide CPU run reached six passes and stopped at the existing
+`test_affine_compensation` test's required `cuda:0` device. The full 2,164-test
+GPU suite remains outside this forward batching validation; the integration
+owner reserved GPU7 for the DiSECt full-training-capacity check after the
+Cutting_DEV root/backend regressions. Logs and UR5e reports live under
+`/dataHDD/dong/Experiments/Cutting_DEV/runs/bm_batch_*_20261114*`.

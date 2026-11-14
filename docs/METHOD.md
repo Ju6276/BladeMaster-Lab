@@ -99,3 +99,12 @@ PIC/FLIP 速度为 `v_new=PIC_new+α(v_old−PIC_old)`。固定每步 α 的有�
 | 任务目标求导 | [Warp 动态循环文档](https://nvidia.github.io/warp/latest/user_guide/differentiability.html) 要求非线性运算使用反向可重放的循环结果 | 本地加权位置误差与净刀力平方积分，将动态求和放入 `wp.func`，归一化及平方放入调用核；保持原目标值并用解析梯度核对 |
 | 场景与控制 | 论文扫描物体与机器人任务 | 香蕉沿用 DexLab 合成几何；规定刀路、自由刀与本地伺服，Franka 使用 MuJoCo 和 libfranka/SERL 形式控制器；尺寸和参数见 PARAMETERS |
 | 黏弹性 | BladeMaster 有可选牛顿黏性 | Maxwell 为本地可选扩展、默认关闭；正向内部状态 `Fv`，参数为 `maxwell_tau` 与 `maxwell_fraction` |
+
+## Grouped robot-training execution (2026-11-14)
+
+| Item | Scalar forward source | Grouped execution |
+|---|---|---|
+| GPU scheduling | One material world per graph | World-indexed arrays and launches; each world retains separate grid, side code, contact history and tool wrench |
+| Masked continuation | One global interval parity | Per-world contact-history parity, aligned when an active world resumes across an odd number of substeps |
+| Reset | Reconstruct and settle an intact world | Restore that world's settled physical state and board-friction history; rebuild scratch grids and empty inter-fragment pair caches |
+| Numerical formulas | Existing float32 material, contact and held-tool equations | Same expressions generated with explicit world indices; geometry, dt and constitutive coefficients unchanged |

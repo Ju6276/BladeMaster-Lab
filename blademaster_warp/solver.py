@@ -5,7 +5,7 @@ import time
 import numpy as np
 import warp as wp
 from . import material as m, contact as c, tool
-from .geometry import points, stencil
+from .geometry import points, stencil, reference_cloud
 from .blade_constraint import BladeConstraint
 
 
@@ -179,7 +179,7 @@ PAIR_LIST_LANES = 16
 class Solver:
     precision = "float32"
 
-    def __init__(self, config=Config(), device="cuda:0", *, precision="float32"):
+    def __init__(self, config=Config(), device="cuda:0", *, precision="float32", reference_points=None):
         if precision not in ("float32", "float64"):
             raise ValueError("Solver precision must be float32 or float64")
         if precision == "float64" and config.pair_search == "hash":
@@ -190,7 +190,9 @@ class Solver:
         if not self.device.is_cuda:
             raise ValueError("CUDA device required")
         cfg = config
-        self.reference, self.origin, cells = points(cfg.size, cfg.grid_spacing, cfg.shape, cfg.sampling_seed)
+        self.reference, self.origin, cells = (
+            points(cfg.size, cfg.grid_spacing, cfg.shape, cfg.sampling_seed)
+            if reference_points is None else reference_cloud(reference_points, cfg.size, cfg.grid_spacing))
         self.n = len(self.reference)
         nodes, weights, gradients = stencil(self.reference, self.origin, cfg.grid_spacing, cells)
         self.node_count = int(np.prod(cells + 1))

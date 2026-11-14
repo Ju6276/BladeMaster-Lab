@@ -101,3 +101,23 @@ def stencil(reference, origin, spacing, cells):
     ijk = base[:, None] + offsets[None]
     nodes = np.ravel_multi_index(ijk.transpose(2, 0, 1), tuple(cells + 1))
     return nodes, w, g
+
+
+def reference_cloud(points_array, size, spacing):
+    """Accept intact uniform-volume samples; no cut codes or interface supplied."""
+    ref = np.asarray(points_array, dtype=np.float64)
+    size = np.asarray(size, dtype=np.float64)
+    if ref.ndim != 2 or ref.shape[1] != 3 or len(ref) < 4 or not np.isfinite(ref).all():
+        raise ValueError("reference_points must contain finite Nx3 samples")
+    if spacing <= 0 or size.shape != (3,) or (size <= 0).any():
+        raise ValueError("Positive sampling domain and spacing required")
+    origin = -np.array([size[0]/2, size[1]/2, 0.])
+    cells = grid_cells(size, spacing)
+    coordinates = (ref-origin)/(spacing/2)-.5
+    if not np.allclose(coordinates, np.round(coordinates), atol=1e-7, rtol=0):
+        raise ValueError("Reference points must lie on the uniform subcell lattice")
+    if (ref < origin).any() or (ref >= origin+cells*spacing).any():
+        raise ValueError("Reference samples outside the stencil domain")
+    if ref[:,2].min() < spacing/4-1e-12 or len(np.unique(ref,axis=0)) != len(ref):
+        raise ValueError("Overlapping ground samples or duplicate points")
+    return ref.copy(), origin, cells

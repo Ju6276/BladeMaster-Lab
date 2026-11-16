@@ -103,17 +103,20 @@ def stress_at(world: int, p: int, F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.ar
     stress[world, p] = corotated_stress(f, U, V, plastic_inverse, mu, lam)
 
 @wp.kernel
-def compute_stress(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), mu: float, lam: float, stress: wp.array(dtype=wp.mat33, ndim=2), errors: wp.array(dtype=int, ndim=2)):
+def compute_stress(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), _world_mu: wp.array(dtype=float), _world_lam: wp.array(dtype=float), stress: wp.array(dtype=wp.mat33, ndim=2), errors: wp.array(dtype=int, ndim=2)):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mu = _world_mu[world]
+    lam = _world_lam[world]
     stress_at(world, _batch_tid0, F, Fp, mu, lam, stress, errors)
 
 @wp.kernel
-def p2g(enabled: wp.array(dtype=int), v: wp.array(dtype=wp.vec3, ndim=2), stress: wp.array(dtype=wp.mat33, ndim=2), impulses: wp.array(dtype=wp.vec3, ndim=2), slots: wp.array(dtype=int, ndim=3), weights: wp.array(dtype=float, ndim=3), gradients: wp.array(dtype=wp.vec3, ndim=3), mass: float, volume: float, dt: float, grid_mass: wp.array(dtype=float, ndim=2), momentum: wp.array(dtype=wp.vec3, ndim=2), grid_impulse: wp.array(dtype=wp.vec3, ndim=2)):
+def p2g(enabled: wp.array(dtype=int), v: wp.array(dtype=wp.vec3, ndim=2), stress: wp.array(dtype=wp.mat33, ndim=2), impulses: wp.array(dtype=wp.vec3, ndim=2), slots: wp.array(dtype=int, ndim=3), weights: wp.array(dtype=float, ndim=3), gradients: wp.array(dtype=wp.vec3, ndim=3), _world_mass: wp.array(dtype=float), volume: float, dt: float, grid_mass: wp.array(dtype=float, ndim=2), momentum: wp.array(dtype=wp.vec3, ndim=2), grid_impulse: wp.array(dtype=wp.vec3, ndim=2)):
     world, _batch_tid0, _batch_tid1 = wp.tid()
     if enabled[world] == 0:
         return
+    mass = _world_mass[world]
     'Scatter mass, momentum and stress plus contact impulse to the grid (stress from the previous update).\n\n    One thread per (particle, stencil node).\n    '
     p, a = (_batch_tid0, _batch_tid1)
     s = slots[world, p, a]
@@ -252,10 +255,11 @@ def g2p(enabled: wp.array(dtype=int), x: wp.array(dtype=wp.vec3, ndim=2), v: wp.
     g2p_at(world, _batch_tid0, x, v, slots, weights, old_v, new_v, dt, flip)
 
 @wp.kernel
-def g2p_remap(enabled: wp.array(dtype=int), x: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), slots: wp.array(dtype=int, ndim=3), weights: wp.array(dtype=float, ndim=3), old_v: wp.array(dtype=wp.vec3, ndim=2), new_v: wp.array(dtype=wp.vec3, ndim=2), dt: float, flip: float, mass: float, out: wp.array(dtype=wp.vec3, ndim=2)):
+def g2p_remap(enabled: wp.array(dtype=int), x: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), slots: wp.array(dtype=int, ndim=3), weights: wp.array(dtype=float, ndim=3), old_v: wp.array(dtype=wp.vec3, ndim=2), new_v: wp.array(dtype=wp.vec3, ndim=2), dt: float, flip: float, _world_mass: wp.array(dtype=float), out: wp.array(dtype=wp.vec3, ndim=2)):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mass = _world_mass[world]
     'G2P followed by the MUSL re-scatter of the same particle.'
     p = _batch_tid0
     g2p_at(world, p, x, v, slots, weights, old_v, new_v, dt, flip)
@@ -283,17 +287,20 @@ def plastic_at(world: int, p: int, F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.a
     return (U, s, V, True)
 
 @wp.kernel
-def plastic_project(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), mu: float, yield_stress: float, errors: wp.array(dtype=int, ndim=2)):
+def plastic_project(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), _world_mu: wp.array(dtype=float), yield_stress: float, errors: wp.array(dtype=int, ndim=2)):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mu = _world_mu[world]
     U, s, V, valid = plastic_at(world, _batch_tid0, F, Fp, mu, yield_stress, errors)
 
 @wp.kernel
-def update_F_plastic(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), slots: wp.array(dtype=int, ndim=3), gradients: wp.array(dtype=wp.vec3, ndim=3), grid_mass: wp.array(dtype=float, ndim=2), momentum: wp.array(dtype=wp.vec3, ndim=2), dt: float, mu: float, lam: float, yield_stress: float, stress: wp.array(dtype=wp.mat33, ndim=2), errors: wp.array(dtype=int, ndim=2)):
+def update_F_plastic(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), slots: wp.array(dtype=int, ndim=3), gradients: wp.array(dtype=wp.vec3, ndim=3), grid_mass: wp.array(dtype=float, ndim=2), momentum: wp.array(dtype=wp.vec3, ndim=2), dt: float, _world_mu: wp.array(dtype=float), _world_lam: wp.array(dtype=float), yield_stress: float, stress: wp.array(dtype=wp.mat33, ndim=2), errors: wp.array(dtype=int, ndim=2)):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mu = _world_mu[world]
+    lam = _world_lam[world]
     'MUSL deformation update, plastic projection, and the stress for the next step.'
     p = _batch_tid0
     rate = wp.mat33(0.0)
@@ -372,10 +379,13 @@ def maxwell_stress_at(world: int, p: int, F: wp.array(dtype=wp.mat33, ndim=2), F
         maxwell_at(world, p, U, sigma, V, F, Fp, viscous, mu, lam, mu_maxwell, relax, stress, errors)
 
 @wp.kernel
-def compute_stress_maxwell(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), viscous: wp.array(dtype=wp.mat33d, ndim=2), mu: float, lam: float, mu_maxwell: float, stress: wp.array(dtype=wp.mat33, ndim=2), errors: wp.array(dtype=int, ndim=2)):
+def compute_stress_maxwell(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), viscous: wp.array(dtype=wp.mat33d, ndim=2), _world_mu: wp.array(dtype=float), _world_lam: wp.array(dtype=float), _world_mu_maxwell: wp.array(dtype=float), stress: wp.array(dtype=wp.mat33, ndim=2), errors: wp.array(dtype=int, ndim=2)):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mu = _world_mu[world]
+    lam = _world_lam[world]
+    mu_maxwell = _world_mu_maxwell[world]
     'Stress of the current F, Fp, Fv without plastic projection or relaxation.'
     p = _batch_tid0
     f = F[world, p] * wp.inverse(Fp[world, p])
@@ -388,10 +398,13 @@ def compute_stress_maxwell(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.ma
     maxwell_at(world, p, U, sigma, V, F, Fp, viscous, mu, lam, mu_maxwell, 0.0, stress, errors)
 
 @wp.kernel
-def update_F_maxwell(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), viscous: wp.array(dtype=wp.mat33d, ndim=2), slots: wp.array(dtype=int, ndim=3), gradients: wp.array(dtype=wp.vec3, ndim=3), grid_mass: wp.array(dtype=float, ndim=2), momentum: wp.array(dtype=wp.vec3, ndim=2), dt: float, mu: float, lam: float, mu_maxwell: float, relax: float, yield_stress: float, stress: wp.array(dtype=wp.mat33, ndim=2), errors: wp.array(dtype=int, ndim=2)):
+def update_F_maxwell(enabled: wp.array(dtype=int), F: wp.array(dtype=wp.mat33, ndim=2), Fp: wp.array(dtype=wp.mat33, ndim=2), viscous: wp.array(dtype=wp.mat33d, ndim=2), slots: wp.array(dtype=int, ndim=3), gradients: wp.array(dtype=wp.vec3, ndim=3), grid_mass: wp.array(dtype=float, ndim=2), momentum: wp.array(dtype=wp.vec3, ndim=2), dt: float, _world_mu: wp.array(dtype=float), _world_lam: wp.array(dtype=float), _world_mu_maxwell: wp.array(dtype=float), relax: float, yield_stress: float, stress: wp.array(dtype=wp.mat33, ndim=2), errors: wp.array(dtype=int, ndim=2)):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mu = _world_mu[world]
+    lam = _world_lam[world]
+    mu_maxwell = _world_mu_maxwell[world]
     'update_F_plastic followed by relaxation of the Maxwell branch.'
     p = _batch_tid0
     rate = wp.mat33(0.0)

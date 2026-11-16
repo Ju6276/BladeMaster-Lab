@@ -1,6 +1,6 @@
 """Generate world-indexed equivalents of unchanged scalar physics kernels.
 
-Only array indexing, atomic indices and kernel launch indices change.
+Array indexing, launch indices and per-world material parameter loads change.
 Generated files are reviewable source, not an alternative constitutive model.
 """
 
@@ -106,6 +106,19 @@ def generate():
                     return n
 
             item = Transform().visit(item)
+            # Functions still receive scalar coefficients. Only kernel boundaries
+            # load the world's coefficients before executing the original body.
+            parameters = []
+            if kernel and name in ("material", "contact", "profile_contact"):
+                for argument in item.args.args:
+                    if (argument.arg in ("mass", "mu", "lam", "mu_maxwell", "threshold")
+                            and isinstance(argument.annotation, ast.Name)
+                            and argument.annotation.id == "float"):
+                        label = argument.arg
+                        argument.arg = "_world_" + label
+                        argument.annotation = ast.parse("wp.array(dtype=float)", mode="eval").body
+                        parameters.extend(ast.parse(label + " = _world_" + label + "[world]").body)
+            item.body = parameters + item.body
             if kernel:
                 item.args.args.insert(
                     0, ast.arg(arg="enabled", annotation=ast.parse("wp.array(dtype=int)", mode="eval").body)

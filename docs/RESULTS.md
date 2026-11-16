@@ -487,3 +487,21 @@ Full GPU7 regression: **2163 passed, 8 skipped, 18 subtests passed** in
 2124.99 s. This includes scalar/batched contact with both original and shared
 profiles, active-world masks, partial resets and kernel regeneration.
 Log: /dataHDD/dong/Experiments/shared_bm_venv_tests.log.
+
+
+## 2026-11-16 — Independent materials in batched worlds
+
+Persistent per-world GPU mass, elastic and cutting-energy buffers match scalar
+solvers under actual blade contact. Test scales: E [.5,2], density [1.25,.8],
+cutting energy [.5,2]. Maximum force/torque component discrepancies are
+2.87e-6 and 3.09e-5; force peaks .686 and .982 N. Reset and material replacement
+in world 0 preserve world 1 state exactly and retain captured CUDA graphs.
+Generator regeneration reproduces the three changed batch modules.
+
+Focused command: PYTHONPATH=. <validation-python> -m pytest
+ tests/test_batched_materials.py -q -s. Result: 2 passed in 4.38 s.
+Logs: runs/material_randomization_20261116/corner_tests.log and
+full_tests_parallel.log. The full command and validation environment are above.
+
+Full GPU7 regression: **2165 passed, 8 skipped, 18 subtests passed** in
+2140.56 s.

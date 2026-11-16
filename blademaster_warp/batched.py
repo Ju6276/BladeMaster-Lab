@@ -145,7 +145,7 @@ for _name, _method in BladeConstraint.__dict__.items():
 
 
 class BatchedSolver:
-    """Equal-geometry/material worlds, vectorized inside each original kernel."""
+    """Equal-geometry worlds with independent material coefficients and state."""
 
     def __init__(self, config, worlds, device="cuda:0", *, reference_points=None, precision="float32"):
         if precision != "float32":
@@ -219,6 +219,13 @@ class BatchedSolver:
             "tool": batch_tool,
             "blade_constraint": batch_blade_constraint,
         }
+        self.material_scales = {key: np.ones(worlds, dtype=np.float64)
+                                for key in ("youngs_modulus", "density", "cutting_energy")}
+        self.material_parameters = {
+            name: wp.array(np.full(worlds, getattr(self, name), dtype=np.float32),
+                           dtype=float, device=device)
+            for name in ("mass", "mu", "lam", "mu_maxwell", "threshold")
+        }
         self._reset_snapshots = None
         self.enabled = wp.zeros(worlds, dtype=int, device=device)
         seen = set()
@@ -238,6 +245,31 @@ class BatchedSolver:
                 device=device,
             )
         self.enabled = self.active
+        self.save_reset()
+        self._raw_reset_snapshots = self._reset_snapshots
+        self._reset_snapshots = None
+
+    def set_material_scales(self, mask, *, youngs_modulus, density, cutting_energy):
+        """Update coefficients on the GPU without invalidating captured graphs."""
+        mask = np.asarray(mask)
+        if mask.shape != (self.worlds,) or not np.isin(mask, [0, 1]).all():
+            raise ValueError("One boolean material update flag per world required")
+        selected = mask.astype(bool)
+        supplied = dict(youngs_modulus=youngs_modulus, density=density,
+                        cutting_energy=cutting_energy)
+        checked = {}
+        for key, value in supplied.items():
+            value = np.asarray(value, dtype=np.float64)
+            if value.shape != (self.worlds,) or not np.isfinite(value).all() or (value <= 0).any():
+                raise ValueError("Positive finite full-world material scales required")
+            checked[key] = value
+        for key, value in checked.items():
+            self.material_scales[key][selected] = value[selected]
+        for name, key in (("mass", "density"), ("mu", "youngs_modulus"),
+                          ("lam", "youngs_modulus"), ("mu_maxwell", "youngs_modulus"),
+                          ("threshold", "cutting_energy")):
+            values = (getattr(self, name) * self.material_scales[key]).astype(np.float32)
+            self.material_parameters[name].assign(values)
 
     def launch(self, kernel, dim, args):
         module = self._modules[kernel.module.name.rsplit(".", 1)[-1]]
@@ -247,7 +279,13 @@ class BatchedSolver:
         if replacement is not None:
             target = replacement
         dims = (dim,) if isinstance(dim, int) else tuple(dim)
-        values = [a.data if isinstance(a, BatchArray) else a for a in args]
+        labels = [argument.label for argument in target.adj.args][1:]
+        values = [self.material_parameters[label[len("_world_"):]]
+                  if label.startswith("_world_") else
+                  (a.data if isinstance(a, BatchArray) else a)
+                  for label, a in zip(labels, args)]
+        if len(labels) != len(args):
+            raise ValueError("Generated kernel signature differs from source arguments")
         return wp.launch(target, (self.worlds, *dims), [self.enabled, *values], device=self.device)
 
     def conditional(self, condition, body, loop):
@@ -371,10 +409,13 @@ class BatchedSolver:
         self.step_count += steps
         return self.result.data
 
-    def save_reset(self):
+    def save_reset(self, mask=None):
         # Rebuild grid/pair caches, while retaining the actual board-friction
         # history established during settling. Reset snapshots precede cutting.
-        if np.any(self.codes.numpy()) or np.any(self.damage.numpy()):
+        selected = np.ones(self.worlds, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
+        if selected.shape != (self.worlds,):
+            raise ValueError("One reset-snapshot flag per world required")
+        if np.any(self.codes.numpy()[selected]) or np.any(self.damage.numpy()[selected]):
             raise ValueError("Reset snapshots must be taken before cutting")
         names = (
             "x",
@@ -393,14 +434,27 @@ class BatchedSolver:
             "histories",
             "impulses",
         )
-        self._reset_snapshots = {name: wp.clone(getattr(self, name).data) for name in names}
-
-    def reset(self, mask):
         if self._reset_snapshots is None:
+            self._reset_snapshots = {name: wp.clone(getattr(self, name).data) for name in names}
+        else:
+            selection = wp.array(selected.astype(np.int32), dtype=int, device=self.device)
+            for name in names:
+                source = getattr(self, name).data
+                destination = self._reset_snapshots[name]
+                wp.launch(masked_copy, source.size,
+                          [source.flatten(), destination.flatten(), selection,
+                           source.size // self.worlds], device=self.device)
+
+    def reset(self, mask, *, raw=False):
+        snapshots = self._raw_reset_snapshots if raw else self._reset_snapshots
+        if snapshots is None:
             raise RuntimeError("No settled reset state")
-        self.active.assign(np.asarray(mask, dtype=np.int32))
+        mask = np.asarray(mask)
+        if mask.shape != (self.worlds,) or not np.isin(mask, [0, 1]).all():
+            raise ValueError("One boolean reset flag per world required")
+        self.active.assign(mask.astype(np.int32))
         self.enabled = self.active
-        for name, snapshot in self._reset_snapshots.items():
+        for name, snapshot in snapshots.items():
             dst = getattr(self, name).data
             wp.launch(
                 masked_copy,

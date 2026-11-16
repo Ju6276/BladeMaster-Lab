@@ -123,3 +123,21 @@ are unchanged. The Cutting_DEV adapter supplies the rigid UR5e mount. Regenerate
 the profile variants with python -m blademaster_warp.generate_profile_kernels.
 The optional profile is used by the forward scalar and grouped solvers; the
 independent cohesive/adjoint research pipeline retains its own geometry path.
+
+## Per-world episode materials (2026-11-16)
+
+| Item | Implementation |
+|---|---|
+| Shared material constants in batch launch | Each kernel loads its world's mass, Lamé coefficients, Maxwell shear modulus and fracture threshold from GPU arrays |
+| Particle mass | nominal density × density scale × particle volume |
+| Elastic response | nominal shear/Lamé/Maxwell coefficients × Young's modulus scale |
+| Fracture criterion | nominal cutting-work threshold × cutting-energy scale |
+| Raw reset | Restore undeformed initial state and contact/damage history for selected worlds |
+| Settled reset | Save updated reset snapshots for selected worlds after material-specific settling |
+| Captured CUDA graphs | Retain coefficient buffer addresses; assigning new values updates subsequent launches |
+| Host scalar solver | Original equations and launch signatures retained; generated batch kernels add per-world loads |
+
+The robot adapter chooses one group timestep for the highest configured E and
+lowest density. The batch API takes positive full-world scale arrays plus a reset
+mask. Inactive worlds retain both coefficients and state. Parameters are fixed
+within an episode. The user of the API chooses a stable timestep before capture.

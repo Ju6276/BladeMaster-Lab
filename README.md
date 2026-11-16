@@ -46,3 +46,8 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 - [方法](docs/METHOD.md)、[参数](docs/PARAMETERS.md)：实现、公式与来源。
 - [交接](docs/HANDOFF.md)：机器访问、候选源码和记录位置。
 - [第三方来源](NOTICE.md)、[工作规范](AGENTS.md)。
+
+Per-world episode materials: BatchedSolver.set_material_scales updates Young's
+modulus, density and cutting-energy scales without rebuilding CUDA graphs.
+Use reset(mask, raw=True) before changing a world's material; settle it, then
+save_reset(mask=mask). See docs/METHOD.md for coefficient mapping.

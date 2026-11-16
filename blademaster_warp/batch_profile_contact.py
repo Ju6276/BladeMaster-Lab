@@ -155,20 +155,24 @@ def rigid_at(world: int, p: int, x: wp.array(dtype=wp.vec3, ndim=2), v: wp.array
     impulse[world, p] = total
 
 @wp.kernel
-def rigid_and_speed(enabled: wp.array(dtype=int), speed: wp.array(dtype=float, ndim=2), x: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), tool_pos: wp.array(dtype=wp.vec3, ndim=2), tool_vel: wp.array(dtype=wp.vec3, ndim=2), tool_rot: wp.array(dtype=wp.quat, ndim=2), tool_omega: wp.array(dtype=wp.vec3, ndim=2), half: wp.vec3, bevel: float, radius: float, blade_offset: float, spacing: float, band: float, mass: float, blade_mass: float, inertia_inv: wp.vec3, mobility: wp.array(dtype=float, ndim=3), tool_model: int, board_half: wp.vec2, board_sn: float, dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, histories: wp.array(dtype=wp.vec3, ndim=3), damage: wp.array(dtype=float, ndim=2), threshold: float, cutting: int, impulse: wp.array(dtype=wp.vec3, ndim=2), reaction: wp.array(dtype=wp.vec3, ndim=2), torque: wp.array(dtype=wp.vec3, ndim=2), board: wp.array(dtype=wp.vec3, ndim=2), work: wp.array(dtype=float, ndim=2), parts: wp.array(dtype=wp.vec3, ndim=2), neck: float):
+def rigid_and_speed(enabled: wp.array(dtype=int), speed: wp.array(dtype=float, ndim=2), x: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), tool_pos: wp.array(dtype=wp.vec3, ndim=2), tool_vel: wp.array(dtype=wp.vec3, ndim=2), tool_rot: wp.array(dtype=wp.quat, ndim=2), tool_omega: wp.array(dtype=wp.vec3, ndim=2), half: wp.vec3, bevel: float, radius: float, blade_offset: float, spacing: float, band: float, _world_mass: wp.array(dtype=float), blade_mass: float, inertia_inv: wp.vec3, mobility: wp.array(dtype=float, ndim=3), tool_model: int, board_half: wp.vec2, board_sn: float, dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, histories: wp.array(dtype=wp.vec3, ndim=3), damage: wp.array(dtype=float, ndim=2), _world_threshold: wp.array(dtype=float), cutting: int, impulse: wp.array(dtype=wp.vec3, ndim=2), reaction: wp.array(dtype=wp.vec3, ndim=2), torque: wp.array(dtype=wp.vec3, ndim=2), board: wp.array(dtype=wp.vec3, ndim=2), work: wp.array(dtype=float, ndim=2), parts: wp.array(dtype=wp.vec3, ndim=2), neck: float):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mass = _world_mass[world]
+    threshold = _world_threshold[world]
     'Rigid contacts for every particle, and the maximum particle speed for the pair search.'
     p = _batch_tid0
     wp.atomic_max(speed, world, 0, wp.length(v[world, p]))
     rigid_at(world, p, x, v, tool_pos, tool_vel, tool_rot, tool_omega, half, bevel, radius, blade_offset, spacing, band, mass, blade_mass, inertia_inv, mobility, tool_model, board_half, board_sn, dt, sn, mus, mud, gk, gc, histories, damage, threshold, cutting, impulse, reaction, torque, board, work, parts, neck)
 
 @wp.kernel
-def extra_blade(enabled: wp.array(dtype=int), x: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), tool_pos: wp.array(dtype=wp.vec3, ndim=2), tool_vel: wp.array(dtype=wp.vec3, ndim=2), tool_rot: wp.array(dtype=wp.quat, ndim=2), tool_omega: wp.array(dtype=wp.vec3, ndim=2), half: wp.vec3, bevel: float, blade_offset: float, spacing: float, band: float, mass: float, blade_mass: float, inertia_inv: wp.vec3, mobility: wp.array(dtype=float, ndim=3), tool_model: int, dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, histories: wp.array(dtype=wp.vec3, ndim=3), row: int, damage: wp.array(dtype=float, ndim=2), threshold: float, cutting: int, impulse: wp.array(dtype=wp.vec3, ndim=2), reaction: wp.array(dtype=wp.vec3, ndim=2), torque: wp.array(dtype=wp.vec3, ndim=2), work: wp.array(dtype=float, ndim=2), parts: wp.array(dtype=wp.vec3, ndim=2), neck: float):
+def extra_blade(enabled: wp.array(dtype=int), x: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), tool_pos: wp.array(dtype=wp.vec3, ndim=2), tool_vel: wp.array(dtype=wp.vec3, ndim=2), tool_rot: wp.array(dtype=wp.quat, ndim=2), tool_omega: wp.array(dtype=wp.vec3, ndim=2), half: wp.vec3, bevel: float, blade_offset: float, spacing: float, band: float, _world_mass: wp.array(dtype=float), blade_mass: float, inertia_inv: wp.vec3, mobility: wp.array(dtype=float, ndim=3), tool_model: int, dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, histories: wp.array(dtype=wp.vec3, ndim=3), row: int, damage: wp.array(dtype=float, ndim=2), _world_threshold: wp.array(dtype=float), cutting: int, impulse: wp.array(dtype=wp.vec3, ndim=2), reaction: wp.array(dtype=wp.vec3, ndim=2), torque: wp.array(dtype=wp.vec3, ndim=2), work: wp.array(dtype=float, ndim=2), parts: wp.array(dtype=wp.vec3, ndim=2), neck: float):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mass = _world_mass[world]
+    threshold = _world_threshold[world]
     'Add the contact impulse of one more blade (after rigid_and_speed).'
     p = _batch_tid0
     impulse[world, p] = impulse[world, p] + blade_at(world, p, x, v, tool_pos, tool_vel, tool_rot, tool_omega, half, bevel, blade_offset, spacing, band, mass, blade_mass, inertia_inv, mobility, tool_model, dt, sn, mus, mud, gk, gc, histories, row, damage, threshold, cutting, reaction, torque, work, parts, neck)
@@ -240,10 +244,11 @@ def clear_pair_slots(enabled: wp.array(dtype=int), count: wp.array(dtype=int, nd
         keys[world, used[world, a]] = wp.int64(-1)
 
 @wp.kernel
-def pairs(enabled: wp.array(dtype=int), grid: wp.uint64, x: wp.array(dtype=wp.vec3, ndim=2), ref: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), codes: wp.array(dtype=wp.int64, ndim=2), radius: float, spacing: float, mass: float, dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, speed: wp.array(dtype=float, ndim=2), old_keys: wp.array(dtype=wp.int64, ndim=2), old_history: wp.array(dtype=wp.vec3, ndim=2), new_keys: wp.array(dtype=wp.int64, ndim=2), new_history: wp.array(dtype=wp.vec3, ndim=2), new_used: wp.array(dtype=int, ndim=2), new_count: wp.array(dtype=int, ndim=2), capacity: int, n: int, impulses: wp.array(dtype=wp.vec3, ndim=2), errors: wp.array(dtype=int, ndim=2)):
+def pairs(enabled: wp.array(dtype=int), grid: wp.uint64, x: wp.array(dtype=wp.vec3, ndim=2), ref: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), codes: wp.array(dtype=wp.int64, ndim=2), radius: float, spacing: float, _world_mass: wp.array(dtype=float), dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, speed: wp.array(dtype=float, ndim=2), old_keys: wp.array(dtype=wp.int64, ndim=2), old_history: wp.array(dtype=wp.vec3, ndim=2), new_keys: wp.array(dtype=wp.int64, ndim=2), new_history: wp.array(dtype=wp.vec3, ndim=2), new_used: wp.array(dtype=int, ndim=2), new_count: wp.array(dtype=int, ndim=2), capacity: int, n: int, impulses: wp.array(dtype=wp.vec3, ndim=2), errors: wp.array(dtype=int, ndim=2)):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mass = _world_mass[world]
     p = _batch_tid0
     query = wp.hash_grid_query(grid, x[world, p], 2.0 * radius + 2.0 * speed[world, 0] * dt)
     for q in query:
@@ -318,10 +323,11 @@ def build_pair_list(enabled: wp.array(dtype=int), heads: wp.array(dtype=int, ndi
     partner_count[world, p] = count
 
 @wp.kernel
-def pairs_listed(enabled: wp.array(dtype=int), heads: wp.array(dtype=int, ndim=2), links: wp.array(dtype=int, ndim=2), mask: int, partners: wp.array(dtype=int, ndim=2), partner_count: wp.array(dtype=int, ndim=2), lanes: int, built_x: wp.array(dtype=wp.vec3, ndim=2), search_reach: wp.array(dtype=float, ndim=2), x: wp.array(dtype=wp.vec3, ndim=2), ref: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), codes: wp.array(dtype=wp.int64, ndim=2), radius: float, spacing: float, mass: float, dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, old_keys: wp.array(dtype=wp.int64, ndim=2), old_history: wp.array(dtype=wp.vec3, ndim=2), new_keys: wp.array(dtype=wp.int64, ndim=2), new_history: wp.array(dtype=wp.vec3, ndim=2), new_used: wp.array(dtype=int, ndim=2), new_count: wp.array(dtype=int, ndim=2), capacity: int, n: int, impulses: wp.array(dtype=wp.vec3, ndim=2), errors: wp.array(dtype=int, ndim=2)):
+def pairs_listed(enabled: wp.array(dtype=int), heads: wp.array(dtype=int, ndim=2), links: wp.array(dtype=int, ndim=2), mask: int, partners: wp.array(dtype=int, ndim=2), partner_count: wp.array(dtype=int, ndim=2), lanes: int, built_x: wp.array(dtype=wp.vec3, ndim=2), search_reach: wp.array(dtype=float, ndim=2), x: wp.array(dtype=wp.vec3, ndim=2), ref: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), codes: wp.array(dtype=wp.int64, ndim=2), radius: float, spacing: float, _world_mass: wp.array(dtype=float), dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, old_keys: wp.array(dtype=wp.int64, ndim=2), old_history: wp.array(dtype=wp.vec3, ndim=2), new_keys: wp.array(dtype=wp.int64, ndim=2), new_history: wp.array(dtype=wp.vec3, ndim=2), new_used: wp.array(dtype=int, ndim=2), new_count: wp.array(dtype=int, ndim=2), capacity: int, n: int, impulses: wp.array(dtype=wp.vec3, ndim=2), errors: wp.array(dtype=int, ndim=2)):
     world, _batch_tid0 = wp.tid()
     if enabled[world] == 0:
         return
+    mass = _world_mass[world]
     p = _batch_tid0
     reach = search_reach[world, 0]
     count = partner_count[world, p]
@@ -339,10 +345,11 @@ def pairs_listed(enabled: wp.array(dtype=int), heads: wp.array(dtype=int, ndim=2
             q = links[world, q]
 
 @wp.kernel
-def pairs_all(enabled: wp.array(dtype=int), x: wp.array(dtype=wp.vec3, ndim=2), ref: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), codes: wp.array(dtype=wp.int64, ndim=2), radius: float, spacing: float, mass: float, dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, old_keys: wp.array(dtype=wp.int64, ndim=2), old_history: wp.array(dtype=wp.vec3, ndim=2), new_keys: wp.array(dtype=wp.int64, ndim=2), new_history: wp.array(dtype=wp.vec3, ndim=2), new_used: wp.array(dtype=int, ndim=2), new_count: wp.array(dtype=int, ndim=2), capacity: int, n: int, lanes: int, speed: wp.array(dtype=float, ndim=2), impulses: wp.array(dtype=wp.vec3, ndim=2), errors: wp.array(dtype=int, ndim=2)):
+def pairs_all(enabled: wp.array(dtype=int), x: wp.array(dtype=wp.vec3, ndim=2), ref: wp.array(dtype=wp.vec3, ndim=2), v: wp.array(dtype=wp.vec3, ndim=2), codes: wp.array(dtype=wp.int64, ndim=2), radius: float, spacing: float, _world_mass: wp.array(dtype=float), dt: float, sn: float, mus: float, mud: float, gk: float, gc: float, old_keys: wp.array(dtype=wp.int64, ndim=2), old_history: wp.array(dtype=wp.vec3, ndim=2), new_keys: wp.array(dtype=wp.int64, ndim=2), new_history: wp.array(dtype=wp.vec3, ndim=2), new_used: wp.array(dtype=int, ndim=2), new_count: wp.array(dtype=int, ndim=2), capacity: int, n: int, lanes: int, speed: wp.array(dtype=float, ndim=2), impulses: wp.array(dtype=wp.vec3, ndim=2), errors: wp.array(dtype=int, ndim=2)):
     world, _batch_tid0, _batch_tid1 = wp.tid()
     if enabled[world] == 0:
         return
+    mass = _world_mass[world]
     'All-pairs search over (particle, lane) threads; lane k takes q = p+1+k, p+1+k+lanes, ...\n\n    Pairs farther apart than 2 radius + 2 dt max_speed cannot touch this step\n    and are rejected before the exact test in pair_at.\n    '
     p, k = (_batch_tid0, _batch_tid1)
     xp = x[world, p]

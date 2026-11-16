@@ -63,6 +63,7 @@ class Config:
     # 0: particles at sub-cell centres; >0: seed for uniform jitter inside each sub-cell.
     sampling_seed: int = 0
     blade_bevel_height: float = 0.0
+    blade_edge_half_width: float | None = None
     free_blade: bool = False
     pose_servo: bool = False
     external_tool: bool = False
@@ -148,6 +149,11 @@ class Config:
             raise ValueError("Board half extent must be non-negative")
         if self.cut_band_cells < 0:
             raise ValueError("Cut band width must be non-negative")
+        if self.blade_edge_half_width is not None:
+            if not 0 < self.blade_edge_half_width <= self.blade_half_size[0] or self.blade_bevel_height <= 0:
+                raise ValueError("Tapered blade needs 0 < shoulder width <= spine half width and positive bevel")
+        if self.blade_edge_half_width is not None and self.blade_edge_half_width * 2 * self.blade_half_size[2] < self.blade_half_size[0] * self.blade_bevel_height:
+            raise ValueError("Tapered profile must be convex")
         if not 0 <= self.blade_bevel_height < 2 * self.blade_half_size[2]:
             raise ValueError("Invalid blade geometry")
         if sum((self.free_blade, self.pose_servo, self.external_tool)) > 1:
@@ -373,6 +379,10 @@ class Solver:
         return dtype
 
     def launch(self, kernel, dim, args):
+        from .profile_runtime import profile_kernel
+        replacement, args = profile_kernel(kernel, args, self.config)
+        if replacement is not None:
+            kernel = replacement
         if self.precision == "float64":
             from .precision import launch_double
             return launch_double(kernel, dim, inputs=args, device=self.device)

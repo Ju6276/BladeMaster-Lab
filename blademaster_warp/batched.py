@@ -242,6 +242,10 @@ class BatchedSolver:
     def launch(self, kernel, dim, args):
         module = self._modules[kernel.module.name.rsplit(".", 1)[-1]]
         target = getattr(module, kernel.key)
+        from .profile_runtime import profile_kernel
+        replacement, args = profile_kernel(kernel, args, self.config, batch=True)
+        if replacement is not None:
+            target = replacement
         dims = (dim,) if isinstance(dim, int) else tuple(dim)
         values = [a.data if isinstance(a, BatchArray) else a for a in args]
         return wp.launch(target, (self.worlds, *dims), [self.enabled, *values], device=self.device)

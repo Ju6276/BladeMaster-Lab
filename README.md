@@ -35,6 +35,10 @@ PYTHONPATH=. .venv/bin/python -m pytest tests -q
 | 可微分自然任务 | `scripts.diff_natural_task --case examples/natural_contact.json --output runs/natural_contact`：统一刀路、接触历史、内聚状态、梯度、检查点与能量记录 |
 | 对照/诊断/显示 | `scripts.fig5_compare`、`scripts.topocut_compare`、`scripts.probe_substep` 等，完整索引见运行指南 |
 
+共享 UR5e 刀具可选项使用两段斜面的有限刀片，见 [方法](docs/METHOD.md)。
+修改几何生成器后运行 python -m blademaster_warp.generate_profile_kernels，
+再运行 tests/test_shared_profile.py 和 tests/test_batched.py 核对接触与分组执行。
+
 ## 文档
 
 - [当前计划](docs/DIFFERENTIABLE.md)、[待办](TODO.md)：目标、阶段和验收范围。

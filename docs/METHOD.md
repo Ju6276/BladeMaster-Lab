@@ -108,3 +108,18 @@ PIC/FLIP 速度为 `v_new=PIC_new+α(v_old−PIC_old)`。固定每步 α 的有�
 | Masked continuation | One global interval parity | Per-world contact-history parity, aligned when an active world resumes across an odd number of substeps |
 | Reset | Reconstruct and settle an intact world | Restore that world's settled physical state and board-friction history; rebuild scratch grids and empty inter-fragment pair caches |
 | Numerical formulas | Existing float32 material, contact and held-tool equations | Same expressions generated with explicit world indices; geometry, dt and constitutive coefficients unchanged |
+
+## Shared UR5e blade profile (2026-11-16)
+
+| Item | Existing forward solver | Shared-tool option |
+|---|---|---|
+| Contact geometry | Box/wedge, vertical broad sides | Convex two-slope finite blade with explicit shoulder width, matching the DiSECt physical ten vertices |
+| Activation | blade_edge_half_width=None | Positive shoulder half-width plus positive bevel; convexity checked at construction |
+| Contact and grid constraints | Existing kernel signatures | Generated profile kernels use the same profile normals, contact points, levers and broad-side constraints |
+| Batch execution | World-indexed original kernels | World-indexed profile kernels generated from the same scalar expressions |
+
+The BladeMaster forward cutting-work law, side labels and constitutive equations
+are unchanged. The Cutting_DEV adapter supplies the rigid UR5e mount. Regenerate
+the profile variants with python -m blademaster_warp.generate_profile_kernels.
+The optional profile is used by the forward scalar and grouped solvers; the
+independent cohesive/adjoint research pipeline retains its own geometry path.

@@ -451,3 +451,39 @@ GPU suite remains outside this forward batching validation; the integration
 owner reserved GPU7 for the DiSECt full-training-capacity check after the
 Cutting_DEV root/backend regressions. Logs and UR5e reports live under
 `/dataHDD/dong/Experiments/Cutting_DEV/runs/bm_batch_*_20261114*`.
+
+
+## 2026-11-16 — Shared DiSECt blade contact profile
+
+The optional finite blade now matches the main UR5e DiSECt contact geometry:
+150.000006 mm edge, 59.040001 mm height, 3.5 mm spine, 0.08 mm shoulder.
+Scalar and batched solvers dispatch the same generated two-slope profile for
+contact normals/points and blade transport constraints. The default profile
+retains its original kernels. Regeneration reproduces all six generated files.
+
+Three-object UR5e reference execution on GPU7 (cucumber, half potato, prism):
+pose completion at 50/50/50 control steps; final native graphs each have two
+components. Physical tool vertices agree with robot FK within 6.43e-9 m;
+minimum blade clearance above the board is 1.108e-5 m.
+The 16-step reward/partial-reset check passed, maximum reward reconstruction
+difference 1.47e-8, with unchanged inactive-world states.
+
+Integration reports:
+Cutting_DEV runs/tool_analysis_20261116/bm_full_physical_tool_probe.json and
+shared_bm_check_final.json. Forward contact/mounting is the changed path;
+the separate cohesive/adjoint research geometry retains its own configuration.
+
+Validation uses the isolated blademaster-shared-validation-20261116 environment
+with this repository's pinned requirements and pytest-xdist. Command:
+
+```bash
+PYTHONPATH=. OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+ /dataHDD/dong/Envs/blademaster-shared-validation-20261116/bin/python \
+ -m pytest tests -n 24 --dist load -q
+```
+
+
+Full GPU7 regression: **2163 passed, 8 skipped, 18 subtests passed** in
+2124.99 s. This includes scalar/batched contact with both original and shared
+profiles, active-world masks, partial resets and kernel regeneration.
+Log: /dataHDD/dong/Experiments/shared_bm_venv_tests.log.

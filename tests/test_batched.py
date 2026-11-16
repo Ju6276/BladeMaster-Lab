@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import warp as wp
 from dataclasses import replace
 from blademaster_warp.batched import BatchedSolver
@@ -7,7 +8,8 @@ from blademaster_warp.coupling import ExternalToolPort, ToolState
 from blademaster_warp.presets import banana_config
 
 
-def test_world_indexed_contact_and_odd_interval_masking():
+@pytest.mark.parametrize("shared", [False, True])
+def test_world_indexed_contact_and_odd_interval_masking(shared):
     cfg = replace(
         banana_config(),
         grid_storage="compact",
@@ -17,6 +19,13 @@ def test_world_indexed_contact_and_odd_interval_masking():
         shape="block",
     )
     cfg = replace(cfg, dt=0.002 / 47)
+    if shared:
+        cfg = replace(
+            cfg,
+            blade_half_size=(0.00175, 0.075, 0.02952),
+            blade_bevel_height=0.00004,
+            blade_edge_half_width=0.00004,
+        )
     b = BatchedSolver(cfg, 2)
     s = Solver(cfg)
     port = ExternalToolPort(s)

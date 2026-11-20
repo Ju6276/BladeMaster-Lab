@@ -109,7 +109,7 @@ def generate():
             # Functions still receive scalar coefficients. Only kernel boundaries
             # load the world's coefficients before executing the original body.
             parameters = []
-            if kernel and name in ("material", "contact", "profile_contact"):
+            if kernel and name in ("material", "contact", "profile_contact", "mesh_contact"):
                 for argument in item.args.args:
                     if (argument.arg in ("mass", "mu", "lam", "mu_maxwell", "threshold")
                             and isinstance(argument.annotation, ast.Name)

@@ -141,3 +141,18 @@ The robot adapter chooses one group timestep for the highest configured E and
 lowest density. The batch API takes positive full-world scale arrays plus a reset
 mask. Inactive worlds retain both coefficients and state. Parameters are fixed
 within an episode. The user of the API chooses a stable timestep before capture.
+
+## 2026-11-20 UR-mounted CAD knife forward integration
+
+The optional mesh tool uses a closed CAD surface and sampled curved cutting edge.
+Contact and side-update kernels read the same mounted geometry in single and batch
+solvers; the analytic wedge path remains available for its existing configurations.
+Per-world material parameters use the active batch's generated kernels.
+The contact stress probe initializes mesh_geometry for both tool types.
+
+Verification: the five mesh-tool cases passed across the focused runs (four cases,
+then the corrected material-parameter case); nine contact-probe CPU cases passed.
+The interrupted native suite recorded 769 passed, 21 failed, 7 skipped. All 21
+failures reported the stress probe's missing mesh_geometry initialization. The
+nine-case regression covers that correction. Remaining native/gradient coverage is
+outside the current robot forward-training integration requested by the user.

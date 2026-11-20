@@ -52,6 +52,10 @@ class ContactProbe(Solver):
 
     def __init__(self, config, positions, device="cpu"):
         self.config, self.device = config, wp.get_device(device)
+        self.mesh_geometry = None
+        if config.blade_geometry_asset is not None:
+            from blademaster_warp.mesh_geometry import MeshGeometry
+            self.mesh_geometry = MeshGeometry(config.blade_geometry_asset, self.device)
         self.n = len(positions)
         self.mass = config.density * (config.grid_spacing / 2) ** 3
         self.radius = config.grid_spacing / 4

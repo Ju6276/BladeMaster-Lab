@@ -55,6 +55,7 @@ class Config:
     # between two particle columns touches neither.
     blade_contact_radius: float = 0.0
     blade_mass: float = 0.2
+    blade_geometry_asset: str = None
     blade_half_size: tuple = (0.0005, 0.025, 0.02)
     drive_stiffness: float = 250.0
     drive_damping: float = 14.0
@@ -196,6 +197,12 @@ class Solver:
         if not self.device.is_cuda:
             raise ValueError("CUDA device required")
         cfg = config
+        self.mesh_geometry = None
+        if cfg.blade_geometry_asset:
+            if not cfg.external_tool or precision != "float32":
+                raise ValueError("CAD mesh requires float32 external-tool coupling")
+            from .mesh_geometry import MeshGeometry
+            self.mesh_geometry = MeshGeometry(cfg.blade_geometry_asset, self.device)
         self.reference, self.origin, cells = (
             points(cfg.size, cfg.grid_spacing, cfg.shape, cfg.sampling_seed)
             if reference_points is None else reference_cloud(reference_points, cfg.size, cfg.grid_spacing))
@@ -380,7 +387,9 @@ class Solver:
 
     def launch(self, kernel, dim, args):
         from .profile_runtime import profile_kernel
-        replacement, args = profile_kernel(kernel, args, self.config)
+        from .mesh_runtime import mesh_kernel
+        replacement, args = (mesh_kernel(kernel, args, self.mesh_geometry) if self.mesh_geometry is not None
+                             else profile_kernel(kernel, args, self.config))
         if replacement is not None:
             kernel = replacement
         if self.precision == "float64":

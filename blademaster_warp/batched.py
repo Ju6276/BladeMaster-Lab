@@ -275,7 +275,9 @@ class BatchedSolver:
         module = self._modules[kernel.module.name.rsplit(".", 1)[-1]]
         target = getattr(module, kernel.key)
         from .profile_runtime import profile_kernel
-        replacement, args = profile_kernel(kernel, args, self.config, batch=True)
+        from .mesh_runtime import mesh_kernel
+        replacement, args = (mesh_kernel(kernel, args, self.mesh_geometry, batch=True) if self.mesh_geometry is not None
+                             else profile_kernel(kernel, args, self.config, batch=True))
         if replacement is not None:
             target = replacement
         dims = (dim,) if isinstance(dim, int) else tuple(dim)
